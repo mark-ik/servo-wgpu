@@ -6,6 +6,7 @@
 
 #[cfg(feature = "font-diagnostic")]
 use alloc::format;
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::mem;
 use core::ops::RangeInclusive;
@@ -539,7 +540,6 @@ struct FontSelector<'a, 'b, B: Brush> {
     attrs: fontique::Attributes,
     variations: &'a [FontVariation],
     features: &'a [FontFeature],
-    #[cfg(feature = "font-diagnostic")]
     fallback_key: fontique::FallbackKey,
 }
 
@@ -565,7 +565,6 @@ impl<'a, 'b, B: Brush> FontSelector<'a, 'b, B> {
         query.set_families(fonts.iter().copied());
 
         let fallback_key = fontique::FallbackKey::new(fb_script, locale.as_ref());
-        query.set_fallbacks(fallback_key);
         query.set_attributes(attrs);
 
         Self {
@@ -577,7 +576,6 @@ impl<'a, 'b, B: Brush> FontSelector<'a, 'b, B> {
             attrs,
             variations,
             features,
-            #[cfg(feature = "font-diagnostic")]
             fallback_key,
         }
     }
@@ -626,84 +624,98 @@ impl<'a, 'b, B: Brush> FontSelector<'a, 'b, B> {
             candidates: Vec::new(),
             selected_candidate: None,
         };
-        self.query.matches_with(|font| {
-            let Some(charmap) = font.charmap() else {
-                #[cfg(feature = "font-diagnostic")]
-                diagnostic.candidates.push(FontDiagnosticCandidate {
-                    family: format!("{:?}", font.family),
-                    index: font.index,
-                    status: FontDiagnosticCandidateStatus::NoCharmap,
-                });
-                return fontique::QueryStatus::Continue;
-            };
-
-            let map_status = cluster.map(
-                |ch| {
-                    charmap
-                        .map(ch)
-                        .map(|g| {
-                            // HACK: in reality, we're only computing coverage, so
-                            // we only care about whether the font  has a mapping
-                            // for a particular glyph. Any non-zero value indicates
-                            // the existence of a glyph so we can simplify this
-                            // without a fallible conversion from u32 to u16.
-                            (g != 0) as u16
-                        })
-                        .unwrap_or_default()
-                },
-                analysis_data_sources,
-            );
-            #[cfg(feature = "font-diagnostic")]
-            let candidate_index = diagnostic.candidates.len();
-            #[cfg(feature = "font-diagnostic")]
-            diagnostic.candidates.push(FontDiagnosticCandidate {
-                family: format!("{:?}", font.family),
-                index: font.index,
-                status: match map_status {
-                    Status::Complete => FontDiagnosticCandidateStatus::Complete,
-                    Status::Keep => FontDiagnosticCandidateStatus::Keep,
-                    Status::Discard => FontDiagnosticCandidateStatus::Discard,
-                },
-            });
-
-            match map_status {
-                Status::Complete => {
-                    selected_font = Some(SelectedFont {
-                        font: font.clone(),
-                        attrs: self.attrs,
-                    });
-                    #[cfg(feature = "font-diagnostic")]
-                    {
-                        diagnostic.selected_candidate = Some(candidate_index);
-                    }
-                    fontique::QueryStatus::Stop
-                },
-                Status::Keep => {
-                    selected_font = Some(SelectedFont {
-                        font: font.clone(),
-                        attrs: self.attrs,
-                    });
-                    #[cfg(feature = "font-diagnostic")]
-                    {
-                        diagnostic.selected_candidate = Some(candidate_index);
-                    }
-                    fontique::QueryStatus::Continue
-                },
-                Status::Discard => {
-                    if selected_font.is_none() {
-                        selected_font = Some(SelectedFont {
-                            font: font.clone(),
-                            attrs: self.attrs,
-                        });
+        macro_rules! try_fonts {
+            ($matches:ident) => {{
+                let mut complete = false;
+                self.query.$matches(|font: &QueryFont| {
+                    let Some(charmap) = font.charmap() else {
                         #[cfg(feature = "font-diagnostic")]
-                        {
-                            diagnostic.selected_candidate = Some(candidate_index);
-                        }
+                        diagnostic.candidates.push(FontDiagnosticCandidate {
+                            family: format!("{:?}", font.family),
+                            index: font.index,
+                            status: FontDiagnosticCandidateStatus::NoCharmap,
+                        });
+                        return fontique::QueryStatus::Continue;
+                    };
+
+                    let map_status = cluster.map(
+                        |ch| {
+                            charmap
+                                .map(ch)
+                                .map(|g| {
+                                    // HACK: in reality, we're only computing coverage, so
+                                    // we only care about whether the font  has a mapping
+                                    // for a particular glyph. Any non-zero value indicates
+                                    // the existence of a glyph so we can simplify this
+                                    // without a fallible conversion from u32 to u16.
+                                    (g != 0) as u16
+                                })
+                                .unwrap_or_default()
+                        },
+                        analysis_data_sources,
+                    );
+                    #[cfg(feature = "font-diagnostic")]
+                    let candidate_index = diagnostic.candidates.len();
+                    #[cfg(feature = "font-diagnostic")]
+                    diagnostic.candidates.push(FontDiagnosticCandidate {
+                        family: format!("{:?}", font.family),
+                        index: font.index,
+                        status: match map_status {
+                            Status::Complete => FontDiagnosticCandidateStatus::Complete,
+                            Status::Keep => FontDiagnosticCandidateStatus::Keep,
+                            Status::Discard => FontDiagnosticCandidateStatus::Discard,
+                        },
+                    });
+
+                    match map_status {
+                        Status::Complete => {
+                            complete = true;
+                            selected_font = Some(SelectedFont {
+                                font: font.clone(),
+                                attrs: self.attrs,
+                            });
+                            #[cfg(feature = "font-diagnostic")]
+                            {
+                                diagnostic.selected_candidate = Some(candidate_index);
+                            }
+                            fontique::QueryStatus::Stop
+                        },
+                        Status::Keep => {
+                            selected_font = Some(SelectedFont {
+                                font: font.clone(),
+                                attrs: self.attrs,
+                            });
+                            #[cfg(feature = "font-diagnostic")]
+                            {
+                                diagnostic.selected_candidate = Some(candidate_index);
+                            }
+                            fontique::QueryStatus::Continue
+                        },
+                        Status::Discard => {
+                            if selected_font.is_none() {
+                                selected_font = Some(SelectedFont {
+                                    font: font.clone(),
+                                    attrs: self.attrs,
+                                });
+                                #[cfg(feature = "font-diagnostic")]
+                                {
+                                    diagnostic.selected_candidate = Some(candidate_index);
+                                }
+                            }
+                            fontique::QueryStatus::Continue
+                        },
                     }
-                    fontique::QueryStatus::Continue
-                },
-            }
-        });
+                });
+                complete
+            }};
+        }
+        let complete = try_fonts!(matches_primary_with);
+        if !complete {
+            let fallback_text: String = cluster.chars.iter().map(|ch| ch.ch).collect();
+            self.query
+                .set_fallbacks_for_text(self.fallback_key, &fallback_text);
+            let _ = try_fonts!(matches_fallbacks_with);
+        }
         #[cfg(feature = "font-diagnostic")]
         crate::font_diagnostic::record(diagnostic);
         selected_font

@@ -2,7 +2,9 @@
 
 **Status:** in progress (2026-09-05). The original Common-to-`Zyyy` diagnosis
 was corrected against the patched Parley source; T0 landed as a controlled
-Windows diagnostic. T1 through T3 remain open. Founded when Isometry's side panel drew its disclosure
+Windows diagnostic. The bounded Windows T1 repair and Ortet readback are accepted;
+upstream disposition, other platforms, and consumer revision adoption remain
+open. Founded when Isometry's side panel drew its disclosure
 markers as tofu and the workaround was to retreat to ASCII.
 
 **Related:** `components/genet-livery/src/text.rs` (the stack's whole font
@@ -18,17 +20,17 @@ tofu boxes; it now ships `[-]` and `[+]`. That is a real product cost paid to
 work around a stack defect, and the next non-ASCII glyph anyone reaches for
 pays it again.
 
-The framing that came out of that pass — "our font fallback covers Latin-1 but
-not Geometric Shapes" — is not what is happening, and the true statement is
-much broader. Latin-1 renders because the *primary* family carries it and no
-fallback is needed. What is actually true is below.
+The controlled test separates primary coverage from fallback: its authored
+primary carries Latin `f` but omits both disclosure markers. That makes it
+possible to test the fallback route without depending on a default UI font's
+coverage.
 
 ## 2. The diagnosis, verified
 
 **Common-script characters do reach font fallback, but under an effective real
 script chosen from their item rather than under `Zyyy`.** That means this plan
-does not yet establish a universal Common-script fallback defect. The chain,
-each link read in source:
+does not establish a universal Common-script fallback defect. The pre-T1
+route at `505b5be26b4` was:
 
 1. `▾` U+25BE is Geometric Shapes, whose Unicode script property is
    **Common (`Zyyy`)**. So are the arrows, box drawing, dingbats, most
@@ -37,13 +39,12 @@ each link read in source:
    defaults an all-Common item to Latin (`support/patches/parley/src/shape/mod.rs`,
    `shape_text` item initialization).
    In the character loop it replaces every non-real script, including Common,
-   with that item script (`:122-124`). `shape_item` therefore sends Latin (or
+   with that item script. `shape_item` therefore sends Latin (or
    the surrounding real script) through `script_to_fontique`, then sets that
    key when `FontSelector` is constructed. It does **not** pass `Zyyy` unchanged.
-3. fontique's fallback remains **script-keyed, not codepoint-keyed**. The
-   DirectWrite backend does not ask DirectWrite which font has the character.
-   It asks for a *sample string* for the script and requests the default
-   family for that sample: `fontique-0.10.0/src/backend/dwrite.rs:115-123`,
+3. Upstream Fontique 0.10's fallback was **script-keyed**. Its DirectWrite
+   backend supplied a *sample string* for the script instead of the actual
+   character: `fontique-0.10.0/src/backend/dwrite.rs`,
    `let text = key.script().sample()?;`.
 4. The absent Common sample is therefore not exercised by normal Parley item
    shaping. It would matter only if a caller handed fontique `Zyyy` directly.
@@ -64,26 +65,25 @@ rather than a sample, so it may or may not resolve Common. T3 settles it
 rather than assuming; the workspace has both a Fedora Wayland and a Mint X11
 machine to answer it on.
 
-The irony worth recording: the DirectWrite backend already holds an
-`IDWriteFontFallback` (`dwrite.rs:137`) — the very interface whose
-`MapCharacters` answers "which font covers this text" — and the script path
-never uses it for characters. CoreText has the same shape available in
-`CTFontCreateForString`.
+The Windows repair now passes the actual cluster to
+[`IDWriteFontFallback::MapCharacters`](https://learn.microsoft.com/en-us/windows/win32/api/dwrite_2/nf-dwrite_2-idwritefontfallback-mapcharacters)
+after authored candidates fail. The API's mapped length and scale are part of
+its contract; the bounded family-only path accepts complete ranges at scale 1.
 
 ## 3. What is measured, and what remains open
 
-The original Isometry tofu report is a real consumer symptom. T0 now reproduces
+The original Isometry tofu report is a real consumer symptom. Before T1, T0 reproduced
 U+25BE glyph zero on this Windows host with a primary face known to omit it.
 The cluster-correlated negative trace records the primary and two platform
 candidates as `Discard`, retaining the primary as the selected fallback. This
 is evidence about this host and target only. It is not evidence that every
 Common character, consumer, or desktop platform fails.
 
-The ordered authored-face control does select a covering second face and paints
-a nonzero U+25BE glyph while the primary retains Latin. This proves the CSS
-family ordering and Parley candidate loop can carry a deliberate fallback. It
-does not repair the installed-platform route. The next repair decision must
-compare the script-keyed candidate set with codepoint-aware platform fallback.
+After T1, the actual-text system query selects a covering candidate and paints
+U+25BE glyph 1325. The authored-face control continues to select its covering
+second face, and covered Latin stays in the primary. Ortet shows both U+25BE
+and U+25B8 through the normal system route. Partial/scaled platform mappings,
+other operating systems, and downstream product adoption remain separate work.
 
 ## 4. Gates
 
@@ -98,28 +98,36 @@ fallback; it prints the installed-platform outcome without treating it as a
 portable assertion.
 **Done when:** the diagnostic runs on Windows and reports the effective script,
 the requested primary and selected paint faces, and coverage outcome. A green target is
-evidence about this host's query and shaping layers, not a false test. T1's
-next probe can proceed; a repair requires evidence of the owning layer.
+evidence about this host's query and shaping layers. T1 adds a regression
+assertion for system coverage of both disclosure markers on this Windows host.
 
-**T1 — The owning-layer repair.** T0 currently sees every candidate discard
-for U+25BE under the `Latn` fallback key. The next bounded probe must compare
-that candidate set with the platform's codepoint-aware result and correlate any
-covering candidate's `QueryFont`/`FontData` identity with the shaper. If the
-mismatch is local, repair candidate-to-`FontData` or shaper propagation; if it
-is upstream, record that ownership before changing Fontique. A deliberate
-authored fallback remains a separate product choice, not a substitute for
-locating this seam.
-**Done when:** the owning layer is evidenced, a covering selected face produces
-a nonzero glyph through the normal path, the primary retains covered Latin,
-and a headed capture shows the result in a real app.
+**T1 — Windows codepoint-aware fallback repair (accepted 2026-09-05).** Fontique's DirectWrite
+backend already called `MapCharacters`, but supplied `FallbackKey::script()`'s
+sample and cached the returned family by script/locale before Parley saw the
+actual cluster. On this host, the sample route left U+25BE as `Discard`; an
+actual U+25BE query returns a candidate that is `Complete` and paints glyph
+1325. The repair uses an actual-text Fontique query only after authored primary
+candidates fail. It preserves effective script, locale, requested attributes,
+and authored/explicit fallback precedence.
 
-**T2 — Upstream investigation, conditional on ownership.** If T1 locates the
-fault in Fontique or Parley, propose the smallest upstream change with T0's
-trace and an isolated reproducer. Fontique's platform backends are script-keyed
-and might eventually use `IDWriteFontFallback::MapCharacters` or
-`CTFontCreateForString`, but that is not presumed to be this defect.
-**Done when:** an upstream disposition exists if upstream owns the cause; if
-the cause is local, the plan records why no upstream change is required.
+The family-only path accepts DirectWrite only when its result covers the full
+UTF-16 cluster at scale 1.0. Partial ranges and scaled results retain the old
+script route because neither semantic can be represented by a family id. The
+Windows-specific text state is invalidated before a same-key script query;
+non-Windows continues using its existing cache. The focused receipt proves
+U+25BE system completion, authored Segoe UI Symbol precedence, Latin primary
+completion with one candidate, and alternating U+25BE/U+25B8 queries.
+**Done when:** focused regressions pass and a headed capture shows the result
+in a real app. Both are met by the final repair and Ortet receipt below; this
+does not claim whole-workspace or full-WPT validation.
+
+**T2 — Upstream disposition (open).** The responsible boundary spans Fontique's
+script-sample query and Parley's actual cluster. Genet carries the paired patch
+locally; no upstream submission or acceptance is claimed. Prepare the bounded
+query change with its reproducer for upstream review, including the unresolved
+partial-range and scale semantics before proposing broader support.
+**Done when:** upstream disposition and the retained or retired local patch
+are recorded.
 
 **T3 — Linux.** Run T0's effective-script, candidate-status, selected-face,
 and final-glyph trace on both Fedora Wayland and Mint X11.
@@ -136,6 +144,53 @@ and the plan records the outcomes.
   a local probe; a verified local repair is not gated on upstream release.
 
 ## Findings
+
+### 2026-09-05 — Windows T1 and Ortet readback accepted
+
+Implementation source `ad734ac89b0` passed four focused Livery tests, the
+Fontique same-key query restoration test, and the DirectWrite attribute test.
+`cargo check --locked --offline -j 1 -p parley --no-default-features --features libm`
+also passed after the final feature-gating change. The normal/build dependency
+tree excludes `font-diagnostic`. The 600-package Ortet dependency witness
+passed with the paired patch and no forbidden Mere dependency.
+
+The windowed fixture is `ports/ortet/examples/font_fallback.html`. Its primary
+is the existing WPT Lato face; only the third row explicitly names Segoe UI
+Symbol. Ortet presented three frames at 1200x1200 physical pixels on Windows
+11 build 26220, using Rust 1.97.1, `-C debuginfo=0`, and isolated offline builds.
+The baseline was `d8ca6805fdf`; the final headed source was `8952a18ff17`.
+The latter contains the final repair unchanged, plus the same fixture.
+
+```text
+cargo build --locked --offline -j 1 -p ortet
+ortet --url ports/ortet/examples/font_fallback.html --size 1200x1200 \
+  --frames 3 --artifact <receipt.png>
+before: frame digest 0xde8a5c242ef83301, two missing-glyph boxes
+after:  frame digest 0x23fc2d2218d4e40f, both disclosure triangles
+```
+
+Artifacts are retained under `Code/scratch/genet-font-repair-20260905/`:
+`before.png`, `after.png`, both binaries, build/run logs, platform/compiler
+details, and `image-comparison.json`. Of 4,444 changed pixels, 4,443 are in the
+target-symbol row; one label pixel changes its blue channel by one. The Latin
+control and explicit-symbol glyph bands are pixel-identical. This is a bounded
+host readback receipt, not a full-WPT or cross-platform conformance claim.
+
+| Frozen artifact | SHA-256 |
+|---|---|
+| `Cargo.before.lock` | `c2f5fd457ee09be046baa75f84530a646d761ecd33e2578f65f56f794e800e9c` |
+| `Cargo.after.lock` | `0fdf7926973c4498ba0f7608dda2b03b5e10acb728804f82c18c37e77efae126` |
+| `before-ortet.exe` | `c7c869bbc424ba9fe1a4104594442f670b83f98f46a0176315f9e99d2ad13687` |
+| `after-ortet.exe` | `6b3a4136c9717361b7fc50264969683f4d09ed3a2d0976ee1de0948199c44023` |
+
+Delivery is a separate boundary. A standalone consumer manifest with only a
+path dependency on this Parley resolves exactly one Fontique, at the sibling
+vendored path, without Genet's root patch table. Its metadata is archived as
+`consumer-metadata.json`. Mere, Isometry, and Turnstone currently pin Parley at
+`115d348dedd`; those manifests were not updated here. Product adoption requires
+an intentional revision refresh and consumer verification before retiring the
+Isometry ASCII workaround. Upstream submission and the other-platform gates
+remain open.
 
 ### 2026-09-05 — Windows T0 observes `Latn` candidates and an authored control
 
@@ -227,3 +282,8 @@ no glyph.
   secondary control then painted U+25BE glyph 1325 while primary Latin stayed
   glyph 4. Windows is the only measured platform in this pass; macOS and both
   named Linux environments retain explicit evidence requirements.
+- **2026-09-05.** Accepted the bounded Windows T1 repair after four Livery
+  tests, two targeted Fontique unit tests, the `libm` build, dependency witness,
+  and Ortet before/after readback. The paired Parley/Fontique source dependency
+  also resolves from a standalone consumer. Product pins, upstream disposition,
+  and other-platform measurements remain open.

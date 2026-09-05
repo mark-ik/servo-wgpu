@@ -487,6 +487,9 @@ gpu-allocator = { path = "support/patches/gpu-allocator" }
 # HarfRust buffer while excluding them from font-coverage scoring. Retire when
 # upstream Parley carries the equivalent fix.
 parley = { path = "support/patches/parley" }
+# Actual-cluster DirectWrite fallback, paired with the Parley query extension.
+# Parley also uses a sibling path so downstream roots inherit the matching API.
+fontique = { path = "support/patches/fontique" }
 # sonic-rs uses ahash with default features, whose `runtime-rng` pulled getrandom
 # 0.3 (hard-codes wasm32) onto the shared ahash. This vendored copy drops
 # runtime-rng on wasm (native keeps it), so the wasm graph carries no getrandom 0.3

@@ -12,79 +12,59 @@
 [package]
 edition = "2021"
 rust-version = "1.88"
-name = "parley"
+name = "fontique"
 version = "0.10.0"
 build = false
-exclude = ["/tests"]
 autolib = false
 autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Parley provides an API for implementing rich text layout."
+description = "Font enumeration and fallback."
 readme = "README.md"
 keywords = [
+    "font",
     "text",
-    "layout",
 ]
 categories = [
     "gui",
-    "graphics",
+    "os",
 ]
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/linebender/parley"
-
-[[test]]
-name = "join_controls"
-path = "tests/join_controls.rs"
 
 [package.metadata.docs.rs]
 all-features = true
 
 [features]
-accesskit = ["dep:accesskit"]
-complex-scripts = []
-font-diagnostic = ["std"]
+bytemuck = ["parlance/bytemuck"]
 default = ["system"]
-libm = [
-    "fontique/libm",
-    "harfrust/libm",
-    "peniko/libm",
-    "skrifa/libm",
-    "dep:core_maths",
-]
+fontconfig-dlopen = ["yeslogic-fontconfig-sys?/dlopen"]
+libm = ["read-fonts/libm"]
 std = [
-    "fontique/std",
-    "harfrust/std",
-    "peniko/std",
-    "skrifa/std",
+    "read-fonts/std",
+    "dep:memmap2",
     "parlance/std",
 ]
 system = [
     "std",
-    "fontique/system",
+    "dep:windows",
+    "dep:windows-core",
+    "dep:objc2",
+    "dep:objc2-core-foundation",
+    "dep:objc2-core-text",
+    "dep:objc2-foundation",
+    "dep:yeslogic-fontconfig-sys",
+    "dep:roxmltree",
 ]
 
 [lib]
-name = "parley"
+name = "fontique"
 path = "src/lib.rs"
 
-[dependencies.accesskit]
-version = "0.24.0"
-optional = true
-
-[dependencies.core_maths]
-version = "0.1.1"
-optional = true
-
-[dependencies.fontique]
-version = "0.10.0"
-path = "../fontique"
-default-features = false
-
-[dependencies.harfrust]
-version = "0.8.0"
-default-features = false
+[[example]]
+name = "generic_families"
+path = "examples/generic_families.rs"
 
 [dependencies.hashbrown]
 version = "0.17.0"
@@ -94,45 +74,79 @@ features = [
 ]
 default-features = false
 
-[dependencies.icu_normalizer]
-version = "2.1.1"
-features = ["compiled_data"]
-default-features = false
-
-[dependencies.icu_properties]
-version = "2.1.2"
-features = ["compiled_data"]
-default-features = false
-
-[dependencies.icu_segmenter]
-version = "2.1.2"
-features = ["compiled_data"]
-default-features = false
-
 [dependencies.linebender_resource_handle]
 version = "0.1.1"
 default-features = false
+
+[dependencies.memmap2]
+version = "0.9.10"
+optional = true
 
 [dependencies.parlance]
 version = "0.1.0"
 default-features = false
 
-[dependencies.parley_data]
-version = "0.10.0"
-features = ["baked"]
+[dependencies.read-fonts]
+version = "0.39.0"
 default-features = false
 
-[dependencies.skrifa]
-version = "0.42.0"
+[dependencies.smallvec]
+version = "1.15.1"
+
+[target.'cfg(any(target_os = "linux", target_os="freebsd"))'.dependencies.yeslogic-fontconfig-sys]
+version = "6.0.0"
+optional = true
+
+[target.'cfg(target_os = "android")'.dependencies.roxmltree]
+version = "0.21.1"
+optional = true
+
+[target.'cfg(target_os = "windows")'.dependencies.windows]
+version = "0.62.2"
+features = ["Win32_Graphics_DirectWrite"]
+optional = true
+
+[target.'cfg(target_os = "windows")'.dependencies.windows-core]
+version = "0.62.2"
+optional = true
+
+[target.'cfg(target_vendor = "apple")'.dependencies.objc2]
+version = "0.6.4"
+features = [
+    "std",
+    "relax-sign-encoding",
+]
+optional = true
+
+[target.'cfg(target_vendor = "apple")'.dependencies.objc2-core-foundation]
+version = "0.3.2"
+features = [
+    "CFBase",
+    "CFURL",
+]
+optional = true
 default-features = false
 
-[dev-dependencies.peniko]
-version = "0.6.0"
+[target.'cfg(target_vendor = "apple")'.dependencies.objc2-core-text]
+version = "0.3.2"
+features = [
+    "CTFont",
+    "CTFontDescriptor",
+    "CTFontCollection",
+]
+optional = true
 default-features = false
 
-[target.'cfg(not(target_os = "android"))'.dev-dependencies.oxipng]
-version = "9.1.5"
-features = ["freestanding"]
+[target.'cfg(target_vendor = "apple")'.dependencies.objc2-foundation]
+version = "0.3.2"
+features = [
+    "alloc",
+    "NSArray",
+    "NSEnumerator",
+    "NSPathUtilities",
+    "NSString",
+]
+optional = true
 default-features = false
 
 [lints.clippy]

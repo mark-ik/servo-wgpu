@@ -206,6 +206,11 @@ fn common_script_fallback_diagnostic_records_effective_script_and_selected_faces
         })
         .expect("actual query records the Latin control");
     assert_eq!(control_event.selected_candidate, Some(0));
+    assert_eq!(
+        control_event.candidates.len(),
+        1,
+        "a complete authored primary avoids the text fallback query"
+    );
 
     let target_font = frame
         .fonts()
@@ -231,6 +236,72 @@ fn common_script_fallback_diagnostic_records_effective_script_and_selected_faces
         target_event.candidates,
         target_event.selected_candidate,
     );
+}
+
+/// Windows T1 regression: one item rebuilds fallback state for each
+/// primary-missing cluster, so a prior Common symbol cannot supply the next.
+#[cfg(windows)]
+#[test]
+fn common_symbols_use_their_own_system_fallback_queries() {
+    const PRIMARY: &[u8] = include_bytes!("../../../tests/wpt/tests/fonts/Lato-Medium-Liga.ttf");
+    const FIRST: char = '\u{25be}';
+    const SECOND: char = '\u{25b8}';
+    let primary = FontRef::new(PRIMARY).expect("Lato fixture parses");
+    let charmap = primary.cmap().expect("Lato fixture has a charmap");
+    for symbol in [FIRST, SECOND] {
+        assert_eq!(
+            charmap
+                .map_codepoint(symbol)
+                .map(|glyph| glyph.to_u32())
+                .unwrap_or(0),
+            0,
+            "controlled primary omits {symbol:?}"
+        );
+    }
+    let css = "@font-face { font-family: t1-primary; src: url(/fonts/Lato-Medium-Liga.ttf); } \
+               #sequence { display: block; font-family: t1-primary; font-size: 32px; color: #030303; }";
+    let mut session = LiveryDocument::new(
+        StaticDocument::parse(
+            "<html><body><span id=sequence>&#x25be;&#x25b8;</span></body></html>",
+        ),
+        StyleSet::cambium(&[css]),
+        Device::screen(320.0, 160.0),
+    );
+    session.set_font_resource("/fonts/Lato-Medium-Liga.ttf", PRIMARY.to_vec());
+    let capture = parley::begin_font_diagnostic_capture();
+    let frame = session
+        .frame(320, 160)
+        .expect("T1 alternating-symbol frame");
+    let events = capture.take();
+    for symbol in [FIRST, SECOND] {
+        let event = events
+            .iter()
+            .find(|event| event.cluster == symbol.to_string())
+            .expect("symbol reaches its own fallback query");
+        assert_eq!(event.fallback_script, *b"Latn");
+        assert_eq!(
+            event.candidates[0].status,
+            FontDiagnosticCandidateStatus::Discard
+        );
+        assert!(
+            event
+                .candidates
+                .iter()
+                .skip(1)
+                .any(|candidate| { candidate.status == FontDiagnosticCandidateStatus::Complete }),
+            "system fallback covers {symbol:?}: {event:?}"
+        );
+    }
+    let glyphs = text_run(
+        &frame,
+        ColorF::new(3.0 / 255.0, 3.0 / 255.0, 3.0 / 255.0, 1.0),
+    )
+    .glyphs
+    .iter()
+    .map(|glyph| glyph.index)
+    .collect::<Vec<_>>();
+    assert_eq!(glyphs.len(), 2, "one item paints both symbols");
+    assert!(glyphs.iter().all(|glyph| *glyph != 0), "both symbols paint");
 }
 
 #[test]
