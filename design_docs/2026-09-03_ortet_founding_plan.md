@@ -474,3 +474,12 @@ graph control.
   `95C994BF5F2D12348F0B19394692537B087B1F6200DB6BFA8DB14232B012D538`.
   No unlocked primary resolution was run; locked primary resolution was
   blocked by the local override graph and failed read-only.
+
+- 2026-09-05: final integration at `caa562d1e3a` passed the synthetic and
+  live dependency witness again: 600 packages, none forbidden, 26 exact moved
+  names guarded. The font diagnostic adds dev-dependency edges, so the generated
+  lock changed to SHA-256
+  `C2F5FD457EE09BE046BAA75F84530A646D761ECD33E2578F65F56F794E800E9C`;
+  this matches the font lane's retained `Cargo.font.lock`. The earlier lock
+  remains archived as `Cargo.cone.lock` beside it. Normal Ortet reachability
+  and the seven registry regression results are unchanged.

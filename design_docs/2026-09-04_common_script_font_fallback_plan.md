@@ -182,6 +182,11 @@ The command was run from the detached sparse worktree with its standalone
 dependency resolution, so it is a clean-source receipt rather than a claim
 about the primary checkout's local Cargo overrides:
 
+The final three-test run used source `b9ed7e36430`; its code was integrated
+unchanged at `caa562d1e3a`. The generated lock is retained locally as
+`Code/scratch/genet-plan-review-20260905/Cargo.font.lock`, SHA-256
+`C2F5FD457EE09BE046BAA75F84530A646D761ECD33E2578F65F56F794E800E9C`.
+
 ```text
 CARGO_TARGET_DIR=C:\Users\mark_\Code\target-font-20260905
 RUSTFLAGS="-C debuginfo=0"
