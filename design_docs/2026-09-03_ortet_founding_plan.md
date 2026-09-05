@@ -282,6 +282,17 @@ graph control.
   plus the Chromium readback receipt; the old Cambium web-host receipt belongs
   to Mere and cannot close this gate.
 
+- 2026-09-05: the registry branch of the global boundary witness had gone
+  stale after the 2026-09-03 moves. The Mere workspace inventory and Genet's
+  movement comments identify the moved families as Pelt (`pelt`, `pelt-core`,
+  `pelt-desktop`), Tabard, the Cambium family (`cambium*`, `meristem`,
+  `sprigging`), Workbench, `mere-surface-api`, and the engine-management names
+  already listed in the witness. The registry predicate now names the
+  unprefixed members and uses only the moved `cambium` and `pelt` prefixes.
+  `inker`, `document-session-api`, `fleece`, and `netrender` retain their
+  documented engine or independent classifications; the synthetic negative
+  control keeps them accepted.
+
 ## Progress
 
 - 2026-09-03: plan written; O0 and O1 dispatched.
@@ -433,3 +444,15 @@ graph control.
   This verifies the witness from the sparse review checkout, which lacks the
   primary checkout's local `.cargo/config` overrides. It is a graph receipt,
   not a frozen-WPT or headed-host receipt.
+
+- 2026-09-05: registry-route controls now exercise explicit synthetic
+  packages for `inker`, `cambium`, `workbench`, `nematic`, `sprigging`,
+  `meristem`, and `pelt-desktop`; the old predicate misses all seven, while
+  the updated witness catches them. The negative control keeps `fleece`,
+  `document-session-api`, and `netrender` clean. The isolated review artifacts
+  are `Code/scratch/genet-plan-review-20260905/metadata.json` and
+  `Code/scratch/genet-plan-review-20260905/cone-regression.json`; the ignored
+  generated `Cargo.lock` SHA-256 is
+  `95C994BF5F2D12348F0B19394692537B087B1F6200DB6BFA8DB14232B012D538`.
+  The primary local-override graph remains unverified because locked metadata
+  cannot currently pass there; no shared primary run was attempted.

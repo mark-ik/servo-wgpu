@@ -144,7 +144,9 @@ def assert_ports_depend_inward(metadata: dict) -> None:
 # unprefixed publishable members of Mere's workspace on 2026-09-02; prefixed
 # families are matched by prefix. Extend it when Mere publishes a new family.
 MERE_GIT_SOURCE = re.compile(r"merely-made/mere(?:\.git)?(?:[?#/]|$)")
-MERE_CRATE_PREFIXES = ("mere-", "graphshell", "sceno", "register-")
+MERE_CRATE_PREFIXES = (
+    "mere-", "graphshell", "sceno", "register-", "cambium", "pelt",
+)
 MERE_CRATES = {
     "mere", "scenograph", "armillary", "chartulary", "codicil", "muniment",
     "scholia", "tulpa", "personae", "dramatis", "gaz", "gazette", "servitor",
@@ -153,6 +155,12 @@ MERE_CRATES = {
     "distillery", "djinn", "esp", "graphlets", "incipit", "insigne", "luggage",
     "mien", "nisus", "notochord", "pandect", "pictograph", "platen",
     "stickleback", "titulus", "ux-events", "uxtree", "script-rhai",
+    # Explicitly moved or Mere-published names whose registry packages are
+    # unprefixed. Keep this list to the platform-boundary inventory.
+    "inker", "workbench", "nematic", "meristem", "sprigging",
+    "document-canvas", "scrying-engine", "graft-engine", "weld-engine",
+    "verso-tile", "illume", "errand", "tinct", "tabard", "knot-editor-host",
+    "mere-surface-api",
 }
 
 
@@ -201,8 +209,27 @@ def assert_no_mere_source(metadata: dict) -> None:
 
 def self_test_mere_witness() -> None:
     """Positive control: the witness must catch each of the three entry routes."""
+    registry = "registry+https://github.com/rust-lang/crates.io-index"
+    moved_registry_names = {
+        "inker", "cambium", "workbench", "nematic", "sprigging", "meristem",
+        "pelt-desktop",
+    }
     fake = {"packages": [
-        {"name": "sceno", "version": "0.0.3", "source": "registry+https://github.com/rust-lang/crates.io-index",
+        {"name": "inker", "version": "0.0.3", "source": registry,
+         "manifest_path": str(ROOT / "registry" / "inker.toml")},
+        {"name": "cambium", "version": "0.0.3", "source": registry,
+         "manifest_path": str(ROOT / "registry" / "cambium.toml")},
+        {"name": "workbench", "version": "0.0.3", "source": registry,
+         "manifest_path": str(ROOT / "registry" / "workbench.toml")},
+        {"name": "nematic", "version": "0.0.3", "source": registry,
+         "manifest_path": str(ROOT / "registry" / "nematic.toml")},
+        {"name": "sprigging", "version": "0.0.3", "source": registry,
+         "manifest_path": str(ROOT / "registry" / "sprigging.toml")},
+        {"name": "meristem", "version": "0.0.3", "source": registry,
+         "manifest_path": str(ROOT / "registry" / "meristem.toml")},
+        {"name": "pelt-desktop", "version": "0.0.3", "source": registry,
+         "manifest_path": str(ROOT / "registry" / "pelt-desktop.toml")},
+        {"name": "sceno", "version": "0.0.3", "source": registry,
          "manifest_path": str(ROOT / "x" / "Cargo.toml")},
         {"name": "anything", "version": "0.1.0",
          "source": "git+https://github.com/merely-made/mere.git?rev=abc#abc",
@@ -217,9 +244,27 @@ def self_test_mere_witness() -> None:
          "manifest_path": str(ROOT / "w" / "Cargo.toml")},
     ]}
     found = mere_sources(fake)
-    if len(found) != 3 or not any("registry" in f for f in found) or not any("repository" in f for f in found) \
+    if len(found) != 10 or not all(any(name in item for item in found) for name in moved_registry_names) \
+            or not any("registry" in f for f in found) or not any("repository" in f for f in found) \
             or not any("checkout" in f for f in found):
-        fail(f"mere witness self-test expected exactly the three Mere routes, got {found}")
+        fail(f"mere witness self-test expected moved registry families plus git/path routes, got {found}")
+    legacy_prefixes = ("mere-", "graphshell", "sceno", "register-")
+    legacy_names = {"sceno"}
+    missed_by_old_rule = sorted(
+        name for name in moved_registry_names
+        if name not in legacy_names and not name.startswith(legacy_prefixes)
+    )
+    if missed_by_old_rule != sorted(moved_registry_names):
+        fail(f"registry regression control did not reproduce the old misses: {missed_by_old_rule}")
+
+    clean_names = {"fleece", "document-session-api", "netrender"}
+    clean = {"packages": [
+        {"name": name, "version": "0.1.0", "source": registry,
+         "manifest_path": str(ROOT / "clean" / f"{name}.toml")}
+        for name in sorted(clean_names)
+    ]}
+    if mere_sources(clean):
+        fail(f"mere witness negative control classified independent crates as Mere: {mere_sources(clean)}")
 
 
 # netfetcher's authority split (platform boundary plan P1): the Fetch semantics
@@ -299,6 +344,8 @@ def assert_host_api_cone(metadata: dict) -> None:
 ORTET_FORBIDDEN = {
     "inker", "workbench", "nematic", "errand", "document-canvas",
     "tabard", "knot-editor-host",
+    # Unprefixed members of the moved Cambium family.
+    "meristem", "sprigging",
     # the rest of the engine-management layer, moved by P3 on 2026-09-03
     "scrying-engine", "graft-engine", "weld-engine", "illume", "tinct", "verso-tile",
 }
