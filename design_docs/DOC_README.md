@@ -38,7 +38,7 @@ older `docs/` corpus without changing their location or governance.
 
 | Work | Current boundary and next proof |
 |---|---|
-| [Font fallback](2026-09-04_common_script_font_fallback_plan.md) | Windows T0 records all candidates rejecting the target under the Latin key, while an authored secondary succeeds. Compare the candidate set with codepoint-aware platform fallback before choosing a repair. |
+| [Font fallback](2026-09-04_common_script_font_fallback_plan.md) | Windows T1 is accepted with focused regressions and Ortet readback. Consumer revision adoption, upstream disposition, and other-platform measurements remain open. |
 | [Ortet](2026-09-03_ortet_founding_plan.md) | Desktop host and default-member migration landed. O2 needs accessibility identity/action receipts across navigation; O3 needs a raw web host and browser readback. Publication remains separate. |
 | [K6 fragmentation](../docs/2026-08-15_buckram_k6_fragmentation_execution_plan.md) | The named K5 prerequisites have accepted receipts. K6a starts with a refreshed source and corpus freeze; the census is complete, continuation behavior is unimplemented. |
 | [Flex and grid, Row 18](2026-08-25_livery_flex_shorthand_plan.md#row-18-closure-and-remaining-work) | Bounded vertical-flex slices landed. Remaining work includes mixed-writing-mode baselines, generated/pseudo self edges, shared font metrics and percentage provenance, then a measured grid inventory. |
@@ -77,12 +77,11 @@ completed corpus census or bounded slice does not close its enclosing feature.
 ## layout and styling
 
 - [common_script_font_fallback_plan](2026-09-04_common_script_font_fallback_plan.md)
-  (**diagnosis corrected 2026-09-05**: Parley assigns Common characters to
-  the surrounding script, defaulting to Latin, before querying Fontique.
-  The missing Common sample does not establish the reported tofu's cause.
-  T0 now records Windows query and paint outcomes with a covering authored-face
-  control. Comparing script-keyed candidates with codepoint-aware platform
-  fallback is the next probe; other platform claims remain open.)
+  (**Windows repair accepted 2026-09-05**: the paired Parley/Fontique patch
+  queries actual text after authored faces fail. Both disclosure markers now
+  paint through system fallback in Ortet, while Latin and explicit-font controls
+  remain verified. Downstream product pins, upstream disposition, and other
+  platforms retain separate gates.)
 
 - [livery_flex_shorthand_plan](2026-08-25_livery_flex_shorthand_plan.md)
   (**complete flex-shorthand slice; Row 18 remains in progress**: Livery now
@@ -166,6 +165,9 @@ same session; links out of it are rewritten for its new depth.
 - **Freeze dependency resolution with a measured runner.** `Cargo.lock` is
   intentionally ignored here. Retain the generated lockfile, its digest,
   target/features and local-override facts with the source and binary receipt.
+- **Verify paired forks from a standalone consumer.** Cargo root patches are
+  not inherited by downstream workspaces. A coupled dependency must travel with
+  its caller; prove that resolution before refreshing product revisions.
 - **Parallel work needs commit fences as well as file fences.** Pin one base,
   give each worker a disposable detached worktree and disjoint write paths,
   inspect staged paths before committing, and remove the worktree immediately
