@@ -3,8 +3,21 @@
 **Date:** 2026-08-14  
 **Status:** active; S0 and S1 landed; S2 is implemented locally through the
 policy and Weld adapter boundary, with rendered prompts and headed proof open
-**Owners:** `inker` owns the engine-neutral contract; engines implement it;
+**Owners (reconciled 2026-09-05):** Genet's `document-session-api` owns
+retained document-session, accessibility, capability and capture contracts.
+Mere's `inker` owns surface orchestration and the `WebSurface` vocabulary;
 hosts apply graph, profile, policy, and presentation effects.
+
+**Current ownership note, 2026-09-05.** The S0-S5 status and test counts below
+are their dated implementation records, last updated here in August. Before
+resuming an open S gate, refresh the corresponding Mere/Turnstone consumer
+and its current receipt. The September platform split moved Inker, its
+surface adapters and application policy out of Genet; it did not move the
+engine-facing session API out. Inker re-exports that API, so an `inker::`
+import alone no longer identifies the implementation owner. Source anchors:
+`components/shared/document-session-api/src/lib.rs` in this repository and
+`mere/crates/inker/inker/src/{lib,surface_engine}.rs`. The split is recorded in
+`mere/design_docs/mere_docs/implementation_strategy/2026-09-02_platform_boundary_and_repository_topology_plan.md`.
 
 ## Thesis
 

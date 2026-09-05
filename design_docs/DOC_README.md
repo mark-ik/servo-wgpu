@@ -15,10 +15,10 @@ repatriated here from mere.
 > behavior, raw host contracts, WPT, and a minimal engine host.
 
 > **Read the policy's "Two doc homes" section first.** This repository also has
-> a flat `docs/` directory of ~163 older engine documents that this index does
-> **not** cover and that no index covers. That split is deliberate and
-> temporary; migrating it is open, unscheduled work. New documents go here, not
-> there.
+> a flat `docs/` directory of 166 older engine documents. The current engine
+> work section below gives entry points into that corpus; it is not a complete
+> inventory or a migration. The split is deliberate, and migration remains
+> open, unscheduled work. New documents go here.
 
 ## Required reading order
 
@@ -29,14 +29,39 @@ repatriated here from mere.
    the last three moved to mere with their code on 2026-09-03, and active
    plans sit flat in `design_docs/`.
 
+## Current engine work (2026-09-05)
+
+Use the linked plan's current gate and dated receipts before implementing a
+lane. Historical corpus totals are measurements of their named source, not a
+fresh baseline for this checkout. This map also covers selected plans in the
+older `docs/` corpus without changing their location or governance.
+
+| Work | Current boundary and next proof |
+|---|---|
+| [Font fallback](2026-09-04_common_script_font_fallback_plan.md) | Reproduce the missing glyph through the effective Parley script and font selection. Primary-font coverage can legitimately pass; choose a repair from the measured path. |
+| [Ortet](2026-09-03_ortet_founding_plan.md) | Desktop host and default-member migration landed. O2 needs accessibility identity/action receipts across navigation; O3 needs a raw web host and browser readback. Publication remains separate. |
+| [K6 fragmentation](../docs/2026-08-15_buckram_k6_fragmentation_execution_plan.md) | The named K5 prerequisites have accepted receipts. K6a starts with a refreshed source and corpus freeze; the census is complete, continuation behavior is unimplemented. |
+| [Flex and grid, Row 18](2026-08-25_livery_flex_shorthand_plan.md#row-18-closure-and-remaining-work) | Bounded vertical-flex slices landed. Remaining work includes mixed-writing-mode baselines, generated/pseudo self edges, shared font metrics and percentage provenance, then a measured grid inventory. |
+| [Floats and shapes, Row 12](../docs/2026-08-25_buckram_horizontal_float_direction_reconciliation.md) | Horizontal box-shape and direction slices landed. Vertical/orthogonal transforms and remaining shape families retain their own unproved boundaries. |
+| [Counters, lists and generated content, Row 17](../docs/2026-08-21_buckram_livery_lane_program_plan.md#wave-2-now-unblocked) | Open inventory. Name the computed-content, counter-scope and marker-box consumers and a bounded execution gate before implementation. |
+| [K7 foundational sizing and dispatch](../docs/2026-07-26_buckram_css_layout_engine_plan.md#k7-foundational-sizing-and-dispatch-closure) | Reconcile landed sizing fixes with remaining deferrals before choosing a slice. Fragmentainer-dependent work consumes K6; final closure includes deleting CSS-facing Taffy block dispatch. |
+| [WPT harness and ledger](../docs/2026-08-24_wpt_harness_ledger_execution_plan.md) | Exact scorer and reference-verification gates landed. Freeze a fresh candidate runner for new work; unsupported test/reference agreement earns no conformance credit. |
+| [Host contract ownership](../docs/2026-08-14_web_platform_host_contract_plan.md) | Genet owns retained session contracts; Mere owns surface orchestration and product adapters. The older S0-S5 receipts need a consumer-side status refresh before resuming those lanes. |
+
+The [Buckram master](../docs/2026-07-26_buckram_css_layout_engine_plan.md)
+defines ownership and the [lane program](../docs/2026-08-21_buckram_livery_lane_program_plan.md)
+assigns residuals. The linked execution plans carry their current gate; a
+completed corpus census or bounded slice does not close its enclosing feature.
+
 ## ortet — the raw host
 
 - [ortet_founding_plan](2026-09-03_ortet_founding_plan.md) (**O0, O1 and O4
-  landed 2026-09-03; O2 accessibility and O3 web target open**: the one headed port that proves the
+  landed 2026-09-03, publication pending; O2 accessibility and O3 web target
+  open**: the one headed port that proves the
   engine runs without Mere, over `genet-winit-host`, `genet-render-host`,
   `genet-documents`' Livery lane and `document-session-api`, with a cone
   witness that forbids every Mere crate and a self-driven frame receipt.
-  Takes Pelt's place when Pelt moves to mere under the boundary plan.)
+  Replaced Pelt as Genet's default host when Pelt moved to Mere.)
 
 ## fleece — reader extraction
 
@@ -52,14 +77,11 @@ repatriated here from mere.
 ## layout and styling
 
 - [common_script_font_fallback_plan](2026-09-04_common_script_font_fallback_plan.md)
-  (**scope, 2026-09-04**: on Windows and macOS the stack never successfully
-  consults font fallback for any Common-script codepoint — arrows, geometric
-  shapes, box drawing, dingbats, punctuation above Latin-1 — because fontique
-  keys fallback on a per-script *sample string* and has no sample for Common,
-  so `fallback()` returns `None` by construction. Verified link by link in
-  parley and fontique source. T0 a failing instrument, T1 a stack-side repair,
-  T2 the codepoint-aware upstream fix both platform APIs already support,
-  T3 whether Linux shares it.)
+  (**diagnosis corrected 2026-09-05**: Parley assigns Common characters to
+  the surrounding script, defaulting to Latin, before querying Fontique.
+  The missing Common sample does not establish the reported tofu's cause.
+  T0 traces effective script, candidate faces and glyph coverage; repairs and
+  platform claims follow the measured result.)
 
 - [livery_flex_shorthand_plan](2026-08-25_livery_flex_shorthand_plan.md)
   (**complete flex-shorthand slice; Row 18 remains in progress**: Livery now
@@ -89,14 +111,11 @@ repatriated here from mere.
 ## codebase structure
 
 - [orchestrator_decomposition_plan](2026-08-28_orchestrator_decomposition_plan.md)
-  (**complete 2026-08-29, all seven phases landed**: the measured inventory of
-  first-party files over 600 lines, and the order the large orchestrators came
-  apart in. Pelt's `workspace_viewer.rs` went 10,066 → 3,217 lines (3,960 by
-  2026-09-01, grown by the accessibility work since), `genet-livery/layout.rs`
-  15,382 → 6,165, `buckram/taffy_adapter.rs` 7,014 → 1,223, all as pure code
-  motion. Records two constraints any later phase inherits: module privacy runs
-  parent-to-child only, so relocating shared types forces a visibility rewrite;
-  and moved inherent methods must have their original scope named explicitly.)
+  (**seven extraction phases complete 2026-08-29; follow-through recorded
+  through 2026-09-02**: the original phases preserved behavior. Later entries
+  separately record the layout transaction split, sizing repairs and their
+  bounded receipts. The two-builder assessment recommends factoring shared
+  table helpers if pursued. Pelt's code now lives in Mere.)
 
 ## archive_docs/ — completed plans
 
@@ -134,6 +153,18 @@ same session; links out of it are rewritten for its new depth.
   Web Annotation Protocol; JSON-LD syntax harvesting is not JSON-LD processing;
   raw URL attributes are not resolved links. Keep these boundaries visible in
   public types and receipts.
+- **Trace the values the consumer actually receives.** Input normalization,
+  script itemization and host projection can change the value under review.
+  A diagnostic records that effective value and the selected implementation;
+  an initially passing control is evidence to interpret, not a faulty test by
+  definition.
+- **Keep current gates synchronized after integration.** Update the parent,
+  execution plan and this work map together. Preserve old receipts with their
+  dates and source identities. When a dependency move retires a positive
+  control, replace its exercised path or explicitly reopen that proof.
+- **Freeze dependency resolution with a measured runner.** `Cargo.lock` is
+  intentionally ignored here. Retain the generated lockfile, its digest,
+  target/features and local-override facts with the source and binary receipt.
 - **Parallel work needs commit fences as well as file fences.** Pin one base,
   give each worker a disposable detached worktree and disjoint write paths,
   inspect staged paths before committing, and remove the worktree immediately
@@ -141,7 +172,8 @@ same session; links out of it are rewritten for its new depth.
 
 ## Status
 
-Founded 2026-08-24; audited against the tree 2026-09-02. The active index
-covers four flat plans plus seven documents in three area roots, with two
-completed plans in `archive_docs/`. The engine corpus in `docs/` is not indexed here
-and is not governed by the policy yet.
+Founded 2026-08-24; current work map reconciled 2026-09-05. The index covers
+five flat plans and two archived plans. All three former component area roots
+now live in Mere. The older `docs/` corpus has selected execution entry points
+above; its full migration and governance remain deferred under the policy's
+local addendum.

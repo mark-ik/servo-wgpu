@@ -1741,7 +1741,8 @@ Execute K7 in this order:
 1. Continue replaced-content sizing and aspect-ratio transfer from the current
    receipts: block and grid border-box sizing and inline replaced roots are
    closed in the [orchestrator decomposition findings](../design_docs/2026-08-28_orchestrator_decomposition_plan.md)
-   (`9df392f42d8`, `0730e020c67`); percentage min/max constraints on replaced
+   (`72dc32cbf3e` for border-box sizing and `afc09d06ea4` for inline roots);
+   percentage min/max constraints on replaced
    elements remain with Taffy's indefinite-size clamp until an explicit
    receipt closes that boundary. Extend the proven subset across normal flow,
    atomic inline boxes, flex/grid integration, and intrinsic queries.
@@ -1769,12 +1770,12 @@ The F4 replacement comparison was superseded by the fork-deletion ruling; it is
 historical evidence, not a parity bar reported as passed. F5 deletion is
 complete: the fork-deletion lane removed the Stylo/genet-layout cone on
 2026-08-21. The remaining F6 `servo-*` package retirement and foundational
- K-stage work continue under their own receipts.
+K-stage work continue under their own receipts.
 
 - F5 did not delete Taffy. Buckram owns that dependency and its fork ledger.
-- K4 through K7 remain the active standards-ownership milestones. F4 and F5
-  are closed compatibility and retirement history; their receipts do not close
-  K7's standards gaps.
+- K4 through K7 define standards-owned models; K4 is closed. The superseded
+  F4 comparison and completed F5 deletion do not close K6 or K7's standards
+  gaps.
 - Historical differential results remain an interoperability ledger, never a
   source of browser semantics. Any lifted behavior must be re-expressed
   through Buckram's box and fragment contracts.

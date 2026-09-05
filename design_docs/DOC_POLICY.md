@@ -140,8 +140,10 @@ here rather than left to be discovered:
 | `docs/` | ~166 dated notes, plans, audits and studies on the engine itself — layout, styling, scripting, WPT conformance, the servo-stack lift | **not yet** |
 
 The boundary is **date and governance, not subject matter**. `docs/` is the
-older flat corpus; it predates any policy here, has no `DOC_README.md`, and is
-unindexed. `design_docs/` is the policy-governed tree.
+older flat corpus; it predates any policy here and has no separate index.
+Since 2026-09-05, `design_docs/DOC_README.md` links selected current execution
+entry points there; it does not inventory the whole corpus or bring it under
+this policy. `design_docs/` is the policy-governed tree.
 
 **New documents go in `design_docs/`.** Do not add to `docs/` — that only
 deepens the split.
@@ -157,9 +159,9 @@ end state and it is genuinely expensive: 166 files, plus **53 references to
 (counts re-taken 2026-09-02; they were 163, 49 and 32 at founding),
 each of which would need repair under core §5. It was deferred rather than
 attempted because doing it badly is worse than the current split. Until it
-happens, core §6's "sole canonical index" claim is true of `design_docs/` and
-silent about `docs/`, which is an honest description of the state rather than
-a loophole.
+happens, core §6's "sole canonical index" claim covers `design_docs/`.
+The selected `docs/` entry points are a navigation aid, not a claim that its
+166-file inventory or migration is complete.
 
 ### Area roots
 

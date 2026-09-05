@@ -10,8 +10,9 @@ row remains in progress. Row 18's flex shorthand, bounded CSSOM, distinct
 flex-basis specified/computed model, generic declaration reflection, and
 physical main-axis, alignment, and gap projection slices are complete, as are
 the flex-basis content used-value and automatic-minimum-size slices. Row 18
-remains in progress for the remaining vertical-flex work, shared `ex` and
-zero-percentage provenance, and grid.
+remains in progress for mixed-writing-mode baselines, generated/pseudo
+self-edge projection, shared `ex` metrics, authored zero-percentage provenance,
+and grid.
 Wave 2 is unblocked. Every other row remains an inventory item until its
 current-main receipt is named below.
 
@@ -44,6 +45,12 @@ in [their recovery plan](2026-08-23_buckram_anonymous_table_recovery_plan.md).
 - **Runner identity.** Build the release `genet-wpt` runner from the candidate,
   copy it into the external ledger, and record its commit and SHA-256. A shared
   `target/release/genet-wpt.exe` is not a frozen receipt.
+- **Dependency identity (2026-09-05).** `Cargo.lock` is ignored in this
+  repository. Preserve the generated lockfile and its SHA-256 alongside each
+  frozen runner, plus its target, features and any local Cargo overrides.
+  Generate resolution in the isolated lane, then verify it with `--locked`;
+  a source commit alone does not freeze the dependency graph. Leave the
+  shared checkout's local lockfile and sibling overrides untouched.
 - **Measuring.** Keep ledgers under `testing/genet/wpt-ledger/<dated-lane>/`.
   Run the lane directories before and after from frozen runners. Any
   unexplained pass-to-fail result stops the lane.

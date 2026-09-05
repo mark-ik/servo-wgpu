@@ -2,8 +2,8 @@
 
 **Date:** 2026-08-25
 
-**Status:** In progress, reconciled 2026-09-05. The `flex` and `flex-flow` cascade, bounded
-specified/computed CSSOM, distinct `flex-basis` specified/computed modeling,
+**Status:** In progress, reconciled 2026-09-05. The `flex` and `flex-flow`
+cascade, bounded specified/computed CSSOM, distinct `flex-basis` modeling,
 generic inline declaration reflection, and physical flex main-axis, alignment,
 and gap projection are complete. The flex-basis content used-value,
 automatic-minimum-size, bounded vertical-flex cross-axis, element-owned
@@ -158,6 +158,20 @@ flex parsing map moves only `flex-shorthand.html` and
 `flex-flow-shorthand.html`, with zero loss.
 
 ## Findings
+
+### 2026-09-05
+
+- The September 1/2 decomposition receipts moved tagged `calc()` length
+  handling through `flex_basis`, `length_percentage`, and
+  `length_percentage_auto` in `9df392f42d8`. The remaining Row 18
+  zero-percentage item concerns authored-syntax provenance, separate from the
+  repaired premature-resolution path. See the
+  [decomposition follow-through](2026-08-28_orchestrator_decomposition_plan.md#outcome).
+- The same follow-through records measured block/grid border-box sizing
+  (`72dc32cbf3e`) and inline replaced-root sizing (`afc09d06ea4`). Percentage
+  min/max constraints on replaced elements remain an explicit K7 boundary.
+  These receipts update the work inventory; this reconciliation does not
+  claim a fresh full-suite or WPT run.
 
 ### 2026-08-25
 
@@ -339,8 +353,8 @@ target WPTs pass twice beside writing-mode 002/003/005/006. The exact receipt
 is under `testing/genet/wpt-ledger/2026-08-28_flex_vertical_auto_block`.
 Mixed-writing-mode baseline alignment and generated or pseudo inherited
 self-edge projection remain open; this is not general vertical-flex
-completion. Shared `ex` and zero-percentage provenance remains a separate
-value-resolution seam, followed by grid auto tracks and template areas.
+completion. Shared `ex` metrics and zero-percentage provenance remain separate
+value-resolution work, followed by grid auto tracks and template areas.
 
 The `flex-basis: content` slice is complete: `content` bypasses the preferred
 main-size fallback while `auto` retains it; the row and column content queries
@@ -377,27 +391,7 @@ consumer resolution is clean.
 - Inventory and implement the remaining grid surface, including auto tracks
   and template areas, under its own current-main receipt.
 
-## Findings
-
-### 2026-09-05
-
-- The Sept 1/2 decomposition receipts moved tagged `calc()` length handling
-  through `flex_basis`, `length_percentage`, and `length_percentage_auto`; the
-  remaining Row 18 zero-percentage item is authored-syntax provenance and must
-  stay separate from that repaired premature-resolution path. See the
-  [orchestrator decomposition findings](2026-08-28_orchestrator_decomposition_plan.md)
-  and commits `9df392f42d8` and `0730e020c67`.
-- The same findings close the measured block/grid border-box and inline
-  replaced sizing defects. They do not close percentage min/max constraints on
-  replaced elements, which remain an explicit K7 boundary.
-
 ## Progress
-
-### 2026-09-05
-
-- Reconciled Row 18's present frontier against the 2026-09-01/02 decomposition
-  receipts and separated shared `ex` metrics from zero-percentage authored
-  syntax provenance.
 
 ### 2026-08-25
 
@@ -521,3 +515,10 @@ consumer resolution is clean.
   `E833A632E9F2CD590DE5B4D983A7EAC923E155814749BDBE662BE8C76A7F3D6D`.
   Both target auto-width WPTs pass twice with byte-identical maps, and
   writing-mode 002/003/005/006 remain 4 / 4 green under the exact policy.
+
+### 2026-09-05
+
+- Reconciled Row 18's present frontier against the September 1/2
+  decomposition receipts and separated shared `ex` metrics from
+  zero-percentage authored-syntax provenance. Historical native/WPT counts
+  above remain attached to their original source and date.

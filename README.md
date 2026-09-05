@@ -7,7 +7,7 @@ reference material rather than a runtime dependency.
 
 <p align="center">
   <img src="assets/screenshots/pelt-tiles.png" alt="Pelt tiling the merelyllc.com home page beside the Floodgap Gopher menu, with a Gemini capsule in a second tab, under a single-row chrome with its own window controls" width="900"><br>
-  <sub>Pelt, genet's reference browser: a live web page, a Gopher menu, and a Gemini capsule tiled in one workspace under its own client-side-decorated chrome.</sub>
+  <sub>Pelt, now hosted in Mere, demonstrating the stack: a live web page, a Gopher menu, and a Gemini capsule tiled in one workspace.</sub>
 </p>
 
 | | |
@@ -15,9 +15,10 @@ reference material rather than a runtime dependency.
 | <img src="assets/screenshots/pelt-gemini.png" alt="A Gemini capsule rendered as a native typographic document inside the Pelt workspace"> | <img src="assets/screenshots/pelt-scripted.png" alt="The scripted profile running a page whose DOM is rebuilt live by JavaScript, the engine control reading Scripted"> |
 | <sub>The smolweb lane: a Gemini capsule as a native document.</sub> | <sub>The scripted profile: a live DOM driven through script-runtime-api.</sub> |
 
-## Status (2026-08-22)
+## Status (2026-09-05)
 
-Active prototype. A development monorepo of ~50 crates, all `publish = false`.
+Active prototype. The workspace contains the engine, shared engine contracts,
+conformance harnesses and the Ortet host. Publication is set per package.
 
 - Livery/Buckram is the sole HTML style and layout route. It owns retained
   layout, hit testing, nested scrolling, selection, resources, and scene
@@ -25,10 +26,12 @@ Active prototype. A development monorepo of ~50 crates, all `publish = false`.
 - Scripting is an engine-neutral seam with three working backends: Nova
   (primary native), Boa (pure Rust, wasm and conformance oracle), and Piccolo
   (Lua).
-- Pelt currently proves the static and scripted Livery routes in a headed
-  single-document adapter. Its next lane rebuilds the embeddable, tiled,
-  tiered reference host around those engines; see
-  `docs/2026-08-22_pelt_host_reconstruction_execution_plan.md`.
+- Ortet proves the script-free Livery route through a minimal desktop host
+  with frame capture and driven navigation receipts. Accessibility integration
+  and the raw web target remain open in its
+  [founding plan](design_docs/2026-09-03_ortet_founding_plan.md).
+- Pelt's tiled reference browser and static/scripted adapters now live in
+  Mere, alongside the other application components.
 - The Cambium family — the reactive UI toolkit and the shared desktop host
   (`cambium-genet-winit-host`) that sibling apps build on — moved to the mere
   repository on 2026-09-03, with Workbench and `mere-surface-api`, under the
@@ -38,8 +41,10 @@ Active prototype. A development monorepo of ~50 crates, all `publish = false`.
   the turnstone, isometry, woodshed, and hocket apps. Rendering lowers into
   the sibling [netrender](https://github.com/merely-made/netrender) repo.
 
-Current state and plans are tracked in `docs/`, named by date; the most recent
-docs are authoritative.
+Start with the [documentation index](design_docs/DOC_README.md#current-engine-work-2026-09-05)
+for current work and its next proof. New plans live in `design_docs/`; selected
+engine execution plans remain in the older `docs/` corpus. Dated historical
+receipts retain their original source and scope.
 
 ## Use
 
