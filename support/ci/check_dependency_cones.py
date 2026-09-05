@@ -144,9 +144,7 @@ def assert_ports_depend_inward(metadata: dict) -> None:
 # unprefixed publishable members of Mere's workspace on 2026-09-02; prefixed
 # families are matched by prefix. Extend it when Mere publishes a new family.
 MERE_GIT_SOURCE = re.compile(r"merely-made/mere(?:\.git)?(?:[?#/]|$)")
-MERE_CRATE_PREFIXES = (
-    "mere-", "graphshell", "sceno", "register-", "cambium", "pelt",
-)
+MERE_CRATE_PREFIXES = ("mere-", "graphshell", "sceno", "register-")
 MERE_CRATES = {
     "mere", "scenograph", "armillary", "chartulary", "codicil", "muniment",
     "scholia", "tulpa", "personae", "dramatis", "gaz", "gazette", "servitor",
@@ -163,9 +161,27 @@ MERE_CRATES = {
     "mere-surface-api",
 }
 
+# Names and families moved to Mere by the 2026-09-03 platform-boundary
+# landing. This is shared by the registry-source and Ortet-cone witnesses so
+# the two guards cannot drift. The older MERE_CRATES/MERE_CRATE_PREFIXES above
+# remain the pre-existing global Mere catalog.
+MOVED_TO_MERE_NAMES = frozenset({
+    "pelt", "pelt-core", "pelt-desktop", "tabard", "knot-editor-host",
+    "cambium", "cambium-rootstock", "cambium-winit", "cambium-winit-a11y",
+    "cambium-genet-winit-host", "cambium-genet-web-host", "cambium-nematic",
+    "meristem", "sprigging", "workbench", "mere-surface-api", "inker",
+    "document-canvas", "scrying-engine", "graft-engine", "weld-engine",
+    "verso-tile", "nematic", "illume", "errand", "tinct",
+})
+MOVED_TO_MERE_PREFIXES = ("cambium", "pelt")
+
 
 def is_mere_crate(name: str) -> bool:
-    return name in MERE_CRATES or name.startswith(MERE_CRATE_PREFIXES)
+    return (
+        name in MERE_CRATES
+        or name in MOVED_TO_MERE_NAMES
+        or name.startswith(MERE_CRATE_PREFIXES + MOVED_TO_MERE_PREFIXES)
+    )
 
 
 def cargo_metadata_resolved() -> dict:
@@ -248,15 +264,6 @@ def self_test_mere_witness() -> None:
             or not any("registry" in f for f in found) or not any("repository" in f for f in found) \
             or not any("checkout" in f for f in found):
         fail(f"mere witness self-test expected moved registry families plus git/path routes, got {found}")
-    legacy_prefixes = ("mere-", "graphshell", "sceno", "register-")
-    legacy_names = {"sceno"}
-    missed_by_old_rule = sorted(
-        name for name in moved_registry_names
-        if name not in legacy_names and not name.startswith(legacy_prefixes)
-    )
-    if missed_by_old_rule != sorted(moved_registry_names):
-        fail(f"registry regression control did not reproduce the old misses: {missed_by_old_rule}")
-
     clean_names = {"fleece", "document-session-api", "netrender"}
     clean = {"packages": [
         {"name": name, "version": "0.1.0", "source": registry,
@@ -341,15 +348,8 @@ def assert_host_api_cone(metadata: dict) -> None:
 # the list: it is a set of names the cone may not reach, not a set of workspace
 # members, so keeping them fails loudly if any of them ever arrives back from
 # mere as a git or registry source.
-ORTET_FORBIDDEN = {
-    "inker", "workbench", "nematic", "errand", "document-canvas",
-    "tabard", "knot-editor-host",
-    # Unprefixed members of the moved Cambium family.
-    "meristem", "sprigging",
-    # the rest of the engine-management layer, moved by P3 on 2026-09-03
-    "scrying-engine", "graft-engine", "weld-engine", "illume", "tinct", "verso-tile",
-}
-ORTET_FORBIDDEN_PREFIXES = ("cambium", "mere-", "pelt")
+ORTET_FORBIDDEN = MOVED_TO_MERE_NAMES
+ORTET_FORBIDDEN_PREFIXES = ("mere-",) + MOVED_TO_MERE_PREFIXES
 # `fleece` is named by the founding plan's forbidden list, but section 9.1 of
 # the boundary plan reclasses it *independent* -- "it may stay in genet as a
 # lower library or leave for its own repository, but it does not go to Mere" --
@@ -362,7 +362,7 @@ ORTET_RECLASSED = {"fleece"}
 
 
 def is_ortet_forbidden(name: str) -> bool:
-    return name in ORTET_FORBIDDEN or name.startswith(ORTET_FORBIDDEN_PREFIXES)
+    return name in MOVED_TO_MERE_NAMES or name.startswith(ORTET_FORBIDDEN_PREFIXES)
 
 
 def resolved_cone(metadata: dict, package: str) -> set[str]:

@@ -264,6 +264,14 @@ graph control.
   UA sheet blockifies `header` (and `nav`, `figure`, `figcaption`), since an
   inline `header` would explain both the wide lines and the border.
 
+- 2026-09-05 (source-only follow-up): `components/genet-livery/src/lib.rs`
+  `CAMBIUM_UA_DEFAULTS` already blockifies `header` and `nav` (around line
+  120), so that part of the hypothesis is excluded. The UA defaults omit
+  `figure` and `figcaption`; floated `figure` blockification and the effective
+  `figcaption` display still need runtime probes. The header-width observation
+  remains unresolved, and this source check does not establish the earlier
+  overlap observation's root cause.
+
 - 2026-09-05: the cone witness used package names as traversal identities.
   Cargo permits multiple package IDs with one name, and either version can have
   different dependencies, so the old walk could omit a forbidden outgoing path.
@@ -289,9 +297,15 @@ graph control.
   `sprigging`), Workbench, `mere-surface-api`, and the engine-management names
   already listed in the witness. The registry predicate now names the
   unprefixed members and uses only the moved `cambium` and `pelt` prefixes.
-  `inker`, `document-session-api`, `fleece`, and `netrender` retain their
-  documented engine or independent classifications; the synthetic negative
-  control keeps them accepted.
+  `document-session-api`, `fleece`, and `netrender` retain their documented
+  engine or independent classifications; the synthetic negative control keeps
+  them accepted. `inker` is among the newly forbidden moved names.
+
+- 2026-09-05: loading the pre-change classifier from `HEAD~1` and feeding it
+  explicit registry fixtures for `inker`, `cambium`, `workbench`, `nematic`,
+  `sprigging`, `meristem`, and `pelt-desktop` returned an empty result. The
+  updated classifier catches all seven; this is a separate regression receipt,
+  rather than a self-test that reimplements the old rule.
 
 ## Progress
 
@@ -436,11 +450,15 @@ graph control.
   resolved-cone synthetic controls: exact and prefix forbidden paths found;
   same-name package ids both traversed; dev/build edges excluded; allowed graph clean
   ortet cone: 600 packages, none forbidden; historical live positive control: none
-  (retired with P3); predicate control: forbids all 13 exact names, forbids
+  (retired with P3); historical predicate control: forbids all 13 exact names,
+  while the current guard has 15; forbids
   cambium-/mere-/pelt-anything, admits genet-livery
   dependency-cone witnesses passed
   ```
 
+  The 600-package result is the refreshed sparse-review metadata witness,
+  compared with the prior 597-package artifact; the three newly visible
+  allowed names are `chacha20`, `jni-sys-macros`, and `objc2-core-video`.
   This verifies the witness from the sparse review checkout, which lacks the
   primary checkout's local `.cargo/config` overrides. It is a graph receipt,
   not a frozen-WPT or headed-host receipt.
@@ -454,5 +472,5 @@ graph control.
   `Code/scratch/genet-plan-review-20260905/cone-regression.json`; the ignored
   generated `Cargo.lock` SHA-256 is
   `95C994BF5F2D12348F0B19394692537B087B1F6200DB6BFA8DB14232B012D538`.
-  The primary local-override graph remains unverified because locked metadata
-  cannot currently pass there; no shared primary run was attempted.
+  No unlocked primary resolution was run; locked primary resolution was
+  blocked by the local override graph and failed read-only.
