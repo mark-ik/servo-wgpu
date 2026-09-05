@@ -301,7 +301,7 @@ graph control.
   engine or independent classifications; the synthetic negative control keeps
   them accepted. `inker` is among the newly forbidden moved names.
 
-- 2026-09-05: loading the pre-change classifier from `HEAD~1` and feeding it
+- 2026-09-05: loading the pre-change classifier from `e78eaa86a4d` and feeding it
   explicit registry fixtures for `inker`, `cambium`, `workbench`, `nematic`,
   `sprigging`, `meristem`, and `pelt-desktop` returned an empty result. The
   updated classifier catches all seven; this is a separate regression receipt,
@@ -450,13 +450,13 @@ graph control.
   resolved-cone synthetic controls: exact and prefix forbidden paths found;
   same-name package ids both traversed; dev/build edges excluded; allowed graph clean
   ortet cone: 600 packages, none forbidden; historical live positive control: none
-  (retired with P3); historical predicate control: forbids all 13 exact names,
-  while the current guard has 15; forbids
+  (retired with P3); predicate control: forbids all 26 exact names, forbids
   cambium-/mere-/pelt-anything, admits genet-livery
   dependency-cone witnesses passed
   ```
 
-  The 600-package result is the refreshed sparse-review metadata witness,
+  The final check at source `dccb680f94f` produced the output above. The
+  600-package result is the refreshed sparse-review metadata witness,
   compared with the prior 597-package artifact; the three newly visible
   allowed names are `chacha20`, `jni-sys-macros`, and `objc2-core-video`.
   This verifies the witness from the sparse review checkout, which lacks the
