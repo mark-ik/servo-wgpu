@@ -153,12 +153,6 @@ MERE_CRATES = {
     "distillery", "djinn", "esp", "graphlets", "incipit", "insigne", "luggage",
     "mien", "nisus", "notochord", "pandect", "pictograph", "platen",
     "stickleback", "titulus", "ux-events", "uxtree", "script-rhai",
-    # Explicitly moved or Mere-published names whose registry packages are
-    # unprefixed. Keep this list to the platform-boundary inventory.
-    "inker", "workbench", "nematic", "meristem", "sprigging",
-    "document-canvas", "scrying-engine", "graft-engine", "weld-engine",
-    "verso-tile", "illume", "errand", "tinct", "tabard", "knot-editor-host",
-    "mere-surface-api",
 }
 
 # Names and families moved to Mere by the 2026-09-03 platform-boundary
@@ -350,19 +344,16 @@ def assert_host_api_cone(metadata: dict) -> None:
 # mere as a git or registry source.
 ORTET_FORBIDDEN = MOVED_TO_MERE_NAMES
 ORTET_FORBIDDEN_PREFIXES = ("mere-",) + MOVED_TO_MERE_PREFIXES
-# `fleece` is named by the founding plan's forbidden list, but section 9.1 of
-# the boundary plan reclasses it *independent* -- "it may stay in genet as a
-# lower library or leave for its own repository, but it does not go to Mere" --
-# and
-# `genet-documents` reaches it unconditionally at `src/engines/clip.rs:114`
-# (`fleece::extract_main_text`). Ortet cannot have the Livery session engine
-# without it. It is carved out here rather than dropped silently, so the
-# exception is visible on every CI run and fails loudly if it ever widens.
+# The founding plan corrected its original classification of `fleece` to
+# independent under boundary-plan section 9.1. The engine's clip lane reaches
+# it legitimately. This set reports that presence; it grants no exception to
+# the forbidden-name check above. The independent registry control separately
+# proves that `fleece` stays outside the shared moved-to-Mere classification.
 ORTET_RECLASSED = {"fleece"}
 
 
 def is_ortet_forbidden(name: str) -> bool:
-    return name in MOVED_TO_MERE_NAMES or name.startswith(ORTET_FORBIDDEN_PREFIXES)
+    return name in ORTET_FORBIDDEN or name.startswith(ORTET_FORBIDDEN_PREFIXES)
 
 
 def resolved_cone(metadata: dict, package: str) -> set[str]:
@@ -510,8 +501,6 @@ def assert_ortet_cone(metadata: dict) -> None:
     # forbidden paths, same-name package ids, and non-normal edges. The
     # predicate assertions below remain a separate guard on the name rule; the
     # live Ortet walk must still reach genet-documents and netrender.
-    reported = {}
-
     # The exact-name and prefix halves of the predicate, asserted directly.
     for forbidden_name in sorted(ORTET_FORBIDDEN):
         if not is_ortet_forbidden(forbidden_name):
@@ -533,10 +522,9 @@ def assert_ortet_cone(metadata: dict) -> None:
             "genet-livery, an engine crate ortet is built on"
         )
 
-    rendered = "; ".join(f"{name} reports {hits}" for name, hits in reported.items())
     print(
         f"ortet cone: {len(cone)} packages, none forbidden; "
-        f"historical live positive control: {rendered or 'none (retired with P3)'}; "
+        "historical live positive control: none (retired with P3); "
         f"predicate control: forbids all {len(ORTET_FORBIDDEN)} exact names, "
         "forbids cambium-/mere-/pelt-anything, admits genet-livery"
     )
