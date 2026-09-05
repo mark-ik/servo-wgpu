@@ -458,10 +458,11 @@ def assert_ortet_cone(metadata: dict) -> None:
     # engine-management layer in P3. No member remains whose cone reaches any
     # forbidden name, so there is no crate left to carry a live walk, and one
     # cannot be invented without reintroducing what the boundary removed.
-    # What is left is the direct assertion on the predicate below: it proves
-    # the rule rather than the walk, which is weaker, and is recorded as such
-    # rather than dressed up. The walk itself is still exercised every run by
-    # the ortet cone above, which must reach genet-documents and netrender.
+    # `self_test_resolved_cone` is the current graph control: it runs this
+    # actual traversal through a Cargo-shaped graph with exact and prefix
+    # forbidden paths, same-name package ids, and non-normal edges. The
+    # predicate assertions below remain a separate guard on the name rule; the
+    # live Ortet walk must still reach genet-documents and netrender.
     reported = {}
 
     # The exact-name and prefix halves of the predicate, asserted directly.
@@ -488,7 +489,7 @@ def assert_ortet_cone(metadata: dict) -> None:
     rendered = "; ".join(f"{name} reports {hits}" for name, hits in reported.items())
     print(
         f"ortet cone: {len(cone)} packages, none forbidden; "
-        f"live positive control: {rendered or 'none (retired with P3)'}; "
+        f"historical live positive control: {rendered or 'none (retired with P3)'}; "
         f"predicate control: forbids all {len(ORTET_FORBIDDEN)} exact names, "
         "forbids cambium-/mere-/pelt-anything, admits genet-livery"
     )

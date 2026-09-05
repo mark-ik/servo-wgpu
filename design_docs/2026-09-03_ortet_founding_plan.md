@@ -62,11 +62,12 @@ when the crate has one worth publishing (naming ledger rule).
   line, Exhibit A, SPDX).
 - `support/ci/check_dependency_cones.py` gains `assert_ortet_cone`: resolve
   ortet's cone from `cargo metadata` and fail on any crate in the forbidden
-  set above. Positive control in the same function: run the same check over
-  `pelt-desktop`'s cone and require that it *does* report `inker`, so the
-  check is proven able to see what it forbids. `assert_ports_depend_inward`
-  keeps its Pelt assertion until Pelt moves and gains the ortet manifest
-  beside it.
+  set above. The current positive control runs the same `resolved_cone`
+  traversal over a synthetic Cargo-shaped graph: intermediate packages reach
+  both an exact forbidden name and a forbidden prefix, two same-named package
+  IDs have distinct outgoing paths, non-normal edges stay excluded, and an
+  allowed graph stays clean. `assert_ports_depend_inward` asserts Ortet's
+  manifest and prevents any component from depending on a port.
 
 **Done when:** `cargo check -p ortet` is green, the witness passes with the
 positive control, and `python support/ci/check_dependency_cones.py` is what
@@ -104,18 +105,23 @@ the fetcher's scheme split) is green; and the O0 witness still passes.
 ### O2. Accessibility
 
 - Wire `AccessKitBridge` the way Pelt's workspace viewer does, over the
-  session's accessibility projection from `document-session-api`, with
-  `A11yActionRequest` routed back into the session.
+  session's accessibility projection from `document-session-api`, with the
+  host correlating raw `A11yActionRequest` values to its published projection
+  mapping before routing them back into the session. The bridge request itself
+  carries only its target, action, and action data.
 - Treat a session replacement as an accessibility identity boundary. The host
   assigns a monotonically increasing session generation and namespaces every
   document-local node ID by that generation before it enters the bridge.
   Reused local IDs in a new document therefore cannot name nodes from the old
   tree.
-- An action drained from the bridge carries the generation, projection
-  revision, target, and action it was advertised with. Before dispatch, the
-  host rejects a generation mismatch; the session then revalidates the current
-  revision, target, and advertised action. Pointer actions use the same current
-  click-target revalidation before they enter ordinary input routing.
+- When the host publishes a tree, it records each bridge-visible target's
+  session generation, document-local target, projection revision, and
+  advertised actions. A drained request must match that published mapping; a
+  request queued under document A must never be correlated with document B's
+  current observation. The host rejects an absent or generation-mismatched
+  mapping; the session then revalidates the current revision, target, and
+  advertised action. Pointer actions use the same current click-target
+  revalidation before they enter ordinary input routing.
 
 **Done when:** the bridge reports a tree whose root carries the article's
 heading; a queued action from document A is rejected after navigation to
@@ -139,9 +145,8 @@ manifest. O3 starts by adding that narrow target without importing the former
 Cambium host.
 
 Ortet's web target is the same `RenderCore` over an `HtmlCanvasElement`, driven
-by DOM events, with no Cambium. Its receipt must come from real Chromium: the
-in-app browser pane never composites canvases, so a screenshot there proves
-nothing (`Code/testing` harness notes).
+by DOM events, with no Cambium. Its receipt must include a real Chromium
+non-blank canvas readback; a screenshot alone is insufficient.
 
 **Done when:** `wasm32-unknown-unknown` builds, the article renders in Chromium
 with a non-blank canvas readback, and the witness holds for the web target's
@@ -155,8 +160,9 @@ keeps ortet's, the boundary plan's ruling 4 records the smaller host as the
 answer, and the naming ledger's claim is made with a real publish if the crate
 is worth one by then.
 
-**Done when:** genet's root `cargo build` builds ortet, the witness has no Pelt
-reference, and the boundary plan and naming ledger both say so.
+**Done when:** genet's root `cargo build` builds ortet, no dependency or
+manifest assertion points at Pelt, and the boundary plan and naming ledger both
+say so. The retained forbidden `pelt` prefix is intentional.
 
 The witness's former live positive control was the one thing Pelt's departure took with it.
 `pelt-desktop`'s cone exercised both halves of `is_ortet_forbidden` at once — an
@@ -405,9 +411,10 @@ graph control.
   current graph-control receipt after the historical Pelt,
   `document-canvas`, and `cambium-genet-winit-host` controls departed with the
   boundary migration. O2's done-condition now names generation-scoped IDs,
-  queued A-to-B rejection, revision/action revalidation, and one live accepted
-  action. O3 now records the landed boundary, retained `RenderCore` canvas
-  seam, and missing Ortet-owned web feature cone.
+  host correlation of raw bridge requests to their published mapping, queued
+  A-to-B rejection, revision/action revalidation, and one live accepted action.
+  O3 now records the landed boundary, retained `RenderCore` canvas seam, and
+  missing Ortet-owned web feature cone.
 
   Receipt from the detached sparse worktree after adding `tests/unit` (the
   workspace's `tests/unit/*` member glob): `python -m py_compile
@@ -417,7 +424,7 @@ graph control.
   ```text
   resolved-cone synthetic controls: exact and prefix forbidden paths found;
   same-name package ids both traversed; dev/build edges excluded; allowed graph clean
-  ortet cone: 600 packages, none forbidden; live positive control: none
+  ortet cone: 600 packages, none forbidden; historical live positive control: none
   (retired with P3); predicate control: forbids all 13 exact names, forbids
   cambium-/mere-/pelt-anything, admits genet-livery
   dependency-cone witnesses passed
