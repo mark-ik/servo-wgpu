@@ -1,9 +1,9 @@
 # Ortet founding plan
 
-**Status:** in progress, 2026-09-03. O0 and O1 landed the same day; O4 landed
-the same day too, except for the crates.io claim, which stays pending. O2 and
-O3 open. The `fleece` carve-out is reconciled with the boundary plan's §9.1
-(see Findings); the witness still names fleece on every run.
+**Status:** in progress, updated 2026-09-05. O0, O1 and O4 landed on
+2026-09-03; the crates.io claim stays pending. O2 and O3 are open. The
+`fleece` carve-out is reconciled with the boundary plan's §9.1 (see Findings);
+the witness still names fleece on every run.
 
 Ortet is the raw genet host: the one headed port that proves the engine runs
 without Mere. The platform boundary plan
@@ -106,16 +106,40 @@ the fetcher's scheme split) is green; and the O0 witness still passes.
 - Wire `AccessKitBridge` the way Pelt's workspace viewer does, over the
   session's accessibility projection from `document-session-api`, with
   `A11yActionRequest` routed back into the session.
+- Treat a session replacement as an accessibility identity boundary. The host
+  assigns a monotonically increasing session generation and namespaces every
+  document-local node ID by that generation before it enters the bridge.
+  Reused local IDs in a new document therefore cannot name nodes from the old
+  tree.
+- An action drained from the bridge carries the generation, projection
+  revision, target, and action it was advertised with. Before dispatch, the
+  host rejects a generation mismatch; the session then revalidates the current
+  revision, target, and advertised action. Pointer actions use the same current
+  click-target revalidation before they enter ordinary input routing.
 
 **Done when:** the bridge reports a tree whose root carries the article's
-heading, and an action request (focus, scroll into view) reaches the session.
+heading; a queued action from document A is rejected after navigation to
+document B even when B reuses A's local node ID; an action whose revision or
+advertised action changed is rejected; and one current focus or scroll action
+is accepted by a live session and visibly changes its projection or scroll
+state.
 
 ### O3. The web target
 
-Deferred until P2 of the boundary plan lands, because the working canvas host
-today is `cambium-genet-web-host`, which is Cambium and moves to mere. Ortet's
-web target is the same `RenderCore` over an `HtmlCanvasElement`, driven by DOM
-events, with no Cambium. Its receipt must come from real Chromium: the
+The boundary plan's P0-P5 landed 2026-09-02 through 2026-09-04, so they are no
+longer a deferral condition. The prior canvas host,
+`cambium-genet-web-host`, now belongs to Mere; its wasm receipt proves that
+Mere adapter, not an Ortet web host. Genet does retain the needed lower seam:
+`genet-render-host::RenderCore::create_surface` documents
+`wgpu::SurfaceTarget::Canvas(HtmlCanvasElement)`, and its manifest has neither
+winit nor AccessKit. The missing feature cone is Ortet-owned: this workspace
+has `ports/ortet` only, its manifest directly selects `genet-winit-host` and
+`winit`, and it contains neither a browser entrypoint nor a wasm-specific
+manifest. O3 starts by adding that narrow target without importing the former
+Cambium host.
+
+Ortet's web target is the same `RenderCore` over an `HtmlCanvasElement`, driven
+by DOM events, with no Cambium. Its receipt must come from real Chromium: the
 in-app browser pane never composites canvases, so a screenshot there proves
 nothing (`Code/testing` harness notes).
 
@@ -134,13 +158,18 @@ is worth one by then.
 **Done when:** genet's root `cargo build` builds ortet, the witness has no Pelt
 reference, and the boundary plan and naming ledger both say so.
 
-The witness's positive control was the one thing Pelt's departure took with it.
+The witness's former live positive control was the one thing Pelt's departure took with it.
 `pelt-desktop`'s cone exercised both halves of `is_ortet_forbidden` at once — an
 exact name (`inker`) and a prefix (`cambium`, `mere-`) — and no single remaining
 member reaches both. Neither `cambium` nor `cambium-genet-winit-host` reaches
-`inker` at all, checked before choosing. So the control splits in two rather
-than weakening: `document-canvas` must report `inker`, `cambium-genet-winit-host`
-must report `cambium`.
+`inker` at all, checked before choosing. Those two controls were retired with
+their crates on 2026-09-03. The current gate uses a synthetic Cargo resolve
+graph that exercises the actual traversal through intermediate packages to an
+exact forbidden name and a forbidden prefix, including two versions of a
+same-named package with distinct outgoing paths. It also proves dev and build
+edges are excluded and retains an allowed graph control. Predicate assertions
+remain a separate guard on the name list; they are not presented as a live
+graph control.
 
 ## Findings
 
@@ -228,6 +257,24 @@ must report `cambium`.
   (`shell.rs` `render`). One thing to check first in the engine: whether the
   UA sheet blockifies `header` (and `nav`, `figure`, `figcaption`), since an
   inline `header` would explain both the wide lines and the border.
+
+- 2026-09-05: the cone witness used package names as traversal identities.
+  Cargo permits multiple package IDs with one name, and either version can have
+  different dependencies, so the old walk could omit a forbidden outgoing path.
+  It now visits package IDs and reports names only after traversal. Its
+  synthetic Cargo-shaped resolve graph has two `relay` versions that separately
+  reach `inker` and `mere-test` through intermediate packages; it also proves
+  dev/build poison is excluded and an allowed `genet-livery` graph stays clean.
+  This replaces the retired `document-canvas` and
+  `cambium-genet-winit-host` live controls. The live Ortet witness still proves
+  its actual normal-edge cone reaches `genet-documents` and `netrender`.
+
+- 2026-09-05: P0-P5 of the platform-boundary plan are landed, so O3 is not
+  waiting on that migration. `genet-render-host` already owns the target-neutral
+  canvas seam, but Ortet has only the native `genet-winit-host` feature cone.
+  The work still missing is a small Ortet browser entrypoint and wasm manifest,
+  plus the Chromium readback receipt; the old Cambium web-host receipt belongs
+  to Mere and cannot close this gate.
 
 ## Progress
 
@@ -347,3 +394,35 @@ must report `cambium`.
   Still pending: the crates.io claim. Ortet's dependencies are `publish =
   false` host crates, so there is nothing publishable yet; the naming ledger
   entry waits on that, not on this commit.
+
+- 2026-09-05: **O0/O4 witness hardening landed.**
+  `support/ci/check_dependency_cones.py` now traverses Cargo resolve package
+  IDs, never package names, and runs a synthetic positive/negative control
+  before it reads the workspace graph. The positive graph reaches both `inker`
+  and `mere-test` through separate versions of `relay`; dev-only
+  `pelt-dev-only` and build-only `cambium-build-only` stay outside the cone.
+  The allowed graph reaches only `safe-middle` and `genet-livery`. This is the
+  current graph-control receipt after the historical Pelt,
+  `document-canvas`, and `cambium-genet-winit-host` controls departed with the
+  boundary migration. O2's done-condition now names generation-scoped IDs,
+  queued A-to-B rejection, revision/action revalidation, and one live accepted
+  action. O3 now records the landed boundary, retained `RenderCore` canvas
+  seam, and missing Ortet-owned web feature cone.
+
+  Receipt from the detached sparse worktree after adding `tests/unit` (the
+  workspace's `tests/unit/*` member glob): `python -m py_compile
+  support/ci/check_dependency_cones.py` passed, then `python
+  support/ci/check_dependency_cones.py` passed with:
+
+  ```text
+  resolved-cone synthetic controls: exact and prefix forbidden paths found;
+  same-name package ids both traversed; dev/build edges excluded; allowed graph clean
+  ortet cone: 600 packages, none forbidden; live positive control: none
+  (retired with P3); predicate control: forbids all 13 exact names, forbids
+  cambium-/mere-/pelt-anything, admits genet-livery
+  dependency-cone witnesses passed
+  ```
+
+  This verifies the witness from the sparse review checkout, which lacks the
+  primary checkout's local `.cargo/config` overrides. It is a graph receipt,
+  not a frozen-WPT or headed-host receipt.

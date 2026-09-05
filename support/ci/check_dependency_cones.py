@@ -330,7 +330,13 @@ def resolved_cone(metadata: dict, package: str) -> set[str]:
     if len(roots) != 1:
         fail(f"expected exactly one {package} package, found {len(roots)}")
 
-    seen: set[str] = set()
+    # Cargo resolves package *ids*, not names.  Two versions of one crate may
+    # have different outgoing edges, so de-duplicating by display name can hide
+    # a forbidden dependency behind whichever version happened to be queued
+    # first.  Keep the traversal identity-based; names are the witness's
+    # reporting vocabulary only.
+    seen_ids: set[str] = {roots[0]}
+    seen_names: set[str] = set()
     queue = [roots[0]]
     while queue:
         current = queue.pop()
@@ -344,11 +350,85 @@ def resolved_cone(metadata: dict, package: str) -> set[str]:
             if not any(entry.get("kind") is None for entry in kinds):
                 continue
             name = name_of.get(dependency["pkg"])
-            if name is None or name in seen:
+            if name is None or dependency["pkg"] in seen_ids:
                 continue
-            seen.add(name)
+            seen_ids.add(dependency["pkg"])
+            seen_names.add(name)
             queue.append(dependency["pkg"])
-    return seen
+    return seen_names
+
+
+def self_test_resolved_cone() -> None:
+    """Exercise the resolve walk with Cargo-shaped package ids and edge kinds."""
+    def package(identifier: str, name: str) -> dict:
+        return {"id": identifier, "name": name}
+
+    def dependency(identifier: str, kind: str | None = None) -> dict:
+        return {"pkg": identifier, "dep_kinds": [{"kind": kind}]}
+
+    # `relay@1` and `relay@2` deliberately share a name.  Each has a distinct
+    # outgoing forbidden path; both must be followed.  The old name-deduping
+    # walk visited only one of them.  Dev/build-only poison must remain absent.
+    positive = {
+        "packages": [
+            package("root 0.1.0", "synthetic-root"),
+            package("relay 1.0.0", "relay"),
+            package("relay 2.0.0", "relay"),
+            package("exact-bridge 0.1.0", "exact-bridge"),
+            package("prefix-bridge 0.1.0", "prefix-bridge"),
+            package("inker 0.1.0", "inker"),
+            package("mere-test 0.1.0", "mere-test"),
+            package("dev-poison 0.1.0", "pelt-dev-only"),
+            package("build-poison 0.1.0", "cambium-build-only"),
+        ],
+        "resolve": {"nodes": [
+            {"id": "root 0.1.0", "deps": [
+                dependency("relay 1.0.0"), dependency("relay 2.0.0"),
+                dependency("dev-poison 0.1.0", "dev"),
+                dependency("build-poison 0.1.0", "build"),
+            ]},
+            {"id": "relay 1.0.0", "deps": [dependency("exact-bridge 0.1.0")]},
+            {"id": "relay 2.0.0", "deps": [dependency("prefix-bridge 0.1.0")]},
+            {"id": "exact-bridge 0.1.0", "deps": [dependency("inker 0.1.0")]},
+            {"id": "prefix-bridge 0.1.0", "deps": [dependency("mere-test 0.1.0")]},
+            {"id": "inker 0.1.0", "deps": []},
+            {"id": "mere-test 0.1.0", "deps": []},
+            {"id": "dev-poison 0.1.0", "deps": []},
+            {"id": "build-poison 0.1.0", "deps": []},
+        ]},
+    }
+    reached = resolved_cone(positive, "synthetic-root")
+    required = {"relay", "exact-bridge", "prefix-bridge", "inker", "mere-test"}
+    if not required <= reached:
+        fail(f"resolved-cone positive control missed {sorted(required - reached)}")
+    forbidden = sorted(name for name in reached if is_ortet_forbidden(name))
+    if forbidden != ["inker", "mere-test"]:
+        fail(f"resolved-cone positive control reported {forbidden}, expected inker and mere-test")
+    ignored = {"pelt-dev-only", "cambium-build-only"}
+    if reached & ignored:
+        fail(f"resolved-cone included non-normal edges {sorted(reached & ignored)}")
+
+    negative = {
+        "packages": [
+            package("safe-root 0.1.0", "safe-root"),
+            package("safe-middle 0.1.0", "safe-middle"),
+            package("genet-livery 0.1.0", "genet-livery"),
+        ],
+        "resolve": {"nodes": [
+            {"id": "safe-root 0.1.0", "deps": [dependency("safe-middle 0.1.0")]},
+            {"id": "safe-middle 0.1.0", "deps": [dependency("genet-livery 0.1.0")]},
+            {"id": "genet-livery 0.1.0", "deps": []},
+        ]},
+    }
+    safe = resolved_cone(negative, "safe-root")
+    if safe != {"safe-middle", "genet-livery"}:
+        fail(f"resolved-cone negative control reached {sorted(safe)}")
+    if any(is_ortet_forbidden(name) for name in safe):
+        fail("resolved-cone negative control reached a forbidden package")
+    print(
+        "resolved-cone synthetic controls: exact and prefix forbidden paths found; "
+        "same-name package ids both traversed; dev/build edges excluded; allowed graph clean"
+    )
 
 
 def assert_ortet_cone(metadata: dict) -> None:
@@ -423,6 +503,7 @@ def assert_ortet_cone(metadata: dict) -> None:
 
 def main() -> None:
     assert_fleece_cone()
+    self_test_resolved_cone()
     metadata = cargo_metadata()
     assert_cargo_metadata_sees_fleece(metadata)
     assert_ports_depend_inward(metadata)
