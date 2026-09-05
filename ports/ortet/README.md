@@ -6,10 +6,10 @@ A genet is a whole clonal colony; an ortet is the original individual it
 descends from. This is the reference individual of the engine: the one headed
 port that proves Genet runs with **no Mere crate in its dependency cone**.
 `support/ci/check_dependency_cones.py` (`assert_ortet_cone`) witnesses that on
-every CI run, with positive controls over `document-canvas` (which must report
-`inker`) and `cambium-genet-winit-host` (which must report `cambium`) so the
-check is proven able to see what it forbids, by exact name and by prefix. (One
-control over `pelt-desktop` did both until Pelt moved to mere on 2026-09-03.)
+every CI run, with synthetic Cargo-shaped positive controls over exact moved
+names and the `cambium`/`pelt` prefixes, plus a clean allowed graph. The old
+live controls over `document-canvas` and `cambium-genet-winit-host` retired
+when those crates moved to Mere on 2026-09-03.
 
 See `design_docs/2026-09-03_ortet_founding_plan.md`.
 

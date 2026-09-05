@@ -1,0 +1,28 @@
+<!doctype html>
+<!-- Copyright 2026 Mark Alan Boykin
+     This Source Code Form is subject to the terms of the Mozilla Public
+     License, v. 2.0. If a copy of the MPL was not distributed with this
+     file, You can obtain one at https://mozilla.org/MPL/2.0/.
+     SPDX-License-Identifier: MPL-2.0 -->
+<html lang="en">
+<meta charset="utf-8">
+<title>Font fallback receipt</title>
+<style>
+@font-face {
+  font-family: missing-symbol-primary;
+  src: url(../../../tests/wpt/tests/fonts/Lato-Medium-Liga.ttf);
+}
+body { margin: 32px; color: #182230; background: #ffffff; font: 18px sans-serif; }
+h1 { font-size: 28px; margin: 0 0 24px; }
+p { margin: 12px 0 4px; }
+.sample { font-family: missing-symbol-primary; font-size: 52px; line-height: 1.3; }
+.explicit { font-family: missing-symbol-primary, "Segoe UI Symbol"; }
+</style>
+<h1>Font fallback</h1>
+<p>Primary lacks both symbols. Platform fallback must supply them.</p>
+<div class="sample">&#x25be; &#x25b8;</div>
+<p>Covered Latin stays in the primary face.</p>
+<div class="sample">f fi st</div>
+<p>Windows control: explicitly named Segoe UI Symbol.</p>
+<div class="sample explicit">&#x25be; &#x25b8;</div>
+</html>

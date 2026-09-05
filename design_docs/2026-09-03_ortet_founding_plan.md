@@ -290,6 +290,26 @@ graph control.
   plus the Chromium readback receipt; the old Cambium web-host receipt belongs
   to Mere and cannot close this gate.
 
+- 2026-09-05: O2's reusable seams already exist in
+  `components/genet-documents/src/engines/livery.rs`: the session publishes a
+  revisioned `DocumentA11yProjection`, returns revision-bound click targets,
+  and rejects stale or unadvertised actions in
+  `dispatch_accessibility_action`. The concrete next O2 slice is host-owned:
+  add `AccessKitBridge` to `ports/ortet/src/shell.rs`, namespace projection
+  node IDs by an Ortet session generation, install/update the bridge from the
+  current projection, and drain requests back through the session's revision
+  and action checks. `genet-winit-host/src/a11y.rs` supplies the platform
+  adapter, but does not supply Ortet's session-generation custody.
+
+- 2026-09-05: O3 has a reusable target-neutral seam in
+  `components/genet-render-host/src/lib.rs::RenderCore::create_surface`,
+  including `wgpu::SurfaceTarget::Canvas`, while `ports/ortet` still has only
+  the native `winit` entrypoint and no wasm target module or manifest. The next
+  O3 slice is a target-gated Ortet web entrypoint that boots
+  `RenderCore::boot_async`, creates the canvas surface, drives the existing
+  session/frame path, and adds a Chromium non-blank readback receipt. The
+  native `SurfaceHost` and AccessKit adapter must stay out of that wasm path.
+
 - 2026-09-05: the registry branch of the global boundary witness had gone
   stale after the 2026-09-03 moves. The Mere workspace inventory and Genet's
   movement comments identify the moved families as Pelt (`pelt`, `pelt-core`,
@@ -483,3 +503,7 @@ graph control.
   this matches the font lane's retained `Cargo.font.lock`. The earlier lock
   remains archived as `Cargo.cone.lock` beside it. Normal Ortet reachability
   and the seven registry regression results are unchanged.
+
+- 2026-09-05: read-only O2/O3 source review identified the host-side
+  accessibility custody and target-gated canvas entrypoint as the next slices;
+  no implementation or runtime receipt was claimed.

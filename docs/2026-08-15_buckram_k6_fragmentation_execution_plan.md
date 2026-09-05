@@ -444,6 +444,33 @@ Freeze absolute and differential results. The absolute ledger names passes,
 failures, skips, errors, and unsupported host capabilities. A positive total
 cannot hide a moved regression.
 
+## Findings
+
+### 2026-09-05
+
+- The next implementation gate is K6a's input slice, followed by the K6b
+  model receipt. The live property catalog already declares `column-count`,
+  `column-width`, `column-span`, and `columns` in
+  `components/livery/properties.toml`, but the Buckram tree still exposes only
+  `FragmentationContextId::INITIAL`, `BreakToken { resume_at: u32 }`, and one
+  static-position record per `BoxId` in `components/buckram/src/fragment_tree.rs`.
+  K6a should first freeze accepted current `main`, runner, and exact corpus,
+  then verify the generated property/cascade path and consumed-set
+  invalidation before adding declarations or geometry credit.
+- The first code slice after that freeze is K6b's typed context/token seam:
+  `fragment_tree.rs` plus a new `components/buckram/src/fragmentation.rs`,
+  with the ordinary block resume boundary in `components/buckram/src/block.rs`.
+  The existing `genet-livery/src/layout.rs` and `layout/query.rs` consumers
+  still expose `get`/`principal_fragment`; they remain a later K6 consumer
+  gate, after a synthetic two-fragment continuation receipt exists.
+
+## Progress
+
+### 2026-09-05
+
+- Read-only source review grounded the K6a → K6b order above. No fragmentation
+  source or WPT behavior was changed or runtime-validated in this review.
+
 ## Gate verification
 
 Use a unique target directory so K5 and parallel WPT work do not contend for
