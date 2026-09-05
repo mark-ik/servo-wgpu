@@ -38,7 +38,7 @@ older `docs/` corpus without changing their location or governance.
 
 | Work | Current boundary and next proof |
 |---|---|
-| [Font fallback](2026-09-04_common_script_font_fallback_plan.md) | Reproduce the missing glyph through the effective Parley script and font selection. Primary-font coverage can legitimately pass; choose a repair from the measured path. |
+| [Font fallback](2026-09-04_common_script_font_fallback_plan.md) | Windows T0 records all candidates rejecting the target under the Latin key, while an authored secondary succeeds. Compare the candidate set with codepoint-aware platform fallback before choosing a repair. |
 | [Ortet](2026-09-03_ortet_founding_plan.md) | Desktop host and default-member migration landed. O2 needs accessibility identity/action receipts across navigation; O3 needs a raw web host and browser readback. Publication remains separate. |
 | [K6 fragmentation](../docs/2026-08-15_buckram_k6_fragmentation_execution_plan.md) | The named K5 prerequisites have accepted receipts. K6a starts with a refreshed source and corpus freeze; the census is complete, continuation behavior is unimplemented. |
 | [Flex and grid, Row 18](2026-08-25_livery_flex_shorthand_plan.md#row-18-closure-and-remaining-work) | Bounded vertical-flex slices landed. Remaining work includes mixed-writing-mode baselines, generated/pseudo self edges, shared font metrics and percentage provenance, then a measured grid inventory. |
@@ -80,8 +80,9 @@ completed corpus census or bounded slice does not close its enclosing feature.
   (**diagnosis corrected 2026-09-05**: Parley assigns Common characters to
   the surrounding script, defaulting to Latin, before querying Fontique.
   The missing Common sample does not establish the reported tofu's cause.
-  T0 traces effective script, candidate faces and glyph coverage; repairs and
-  platform claims follow the measured result.)
+  T0 now records Windows query and paint outcomes with a covering authored-face
+  control. Comparing script-keyed candidates with codepoint-aware platform
+  fallback is the next probe; other platform claims remain open.)
 
 - [livery_flex_shorthand_plan](2026-08-25_livery_flex_shorthand_plan.md)
   (**complete flex-shorthand slice; Row 18 remains in progress**: Livery now
