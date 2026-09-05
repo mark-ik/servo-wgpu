@@ -1,15 +1,14 @@
 # Buckram: a CSS layout engine over reusable algorithms
 
 **Date:** 2026-07-26
-**Status:** in execution, corrected 2026-08-15. K0 through K4 are accepted.
+**Status:** in execution, reconciled 2026-09-05. K0 through K4 are accepted.
 K4 closed at `610df0981a8` when K4h deleted the table compatibility bridge.
-K5 is active on `buckram-k5-positioning`, which integrated current `main` at
-`27c2c87828f`. K5a is complete and K5c is accepted; K5b is partial, while
-K5d through K5h retain open work in their execution plans. K5h already has
-real selected-root replacement and fresh-final equivalence receipts, but its
-remaining private flex/grid static-position provider still blocks closure.
+The K5 positioning, retained-text, grid-static-rectangle, and K5d residual
+chains are closed on accepted main by the 2026-08-24 receipts
+`e8db57141f1`, `7eaaaf724a5`, `67c041d0cda`, and `ed288ef1c3`.
 The [K6 execution plan](2026-08-15_buckram_k6_fragmentation_execution_plan.md)
-is prepared and remains blocked on accepted K5h closure on `main`.
+is prepared and K6a is unblocked from the frozen 2026-08-24 current-main
+baseline.
 **Decision:** Buckram owns CSS box generation, formatting contexts, intrinsic
 sizing, and fragments. Taffy is an algorithm library for flex and grid, with
 block layout retained only as a migration aid.
@@ -1704,8 +1703,8 @@ break-and-resume layout through columns or pages.
 
 The serial implementation and verification gates are fixed in the
 [K6 fragmentation execution plan](2026-08-15_buckram_k6_fragmentation_execution_plan.md).
-No K6 engine or property work begins before accepted K5h closure lands on
-`main`.
+K6a begins from the frozen current-main baseline named in its execution plan;
+the K5 closure receipts above are prerequisites already satisfied on `main`.
 
 Execute K6 in this order:
 
@@ -1737,9 +1736,12 @@ receives its own plan.
 
 Execute K7 in this order:
 
-1. Implement general replaced-content sizing and aspect-ratio transfer across
-   normal flow, atomic inline boxes, flex/grid integration, and intrinsic
-   queries. Reuse the positioned subset proven by K5.
+1. Continue replaced-content sizing and aspect-ratio transfer from the current
+   receipts: block and grid border-box sizing and inline replaced roots are
+   closed on 2026-09-01/02, while percentage min/max constraints on replaced
+   elements remain with Taffy's indefinite-size clamp until an explicit
+   receipt closes that boundary. Extend the proven subset across normal flow,
+   atomic inline boxes, flex/grid integration, and intrinsic queries.
 2. Implement size-containment inputs and outputs without returning a completed
    backend rectangle as an intrinsic contribution.
 3. Resolve nonlinear lengths, percentage and cyclic intrinsic queries, and
@@ -1760,17 +1762,17 @@ principal-fragment geometry, or a backend fallback.
 
 ## Cutover and deletion
 
-- F4 still asks whether Livery can replace Stylo on the selected corpus.
-- F5 may delete `genet-layout`, `stylo_taffy`, and the Stylo family only after
-  the existing cutover receipts pass.
-- F5 does not delete Taffy merely because Stylo is gone. Buckram owns that
-  dependency and its fork ledger.
-- K4 through K7 are standards-ownership milestones. F4 and F5 remain separate
-  compatibility and retirement gates: they may pass before K7 if their own
-  receipts pass, and they do not close K7's standards gaps.
-- `genet-layout` remains an oracle during the differential period, never a
-  source of browser semantics. Lifted code must be re-expressed through
-  Buckram's box and fragment contracts.
+The F4 replacement comparison and F5 Stylo/genet-layout deletion are closed
+historical gates. The completed fork-deletion lane removed the Stylo/genet-layout
+cone on 2026-08-21; the remaining F6 `servo-*` package retirement and the
+foundational K-stage work continue under their own receipts.
+- F5 did not delete Taffy. Buckram owns that dependency and its fork ledger.
+- K4 through K7 remain the active standards-ownership milestones. F4 and F5
+  are closed compatibility and retirement history; their receipts do not close
+  K7's standards gaps.
+- Historical differential results remain an interoperability ledger, never a
+  source of browser semantics. Any lifted behavior must be re-expressed
+  through Buckram's box and fragment contracts.
 - Once fragment consumers have moved, delete `FragmentPlane`,
   `BoxFragmentPlane`, and every old node-to-rect compatibility path.
 

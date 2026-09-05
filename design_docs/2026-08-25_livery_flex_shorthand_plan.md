@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-25
 
-**Status:** In progress. The `flex` and `flex-flow` cascade, bounded
+**Status:** In progress, reconciled 2026-09-05. The `flex` and `flex-flow` cascade, bounded
 specified/computed CSSOM, distinct `flex-basis` specified/computed modeling,
 generic inline declaration reflection, and physical flex main-axis, alignment,
 and gap projection are complete. The flex-basis content used-value,
@@ -339,7 +339,8 @@ target WPTs pass twice beside writing-mode 002/003/005/006. The exact receipt
 is under `testing/genet/wpt-ledger/2026-08-28_flex_vertical_auto_block`.
 Mixed-writing-mode baseline alignment and generated or pseudo inherited
 self-edge projection remain open; this is not general vertical-flex
-completion.
+completion. Shared `ex` and zero-percentage provenance remains a separate
+value-resolution seam, followed by grid auto tracks and template areas.
 
 The `flex-basis: content` slice is complete: `content` bypasses the preferred
 main-size fallback while `auto` retains it; the row and column content queries

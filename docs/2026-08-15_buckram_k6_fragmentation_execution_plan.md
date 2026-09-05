@@ -2,7 +2,8 @@
 
 **Date:** 2026-08-15
 
-**Status:** Planning and the current-main corpus census are complete. Accepted
+**Status:** K6a is unblocked from the frozen 2026-08-24 baseline, reconciled
+2026-09-05. Planning and the current-main corpus census are complete. Accepted
 main now contains the K5 positioning, retained text-frame, grid static-rectangle,
 and K5d residual receipts. K6a may begin from the frozen 2026-08-24 baseline;
 the census itself adds contracts and documentation, not engine behavior.
