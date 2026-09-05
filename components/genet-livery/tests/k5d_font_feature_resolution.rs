@@ -8,6 +8,10 @@ use genet_livery::{Device, LiveryDocument, StyleSet};
 use genet_static_dom::StaticDocument;
 use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
 use paint_list_api::{ColorF, PaintCmd, PaintList};
+#[cfg(windows)]
+use parley::FontDiagnosticCandidateStatus;
+#[cfg(windows)]
+use read_fonts::{FontRef, TableProvider};
 
 fn find(
     dom: &StaticDocument,
@@ -32,6 +36,201 @@ fn glyph_count(frame: &genet_livery::LiveryPaintList, color: ColorF) -> usize {
             _ => None,
         })
         .sum()
+}
+
+#[cfg(windows)]
+fn text_run<'a>(
+    frame: &'a genet_livery::LiveryPaintList,
+    color: ColorF,
+) -> &'a paint_list_api::TextRunItem {
+    let runs = frame
+        .commands()
+        .iter()
+        .filter_map(|command| match command {
+            PaintCmd::DrawText(run) if run.color == color => Some(run),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(runs.len(), 1, "one fixture run for {color:?}");
+    runs[0]
+}
+
+#[cfg(windows)]
+fn segoe_ui_symbol_bytes() -> Vec<u8> {
+    let windows = std::env::var_os("WINDIR")
+        .or_else(|| std::env::var_os("SystemRoot"))
+        .expect("Windows directory is available through WINDIR or SystemRoot");
+    std::fs::read(
+        std::path::PathBuf::from(windows)
+            .join("Fonts")
+            .join("seguisym.ttf"),
+    )
+    .expect("Windows Segoe UI Symbol is the controlled authored secondary face")
+}
+
+/// T0 receipt: an all-Common item reaches Parley with Latin as its effective
+/// fallback script. Lato is an authored primary known to omit U+25BE, while
+/// its Latin control is covered. The Windows-only secondary is loaded as an
+/// authored `@font-face`, so the positive route does not rely on system fallback.
+#[cfg(windows)]
+#[test]
+fn common_script_fallback_diagnostic_records_effective_script_and_selected_faces() {
+    const PRIMARY: &[u8] = include_bytes!("../../../tests/wpt/tests/fonts/Lato-Medium-Liga.ttf");
+    let secondary = segoe_ui_symbol_bytes();
+    const TARGET: char = '\u{25be}';
+    const CONTROL: char = 'f';
+    let primary = FontRef::new(PRIMARY).expect("Lato fixture parses");
+    let primary_charmap = primary.cmap().expect("Lato fixture has a charmap");
+    assert_eq!(
+        primary_charmap
+            .map_codepoint(TARGET)
+            .map(|glyph| glyph.to_u32())
+            .unwrap_or(0),
+        0,
+        "the controlled primary must omit the Common target"
+    );
+    assert_ne!(
+        primary_charmap
+            .map_codepoint(CONTROL)
+            .map(|glyph| glyph.to_u32())
+            .unwrap_or(0),
+        0,
+        "the controlled primary must cover the Latin control"
+    );
+    let secondary_font = FontRef::new(&secondary).expect("secondary fixture parses");
+    assert_ne!(
+        secondary_font
+            .cmap()
+            .expect("secondary fixture has a charmap")
+            .map_codepoint(TARGET)
+            .map(|glyph| glyph.to_u32())
+            .unwrap_or(0),
+        0,
+        "the controlled second authored face must cover the Common target"
+    );
+
+    let negative_css = "@font-face { font-family: t0-primary; src: url(/fonts/Lato-Medium-Liga.ttf); } \
+                        #target, #control { display: block; font-family: t0-primary; font-size: 32px; } \
+                        #target { color: #010101; } #control { color: #020202; }";
+    let mut negative_session = LiveryDocument::new(
+        StaticDocument::parse(
+            "<html><body><span id=target>&#x25be;</span><span id=control>f</span></body></html>",
+        ),
+        StyleSet::cambium(&[negative_css]),
+        Device::screen(320.0, 160.0),
+    );
+    negative_session.set_font_resource("/fonts/Lato-Medium-Liga.ttf", PRIMARY.to_vec());
+    let negative_capture = parley::begin_font_diagnostic_capture();
+    let negative_frame = negative_session.frame(320, 160).expect("T0 negative frame");
+    let negative_target_glyphs = text_run(
+        &negative_frame,
+        ColorF::new(1.0 / 255.0, 1.0 / 255.0, 1.0 / 255.0, 1.0),
+    )
+    .glyphs
+    .iter()
+    .map(|glyph| glyph.index)
+    .collect::<Vec<_>>();
+    let negative_events = negative_capture.take();
+    let negative_target_event = negative_events
+        .iter()
+        .find(|event| event.cluster == TARGET.to_string())
+        .expect("the primary-missing target reaches the actual query");
+    assert_eq!(negative_target_event.fallback_script, *b"Latn");
+
+    let css = "@font-face { font-family: t0-primary; src: url(/fonts/Lato-Medium-Liga.ttf); } \
+               @font-face { font-family: t0-secondary; src: url(/fonts/seguisym.ttf); } \
+               #target, #control { display: block; font-family: t0-primary, t0-secondary; font-size: 32px; } \
+               #target { color: #010101; } #control { color: #020202; }";
+    let mut session = LiveryDocument::new(
+        StaticDocument::parse(
+            "<html><body><span id=target>&#x25be;</span><span id=control>f</span></body></html>",
+        ),
+        StyleSet::cambium(&[css]),
+        Device::screen(320.0, 160.0),
+    );
+    session.set_font_resource("/fonts/Lato-Medium-Liga.ttf", PRIMARY.to_vec());
+    session.set_font_resource("/fonts/seguisym.ttf", secondary.clone());
+    let capture = parley::begin_font_diagnostic_capture();
+    let frame = session.frame(320, 160).expect("T0 frame");
+    let target = text_run(
+        &frame,
+        ColorF::new(1.0 / 255.0, 1.0 / 255.0, 1.0 / 255.0, 1.0),
+    );
+    let control = text_run(
+        &frame,
+        ColorF::new(2.0 / 255.0, 2.0 / 255.0, 2.0 / 255.0, 1.0),
+    );
+    let target_glyphs = target
+        .glyphs
+        .iter()
+        .map(|glyph| glyph.index)
+        .collect::<Vec<_>>();
+    let control_glyphs = control
+        .glyphs
+        .iter()
+        .map(|glyph| glyph.index)
+        .collect::<Vec<_>>();
+    assert!(!target_glyphs.is_empty(), "target reaches the paint path");
+    assert!(
+        target_glyphs.iter().all(|glyph| *glyph != 0),
+        "authored secondary paints the target"
+    );
+    assert!(
+        !control_glyphs.is_empty(),
+        "Latin control reaches the paint path"
+    );
+    assert!(
+        control_glyphs.iter().all(|glyph| *glyph != 0),
+        "Latin control paints"
+    );
+
+    let events = capture.take();
+    let target_event = events
+        .iter()
+        .find(|event| {
+            event.cluster == TARGET.to_string()
+                && event.candidates.len() >= 2
+                && event.candidates[0].status == FontDiagnosticCandidateStatus::Discard
+                && event.candidates[1].status == FontDiagnosticCandidateStatus::Complete
+        })
+        .expect("actual query records primary miss followed by authored fallback coverage");
+    assert_eq!(target_event.fallback_script, *b"Latn");
+    assert_eq!(target_event.selected_candidate, Some(1));
+    let control_event = events
+        .iter()
+        .find(|event| {
+            event.cluster == CONTROL.to_string()
+                && event.candidates.first().is_some_and(|candidate| {
+                    candidate.status == FontDiagnosticCandidateStatus::Complete
+                })
+        })
+        .expect("actual query records the Latin control");
+    assert_eq!(control_event.selected_candidate, Some(0));
+
+    let target_font = frame
+        .fonts()
+        .iter()
+        .find(|font| font.key == target.font_instance)
+        .expect("target font resource");
+    let control_font = frame
+        .fonts()
+        .iter()
+        .find(|font| font.key == control.font_instance)
+        .expect("control font resource");
+    assert_eq!(target_font.data.as_slice(), secondary.as_slice());
+    assert_eq!(control_font.data.as_slice(), PRIMARY);
+    eprintln!(
+        "T0 Common-script diagnostic: source_script=Common negative_fallback_key={:?} \
+         negative_candidates={:?} negative_selected={:?} negative_target_glyphs={negative_target_glyphs:?} \
+         authored_fallback_key={:?} authored_candidates={:?} authored_selected={:?} target_face=secondary control_face=primary \
+         target=U+25BE glyphs={target_glyphs:?} control=U+0066 glyphs={control_glyphs:?}",
+        negative_target_event.fallback_script,
+        negative_target_event.candidates,
+        negative_target_event.selected_candidate,
+        target_event.fallback_script,
+        target_event.candidates,
+        target_event.selected_candidate,
+    );
 }
 
 #[test]

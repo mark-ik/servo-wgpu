@@ -114,6 +114,8 @@ mod builder;
 mod context;
 mod convert;
 mod font;
+#[cfg(feature = "font-diagnostic")]
+mod font_diagnostic;
 mod inline_box;
 mod lru_cache;
 mod resolve;
@@ -134,6 +136,11 @@ pub use util::BoundingBox;
 pub use builder::{RangedBuilder, StyleRunBuilder, TreeBuilder};
 pub use context::LayoutContext;
 pub use font::FontContext;
+#[cfg(feature = "font-diagnostic")]
+pub use font_diagnostic::{
+    FontDiagnosticCandidate, FontDiagnosticCandidateStatus, FontDiagnosticEvent,
+    FontDiagnosticCapture, begin_font_diagnostic_capture,
+};
 pub use inline_box::{InlineBox, InlineBoxKind};
 #[doc(inline)]
 pub use layout::Layout;

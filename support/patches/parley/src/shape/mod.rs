@@ -4,6 +4,8 @@
 //! Text shaping implementation using `harfrust`for shaping
 //! and `icu` for text analysis.
 
+#[cfg(feature = "font-diagnostic")]
+use alloc::format;
 use alloc::vec::Vec;
 use core::mem;
 use core::ops::RangeInclusive;
@@ -15,6 +17,10 @@ use super::style::{Brush, FontFeature, FontVariation};
 use crate::analysis::cluster::{Char, CharCluster, Status};
 use crate::analysis::{AnalysisDataSources, CharInfo};
 use crate::convert::script_to_harfrust;
+#[cfg(feature = "font-diagnostic")]
+use crate::font_diagnostic::{
+    FontDiagnosticCandidate, FontDiagnosticCandidateStatus, FontDiagnosticEvent,
+};
 use crate::inline_box::InlineBox;
 use crate::lru_cache::LruCache;
 use crate::util::nearly_eq;
@@ -533,6 +539,8 @@ struct FontSelector<'a, 'b, B: Brush> {
     attrs: fontique::Attributes,
     variations: &'a [FontVariation],
     features: &'a [FontFeature],
+    #[cfg(feature = "font-diagnostic")]
+    fallback_key: fontique::FallbackKey,
 }
 
 impl<'a, 'b, B: Brush> FontSelector<'a, 'b, B> {
@@ -556,7 +564,8 @@ impl<'a, 'b, B: Brush> FontSelector<'a, 'b, B> {
         let features = rcx.features(style.font_features).unwrap_or(&[]);
         query.set_families(fonts.iter().copied());
 
-        query.set_fallbacks(fontique::FallbackKey::new(fb_script, locale.as_ref()));
+        let fallback_key = fontique::FallbackKey::new(fb_script, locale.as_ref());
+        query.set_fallbacks(fallback_key);
         query.set_attributes(attrs);
 
         Self {
@@ -568,6 +577,8 @@ impl<'a, 'b, B: Brush> FontSelector<'a, 'b, B> {
             attrs,
             variations,
             features,
+            #[cfg(feature = "font-diagnostic")]
+            fallback_key,
         }
     }
 
@@ -608,8 +619,21 @@ impl<'a, 'b, B: Brush> FontSelector<'a, 'b, B> {
             self.features = self.rcx.features(style.font_features).unwrap_or(&[]);
         }
         let mut selected_font = None;
+        #[cfg(feature = "font-diagnostic")]
+        let mut diagnostic = FontDiagnosticEvent {
+            cluster: cluster.chars.iter().map(|ch| ch.ch).collect(),
+            fallback_script: self.fallback_key.script().to_bytes(),
+            candidates: Vec::new(),
+            selected_candidate: None,
+        };
         self.query.matches_with(|font| {
             let Some(charmap) = font.charmap() else {
+                #[cfg(feature = "font-diagnostic")]
+                diagnostic.candidates.push(FontDiagnosticCandidate {
+                    family: format!("{:?}", font.family),
+                    index: font.index,
+                    status: FontDiagnosticCandidateStatus::NoCharmap,
+                });
                 return fontique::QueryStatus::Continue;
             };
 
@@ -629,6 +653,18 @@ impl<'a, 'b, B: Brush> FontSelector<'a, 'b, B> {
                 },
                 analysis_data_sources,
             );
+            #[cfg(feature = "font-diagnostic")]
+            let candidate_index = diagnostic.candidates.len();
+            #[cfg(feature = "font-diagnostic")]
+            diagnostic.candidates.push(FontDiagnosticCandidate {
+                family: format!("{:?}", font.family),
+                index: font.index,
+                status: match map_status {
+                    Status::Complete => FontDiagnosticCandidateStatus::Complete,
+                    Status::Keep => FontDiagnosticCandidateStatus::Keep,
+                    Status::Discard => FontDiagnosticCandidateStatus::Discard,
+                },
+            });
 
             match map_status {
                 Status::Complete => {
@@ -636,26 +672,40 @@ impl<'a, 'b, B: Brush> FontSelector<'a, 'b, B> {
                         font: font.clone(),
                         attrs: self.attrs,
                     });
+                    #[cfg(feature = "font-diagnostic")]
+                    {
+                        diagnostic.selected_candidate = Some(candidate_index);
+                    }
                     fontique::QueryStatus::Stop
-                }
+                },
                 Status::Keep => {
                     selected_font = Some(SelectedFont {
                         font: font.clone(),
                         attrs: self.attrs,
                     });
+                    #[cfg(feature = "font-diagnostic")]
+                    {
+                        diagnostic.selected_candidate = Some(candidate_index);
+                    }
                     fontique::QueryStatus::Continue
-                }
+                },
                 Status::Discard => {
                     if selected_font.is_none() {
                         selected_font = Some(SelectedFont {
                             font: font.clone(),
                             attrs: self.attrs,
                         });
+                        #[cfg(feature = "font-diagnostic")]
+                        {
+                            diagnostic.selected_candidate = Some(candidate_index);
+                        }
                     }
                     fontique::QueryStatus::Continue
-                }
+                },
             }
         });
+        #[cfg(feature = "font-diagnostic")]
+        crate::font_diagnostic::record(diagnostic);
         selected_font
     }
 }

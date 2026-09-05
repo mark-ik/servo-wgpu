@@ -44,6 +44,7 @@ all-features = true
 [features]
 accesskit = ["dep:accesskit"]
 complex-scripts = []
+font-diagnostic = ["std"]
 default = ["system"]
 libm = [
     "fontique/libm",
