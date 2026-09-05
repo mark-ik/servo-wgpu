@@ -2,11 +2,13 @@
 
 **Date:** 2026-08-15
 
-**Status:** K6a is unblocked from the frozen 2026-08-24 baseline, reconciled
-2026-09-05. Planning and the current-main corpus census are complete. Accepted
-main now contains the K5 positioning, retained text-frame, grid static-rectangle,
-and K5d residual receipts. K6a may begin from the frozen 2026-08-24 baseline;
-the census itself adds contracts and documentation, not engine behavior.
+**Status:** K6a preparation is unblocked, reconciled 2026-09-05. Planning and
+the current-main corpus census are complete. Accepted main now contains the K5
+positioning, retained text-frame, grid static-rectangle, and K5d residual
+receipts. Before source work, refresh and freeze accepted current `main`, the
+runner, and the corpus; the 2026-08-24 census is historical evidence, not the
+September integration base. The census itself adds contracts and documentation,
+not engine behavior.
 
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md),
 K6.

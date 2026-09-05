@@ -7,8 +7,9 @@ The K5 positioning, retained-text, grid-static-rectangle, and K5d residual
 chains are closed on accepted main by the 2026-08-24 receipts
 `e8db57141f1`, `7eaaaf724a5`, `67c041d0cda`, and `ed288ef1c3`.
 The [K6 execution plan](2026-08-15_buckram_k6_fragmentation_execution_plan.md)
-is prepared and K6a is unblocked from the frozen 2026-08-24 current-main
-baseline.
+is prepared. K6a must refresh and freeze accepted current `main`, its runner,
+and its corpus before source work; the 2026-08-24 census is historical input,
+not a September integration base.
 **Decision:** Buckram owns CSS box generation, formatting contexts, intrinsic
 sizing, and fragments. Taffy is an algorithm library for flex and grid, with
 block layout retained only as a migration aid.
@@ -1703,8 +1704,9 @@ break-and-resume layout through columns or pages.
 
 The serial implementation and verification gates are fixed in the
 [K6 fragmentation execution plan](2026-08-15_buckram_k6_fragmentation_execution_plan.md).
-K6a begins from the frozen current-main baseline named in its execution plan;
-the K5 closure receipts above are prerequisites already satisfied on `main`.
+K6a begins only after accepted current `main`, its runner, and its corpus are
+refreshed and frozen; the K5 closure receipts above are prerequisites already
+satisfied on `main`.
 
 Execute K6 in this order:
 
@@ -1738,7 +1740,8 @@ Execute K7 in this order:
 
 1. Continue replaced-content sizing and aspect-ratio transfer from the current
    receipts: block and grid border-box sizing and inline replaced roots are
-   closed on 2026-09-01/02, while percentage min/max constraints on replaced
+   closed in the [orchestrator decomposition findings](../design_docs/2026-08-28_orchestrator_decomposition_plan.md)
+   (`9df392f42d8`, `0730e020c67`); percentage min/max constraints on replaced
    elements remain with Taffy's indefinite-size clamp until an explicit
    receipt closes that boundary. Extend the proven subset across normal flow,
    atomic inline boxes, flex/grid integration, and intrinsic queries.
@@ -1762,10 +1765,12 @@ principal-fragment geometry, or a backend fallback.
 
 ## Cutover and deletion
 
-The F4 replacement comparison and F5 Stylo/genet-layout deletion are closed
-historical gates. The completed fork-deletion lane removed the Stylo/genet-layout
-cone on 2026-08-21; the remaining F6 `servo-*` package retirement and the
-foundational K-stage work continue under their own receipts.
+The F4 replacement comparison was superseded by the fork-deletion ruling; it is
+historical evidence, not a parity bar reported as passed. F5 deletion is
+complete: the fork-deletion lane removed the Stylo/genet-layout cone on
+2026-08-21. The remaining F6 `servo-*` package retirement and foundational
+ K-stage work continue under their own receipts.
+
 - F5 did not delete Taffy. Buckram owns that dependency and its fork ledger.
 - K4 through K7 remain the active standards-ownership milestones. F4 and F5
   are closed compatibility and retirement history; their receipts do not close

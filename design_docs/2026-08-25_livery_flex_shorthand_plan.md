@@ -377,7 +377,27 @@ consumer resolution is clean.
 - Inventory and implement the remaining grid surface, including auto tracks
   and template areas, under its own current-main receipt.
 
+## Findings
+
+### 2026-09-05
+
+- The Sept 1/2 decomposition receipts moved tagged `calc()` length handling
+  through `flex_basis`, `length_percentage`, and `length_percentage_auto`; the
+  remaining Row 18 zero-percentage item is authored-syntax provenance and must
+  stay separate from that repaired premature-resolution path. See the
+  [orchestrator decomposition findings](2026-08-28_orchestrator_decomposition_plan.md)
+  and commits `9df392f42d8` and `0730e020c67`.
+- The same findings close the measured block/grid border-box and inline
+  replaced sizing defects. They do not close percentage min/max constraints on
+  replaced elements, which remain an explicit K7 boundary.
+
 ## Progress
+
+### 2026-09-05
+
+- Reconciled Row 18's present frontier against the 2026-09-01/02 decomposition
+  receipts and separated shared `ex` metrics from zero-percentage authored
+  syntax provenance.
 
 ### 2026-08-25
 
