@@ -2,13 +2,11 @@
 
 **Date:** 2026-08-15
 
-**Status:** K6a preparation is unblocked, reconciled 2026-09-05. Planning and
-the current-main corpus census are complete. Accepted main now contains the K5
-positioning, retained text-frame, grid static-rectangle, and K5d residual
-receipts. Before source work, refresh and freeze accepted current `main`, the
-runner, and the corpus; the 2026-08-24 census is historical evidence, not the
-September integration base. The census itself adds contracts and documentation,
-not engine behavior.
+**Status:** K6a typed inputs implemented and reviewed, 2026-09-06. The clean
+pre-K6 source, release runner, and corpus are frozen. All 6,077 named
+candidate WPT records are identical to that baseline. Continuation state,
+fragmentainers, and multicol geometry remain unimplemented; K6b is next.
+The verification record below distinguishes focused receipts from broad checks.
 
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md),
 K6.
@@ -40,8 +38,8 @@ Stylo comparison remains an interoperability ledger. It is not K6 acceptance.
 This plan was prepared against the moving `buckram-k5-positioning` worktree on
 2026-08-15. That historical branch is not a K6 base. Current accepted main
 closes the K5 seams required by K6a through `e8db57141f1`, `7eaaaf724a5`,
-`67c041d0cda`, and `ed288ef1c3e`. The 2026-08-24 current-main census is the
-pre-K6 baseline; see the
+`67c041d0cda`, and `ed288ef1c3e`. The refreshed 2026-09-06 census freezes source
+`0987ed2527167135431c41afd35c263a28d56c56` as the pre-K6 baseline; see the
 [census reconciliation](2026-08-24_buckram_k6_corpus_census_reconciliation.md).
 
 K4 is closed by the accepted K4h bridge deletion at `610df0981a8`. The master
@@ -67,7 +65,7 @@ The current K5 shape is still specific enough to fix ownership:
 | `components/genet-livery/src/document.rs` | K5 damage selection and fresh-final equivalence are authoritative. Fragmented roots remain outside local replacement. | Promote damage to the fragmentation context when necessary, then replace only the affected continuation chain and compare with a fresh final document. |
 | `components/genet-livery/src/{text,paint}.rs` | Text and paint are retained side data keyed by the K5 result. | Consume continued fragment identity and fragmentainer clips. They do not get independent break decisions. |
 | `components/genet-livery/src/{table_block,table_shadow,table_wrapper}.rs` | K4/K5 table geometry and retained paint side planes are live. | Table fragmentation consumes the K4 model and publishes split table fragments through the same K6 tree. |
-| `components/livery/properties.toml` | `column-count`, `column-width`, and `column-span` are declared unimplemented. `column-fill`, break controls, orphans, widows, and `box-decoration-break` are absent. `column-gap` is implemented. | Add typed values and computed projection in the gate that first consumes each property. Do not add dormant declarations. |
+| `components/livery/properties.toml` | K6a adds typed column count/width/fill, `columns`, break controls, orphans, and widows with computed-style and invalidation receipts. `column-gap` was already implemented. `column-span` and `box-decoration-break` remain outside this slice. | Introduce formatter consumption and its consumed-set receipt in the corresponding geometry gate. Typed inputs alone earn no layout credit. |
 | `components/livery/src/stylesheet.rs` | `CssRule` has style, media, container, and keyframes rules. `@page` is diagnosed as unsupported. | Add page-rule parsing and CSSOM projection with the pagination gate, not the multicol gate. |
 | `ports/genet-wpt/src/main.rs` | The manifest distinguishes `PrintReftest`, but `reftest` accepts only `Kind::Reftest` and skips print tests as `non-reftest`. | A print-media page renderer and exact print-reftest result path are prerequisites for paged-media credit. |
 
@@ -120,9 +118,9 @@ All 143 passes in the two direct fragmentation directories are unverified;
 classification and the named family ratchets are in the
 [current-main census reconciliation](2026-08-24_buckram_k6_corpus_census_reconciliation.md).
 These corrected maps supersede the original 230-direct / 20-guard score, whose
-fuzzy comparison admitted an unlimited number of low-delta pixels. They are
-the frozen K6 baseline. Refresh them if accepted source changes before K6a
-begins.
+fuzzy comparison admitted an unlimited number of low-delta pixels. These are
+historical counts. The 2026-09-06 refresh freezes the current 6,077-case
+baseline and records the candidate comparison in the same reconciliation.
 
 ## Serialized execution
 
@@ -446,7 +444,7 @@ cannot hide a moved regression.
 
 ## Findings
 
-### 2026-09-05
+### 2026-09-05 review, superseded by the implementation receipt below
 
 - The next implementation gate is K6a's input slice, followed by the K6b
   model receipt. The live property catalog already declares `column-count`,
@@ -491,11 +489,54 @@ cannot hide a moved regression.
   still uses its existing 16px root-font fallback for `rem`; a broader font
   metric refactor is outside K6a, as recorded in the
   [K4c table sizing plan](2026-07-28_buckram_k4c_table_inline_sizing_execution_plan.md)
-  and the [flex shorthand findings](2026-08-25_livery_flex_shorthand_plan.md).
+  and the [flex shorthand findings](../design_docs/2026-08-25_livery_flex_shorthand_plan.md#row-18-closure-and-remaining-work).
   Basic constant numeric and length calc forms are covered; deferred
   environment-dependent math remains outside this typed-input receipt, per
   the [Stylo harvest H5 boundary](2026-07-20_stylo_harvest_into_livery_plan.md).
   No layout geometry credit is implied.
+
+### 2026-09-06 frozen candidate comparison
+
+- Integrated commit: `c685b0c7147`, with all 13 staged blobs identical to
+  tested source `0382cccb031c5bfa1a8aaa13dd34e944988725d2`; pre-K6
+  base: `0987ed2527167135431c41afd35c263a28d56c56`. Source patches and
+  commit records are retained with the local receipts.
+- The candidate release build passed with the baseline command and flags.
+  Runner SHA-256: `BF78E41083431F5C19B8E647D572F49401671ED6B452C063B4DF4F21A76B257B`.
+- All seven exact maps contain the same 6,077 named records as the baseline,
+  including statuses and reasons. The manifest and lock hashes are identical.
+  See the [comparison receipt](2026-08-24_buckram_k6_corpus_census_reconciliation.md#2026-09-06-k6a-comparison).
+- Constant integer math clamps to the allowed minimum; literal zero remains
+  invalid. This follows [CSS numeric-function range checking](https://drafts.csswg.org/css-values-4/#numeric-functions).
+- No continuation contract is enabled by this slice; the six future structural
+  contracts remain ignored. K6b must establish synthetic continued fragments
+  before browser consumers can claim fragment-aware geometry.
+
+### 2026-09-06 verification outcomes
+
+- Frozen `cargo test -p genet-livery --all-targets --offline -j 1` exited 0:
+  476 tests passed across 31 groups, including 246 library, 12 CSSOM, and
+  5 invalidation tests. Six future K6 contracts remain intentionally ignored.
+- The final targeted Livery values run passed 42 tests after the last source
+  edit. The earlier broad Buckram/Livery/Genet-Livery run stopped at one
+  Genet-Livery test because the sparse checkout omitted a WPT fixture. That
+  exact test passed after restoring the corpus; the frozen all-targets run
+  above then passed the full Genet-Livery suite.
+- Strict Clippy is **not green**. Frozen Buckram and Genet-Livery commands
+  both exited 101 on existing warnings in files unchanged by K6a: two in
+  Buckram's `taffy_adapter.rs` (`let_and_return` and
+  `redundant_pattern_matching`), and one in Genet-Livery's `layout.rs`
+  (`too_many_arguments`). These failures stop further Clippy coverage. The exact
+  commands, exit codes, warning locations, and logs are retained as
+  `k6-clippy-status.json`, `k6-clippy-findings.json`, and
+  `k6-{buckram,genet-livery}-clippy.log`. Warning cleanup remains a separate
+  maintenance gate; it is not covered by the passing runtime receipts.
+- `cargo fmt --all -- --check` exited 1 on 30 unchanged files. None is a K6a
+  changed file; `k6-format-paths.json` and `k6-fmt.log` preserve that result.
+  The staged K6 source and documentation both passed `git diff --check`.
+- Logs live under `C:/Users/mark_/Code/scratch/genet-k6-ortet-20260905/`.
+  The frozen suite log and status are `all-targets-frozen.log` and
+  `all-targets-frozen-status.txt`. These are local receipts, not uploaded CI.
 
 ## Gate verification
 

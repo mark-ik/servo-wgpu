@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-24; baseline refreshed 2026-09-06
 
-**Status:** Complete for the dated sources below. The 2026-09-06 baseline is frozen; K6a candidate comparison is pending.
+**Status:** Complete for the dated sources below. The 2026-09-06 baseline and K6a comparison are frozen; all 6,077 named records are unchanged.
 
 **Parent:** [Buckram and Livery lane program](2026-08-21_buckram_livery_lane_program_plan.md),
 row 13, and the [K6 fragmentation execution plan](2026-08-15_buckram_k6_fragmentation_execution_plan.md).
@@ -58,6 +58,27 @@ Artifacts are retained under
 `baseline-vs-archive.json`, `k6-handoff.json`, and `run-baseline.ps1`.
 The summary records every map hash and the full reason counts. The handoff
 records verified K5 ancestry and the remaining single-fragment consumers.
+
+## 2026-09-06 K6a comparison
+
+The clean candidate source is `0382cccb031c5bfa1a8aaa13dd34e944988725d2`.
+The release build passed with the same command and flags as the baseline.
+Candidate runner SHA-256 is
+`BF78E41083431F5C19B8E647D572F49401671ED6B452C063B4DF4F21A76B257B`.
+The manifest and lock hashes match the baseline exactly.
+
+All seven family runs completed. Comparison of every named record, including
+status and reason, finds **0 changes across 6,077 cases**. This is a regression
+receipt for typed inputs, not evidence of fragmentation support. The 143 direct
+unverified passes, 14 guard unverified passes, and print-runner limitations
+remain as classified above. The 21 historical flex/grid losses also remain
+unchanged and assigned to Row 18 review.
+
+The same artifact directory retains `candidate-identity.json`, frozen
+`genet-wpt-candidate.exe`, seven `candidate-css-<family>.json` maps and logs,
+`candidate-vs-baseline.json` (including every map hash), and
+`compare-candidate.py`. `k6a-source.patch` and `k6a-source-commit.txt` preserve
+the candidate source independently of the disposable worktree.
 
 ## 2026-08-24 ruling
 

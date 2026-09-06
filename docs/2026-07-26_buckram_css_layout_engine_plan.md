@@ -7,9 +7,11 @@ The K5 positioning, retained-text, grid-static-rectangle, and K5d residual
 chains are closed on accepted main by the 2026-08-24 receipts
 `e8db57141f1`, `7eaaaf724a5`, `67c041d0cda`, and `ed288ef1c3`.
 The [K6 execution plan](2026-08-15_buckram_k6_fragmentation_execution_plan.md)
-is prepared. K6a must refresh and freeze accepted current `main`, its runner,
-and its corpus before source work; the 2026-08-24 census is historical input,
-not a September integration base.
+now has an accepted typed-input K6a slice, `0382cccb031c5bfa1a8aaa13dd34e944988725d2`,
+against clean frozen pre-K6 source `0987ed2527167135431c41afd35c263a28d56c56`
+and its 6,077-case baseline. Source review passed; all 6,077 named WPT
+records are unchanged. Fragmentation geometry and continuation behavior
+remain unimplemented; K6b is the next implementation gate.
 **Decision:** Buckram owns CSS box generation, formatting contexts, intrinsic
 sizing, and fragments. Taffy is an algorithm library for flex and grid, with
 block layout retained only as a migration aid.
@@ -1704,9 +1706,12 @@ break-and-resume layout through columns or pages.
 
 The serial implementation and verification gates are fixed in the
 [K6 fragmentation execution plan](2026-08-15_buckram_k6_fragmentation_execution_plan.md).
-K6a begins only after accepted current `main`, its runner, and its corpus are
-refreshed and frozen; the K5 closure receipts above are prerequisites already
-satisfied on `main`.
+K6a's tested typed-input source is `0382cccb031c5bfa1a8aaa13dd34e944988725d2`,
+with clean source `0987ed2527167135431c41afd35c263a28d56c56` frozen at 6,077
+cases. It has no geometry or continuation implementation and earns no layout
+credit. Source review passed and all named WPT records are unchanged; K6b
+is next. The K5 closure receipts above remain prerequisites already satisfied
+on `main`.
 
 Execute K6 in this order:
 
