@@ -14,8 +14,11 @@ name = "genet_render"
 path = "src/lib.rs"
 
 [features]
-default = ["livery"]
+default = ["livery", "accesskit"]
 livery = []
+# The native bridge lowers the engine projection to AccessKit. Browser hosts
+# retain that projection without linking a platform accessibility tree.
+accesskit = ["dep:accesskit"]
 
 [dependencies]
 # The genet DOM + the engine pipeline this drives.
@@ -35,7 +38,7 @@ netrender = { workspace = true }
 document-session-api = { workspace = true }
 # Accessibility tree emission: ScriptedDom -> accesskit::TreeUpdate (a host
 # concern, kept out of the core layout crate).
-accesskit = { workspace = true }
+accesskit = { workspace = true, optional = true }
 
 [dev-dependencies]
 # A parsed HTML document for the content-introspection (`inspect`) tests.

@@ -13,6 +13,7 @@ description = "The raw Genet host: one window, one document, no chrome — the r
 name = "ortet"
 path = "src/lib.rs"
 bench = false
+crate-type = ["rlib", "cdylib"]
 
 [[bin]]
 name = "ortet"
@@ -20,18 +21,22 @@ path = "src/main.rs"
 bench = false
 
 [dependencies]
-accesskit = { workspace = true }
 # The session contracts ortet drives: SessionEngine, DocumentSession, the
 # neutral input vocabulary.
 document-session-api = { workspace = true }
 # ResourceFetcher / ResourceResponse and host-owned href resolution.
 genet-host-api = { workspace = true }
-# The Livery lane as a session engine, plus the local-scheme fetcher. Ortet
-# needs the engine half only; no reader lane, no smolweb, no controller.
+# The Livery lane as a session engine. Ortet needs the engine half only; no
+# reader lane, no smolweb, no controller.
 genet-documents = { workspace = true, features = ["livery"] }
-# Window, wheel translation, and (through it) the target-neutral present core.
-genet-winit-host = { path = "../../components/genet-winit-host" }
+# The target-neutral present core. Native and web hosts own their distinct
+# target/input adapters below.
+genet-render-host = { workspace = true }
 netrender = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+accesskit = { workspace = true }
+genet-winit-host = { path = "../../components/genet-winit-host" }
 # http(s) for the fallback fetch lane, over netfetcher's default transport on a
 # background tokio runtime this host owns. Local addresses never reach it.
 netfetcher = { path = "../../components/netfetcher" }
@@ -41,6 +46,16 @@ winit = { workspace = true }
 wgpu = { workspace = true }
 # The receipt artifact. `png` alone: ortet writes RGBA8 and reads nothing.
 png = "0.18"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.127"
+wasm-bindgen-futures = "=0.4.77"
+wgpu = { workspace = true, features = ["webgpu"] }
+web-sys = { version = "=0.3.104", features = [
+    "Document", "DomRect", "Element", "Event", "EventTarget",
+    "FocusEvent", "HtmlCanvasElement", "HtmlElement", "KeyboardEvent", "MouseEvent",
+    "PointerEvent", "WheelEvent", "Window", "console",
+] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(llvm_pgo)'] }

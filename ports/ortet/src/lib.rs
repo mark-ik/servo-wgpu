@@ -28,8 +28,14 @@
 //! The library half exists so the argument parser and the scheme split can be
 //! unit-tested without a GPU; `main.rs` is a thin wrapper over [`shell::run`].
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod a11y;
 pub mod args;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod fetch;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod receipt;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod shell;
+#[cfg(target_arch = "wasm32")]
+pub mod web;

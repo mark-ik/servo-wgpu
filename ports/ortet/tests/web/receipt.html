@@ -1,0 +1,71 @@
+<!-- Copyright 2026 Mark Alan Boykin
+     This Source Code Form is subject to the terms of the Mozilla Public
+     License, v. 2.0. If a copy of the MPL was not distributed with this
+     file, You can obtain one at https://mozilla.org/MPL/2.0/.
+     SPDX-License-Identifier: MPL-2.0 -->
+<!doctype html>
+<meta charset="utf-8">
+<title>Ortet O3 canvas receipt</title>
+<style>
+  body { margin: 0; background: #e7edf3; }
+  canvas { display: block; width: 640px; height: 400px; }
+</style>
+<canvas id="ortet" tabindex="0" aria-label="Ortet raw Genet document"></canvas>
+<pre id="receipt">ORTET_CANVAS_RECEIPT pending</pre>
+<script type="module">
+  const output = document.querySelector("#receipt");
+  try {
+    const ahemResponse = await fetch("./Ahem.ttf");
+    if (!ahemResponse.ok) throw new Error(`Ahem fixture fetch failed: ${ahemResponse.status}`);
+    const ahemBytes = new Uint8Array(await ahemResponse.arrayBuffer());
+    const ahem = btoa(String.fromCharCode(...ahemBytes));
+    const article = `<!doctype html><style>
+      @font-face { font-family: ReceiptAhem; src: url(data:font/ttf;base64,${ahem}) format('truetype'); }
+      body { margin: 38px; color: #17324d; background: #f9f4e8; font: 18px ReceiptAhem; }
+      h1 { color: #8a2f24; border-bottom: 3px solid #d09b5b; }
+      p { max-width: 31em; line-height: 1.45; }
+      a { color: #185d8c; }
+      .receipt-card { background: #d8e6dc; border: 5px solid #5b3b78; height: 56px; margin: 16px 0; }
+    </style><article><h1>Ortet in the browser</h1><p>This page is rendered by the raw Genet host into a browser canvas.</p><div class="receipt-card">Ahem glyph proof</div><p><a href="#proof">Canvas proof</a> stays in the retained document session.</p><h2 id="proof">Canvas proof</h2><p>Its pixels are read back through Chromium, not inferred from a screenshot.</p></article>`;
+    const { default: init, start } = await import("./ortet.js");
+    await Promise.race([
+      init(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("wasm initialization timed out")), 10000)),
+    ]);
+    const canvas = document.querySelector("#ortet");
+    await Promise.race([
+      start(canvas, `data:text/html,${encodeURIComponent(article)}`),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Ortet start timed out waiting for WebGPU")), 10000)),
+    ]);
+    for (let frame = 0; frame < 3; frame++) await new Promise(requestAnimationFrame);
+    const png = canvas.toDataURL("image/png");
+    const image = new Image();
+    image.src = png;
+    await image.decode();
+    const copy = new OffscreenCanvas(canvas.width, canvas.height);
+    const context = copy.getContext("2d", { willReadFrequently: true });
+    context.drawImage(image, 0, 0);
+    const pixels = context.getImageData(0, 0, copy.width, copy.height).data;
+    let nonWhite = 0;
+    let opaqueNonWhite = 0;
+    let pageTone = 0;
+    let cardTone = 0;
+    let cardBorder = 0;
+    let glyphTone = 0;
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < pixels.length; index += 4) {
+      if (pixels[index] !== 255 || pixels[index + 1] !== 255 || pixels[index + 2] !== 255 || pixels[index + 3] !== 255) nonWhite++;
+      if ((pixels[index] !== 255 || pixels[index + 1] !== 255 || pixels[index + 2] !== 255) && pixels[index + 3] === 255) opaqueNonWhite++;
+      if (Math.abs(pixels[index] - 249) <= 4 && Math.abs(pixels[index + 1] - 244) <= 4 && Math.abs(pixels[index + 2] - 232) <= 4 && pixels[index + 3] === 255) pageTone++;
+      if (Math.abs(pixels[index] - 216) <= 4 && Math.abs(pixels[index + 1] - 230) <= 4 && Math.abs(pixels[index + 2] - 220) <= 4 && pixels[index + 3] === 255) cardTone++;
+      if (Math.abs(pixels[index] - 91) <= 4 && Math.abs(pixels[index + 1] - 59) <= 4 && Math.abs(pixels[index + 2] - 120) <= 4 && pixels[index + 3] === 255) cardBorder++;
+      if (Math.abs(pixels[index] - 23) <= 8 && Math.abs(pixels[index + 1] - 50) <= 8 && Math.abs(pixels[index + 2] - 77) <= 8 && pixels[index + 3] === 255) glyphTone++;
+      for (let channel = 0; channel < 4; channel++) hash = Math.imul(hash ^ pixels[index + channel], 0x01000193);
+    }
+    output.dataset.png = png;
+    if (cardTone < 100 || cardBorder < 100 || glyphTone < 100) throw new Error(`paint counts card=${cardTone} border=${cardBorder} glyph=${glyphTone}`);
+    output.textContent = `ORTET_CANVAS_RECEIPT width=${copy.width} height=${copy.height} non_white=${nonWhite} opaque_non_white=${opaqueNonWhite} page_tone=${pageTone} card_tone=${cardTone} card_border=${cardBorder} glyph_tone=${glyphTone} total=${copy.width * copy.height} rgba_fnv32=0x${(hash >>> 0).toString(16)}`;
+  } catch (error) {
+    output.textContent = `ORTET_CANVAS_RECEIPT error=${error}`;
+  }
+</script>

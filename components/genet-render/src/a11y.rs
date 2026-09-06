@@ -4,6 +4,7 @@
 
 use std::hash::Hash;
 
+#[cfg(feature = "accesskit")]
 use accesskit::{
     Action, HasPopup, Live, Node as AccessNode, NodeId as AccessNodeId, Orientation, Rect, Role,
     Toggled, Tree, TreeId, TreeUpdate,
@@ -18,6 +19,7 @@ use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
 
 use crate::render::ScrollOffsets;
 
+#[cfg(feature = "accesskit")]
 fn access_id<D: LayoutDom>(dom: &D, node: D::NodeId) -> AccessNodeId {
     AccessNodeId(dom.opaque_id(node))
 }
@@ -221,41 +223,41 @@ fn aria_bool<D: LayoutDom>(dom: &D, node: D::NodeId, name: &str) -> Option<bool>
         })
 }
 
-fn aria_toggled<D: LayoutDom>(dom: &D, node: D::NodeId, name: &str) -> Option<Toggled> {
+fn aria_toggled<D: LayoutDom>(dom: &D, node: D::NodeId, name: &str) -> Option<DocumentA11yToggled> {
     dom.attribute(node, &Namespace::default(), &LocalName::from(name))
         .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
-            "true" => Some(Toggled::True),
-            "false" => Some(Toggled::False),
-            "mixed" => Some(Toggled::Mixed),
+            "true" => Some(DocumentA11yToggled::On),
+            "false" => Some(DocumentA11yToggled::Off),
+            "mixed" => Some(DocumentA11yToggled::Mixed),
             _ => None,
         })
 }
 
-fn aria_orientation<D: LayoutDom>(dom: &D, node: D::NodeId) -> Option<Orientation> {
+fn aria_orientation<D: LayoutDom>(dom: &D, node: D::NodeId) -> Option<DocumentA11yOrientation> {
     dom.attribute(
         node,
         &Namespace::default(),
         &LocalName::from("aria-orientation"),
     )
     .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
-        "horizontal" => Some(Orientation::Horizontal),
-        "vertical" => Some(Orientation::Vertical),
+        "horizontal" => Some(DocumentA11yOrientation::Horizontal),
+        "vertical" => Some(DocumentA11yOrientation::Vertical),
         _ => None,
     })
 }
 
-fn aria_has_popup<D: LayoutDom>(dom: &D, node: D::NodeId) -> Option<HasPopup> {
+fn aria_has_popup<D: LayoutDom>(dom: &D, node: D::NodeId) -> Option<DocumentA11yHasPopup> {
     dom.attribute(
         node,
         &Namespace::default(),
         &LocalName::from("aria-haspopup"),
     )
     .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
-        "true" | "menu" => Some(HasPopup::Menu),
-        "listbox" => Some(HasPopup::Listbox),
-        "tree" => Some(HasPopup::Tree),
-        "grid" => Some(HasPopup::Grid),
-        "dialog" => Some(HasPopup::Dialog),
+        "true" | "menu" => Some(DocumentA11yHasPopup::Menu),
+        "listbox" => Some(DocumentA11yHasPopup::ListBox),
+        "tree" => Some(DocumentA11yHasPopup::Tree),
+        "grid" => Some(DocumentA11yHasPopup::Grid),
+        "dialog" => Some(DocumentA11yHasPopup::Dialog),
         "false" | "none" | "" => None,
         _ => None,
     })
@@ -268,12 +270,12 @@ fn is_disabled<D: LayoutDom>(dom: &D, node: D::NodeId) -> bool {
             .is_some()
 }
 
-fn aria_live<D: LayoutDom>(dom: &D, node: D::NodeId) -> Option<Live> {
+fn aria_live<D: LayoutDom>(dom: &D, node: D::NodeId) -> Option<DocumentA11yLive> {
     dom.attribute(node, &Namespace::default(), &LocalName::from("aria-live"))
         .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
-            "off" => Some(Live::Off),
-            "polite" => Some(Live::Polite),
-            "assertive" => Some(Live::Assertive),
+            "off" => Some(DocumentA11yLive::Off),
+            "polite" => Some(DocumentA11yLive::Polite),
+            "assertive" => Some(DocumentA11yLive::Assertive),
             _ => None,
         })
 }
@@ -357,6 +359,7 @@ fn is_native_control<D: LayoutDom>(dom: &D, node: D::NodeId) -> bool {
 }
 
 /// Project a Livery/Buckram document into an AccessKit tree.
+#[cfg(feature = "accesskit")]
 pub fn accesskit_tree<D>(
     dom: &D,
     fragments: &LiveryLayout<D::NodeId>,
@@ -374,6 +377,7 @@ where
 /// Bounds move with each scrolled ancestor. Enabled descendants of an active
 /// nested scrollport advertise `ScrollIntoView`, while Click remains withheld
 /// until Pelt owns the matching refreshed pointer-routing semantics.
+#[cfg(feature = "accesskit")]
 pub fn accesskit_tree_with_scroll<D>(
     dom: &D,
     fragments: &LiveryLayout<D::NodeId>,
@@ -387,6 +391,7 @@ where
     accesskit_tree_with_optional_scroll(dom, fragments, focus, Some(scroll_offsets))
 }
 
+#[cfg(feature = "accesskit")]
 fn accesskit_tree_with_optional_scroll<D>(
     dom: &D,
     fragments: &LiveryLayout<D::NodeId>,
@@ -402,6 +407,7 @@ where
     lower_accesskit_tree(dom, projection)
 }
 
+#[cfg(feature = "accesskit")]
 fn accesskit_role(role: DocumentA11yRole) -> Role {
     match role {
         DocumentA11yRole::Window => Role::Window,
@@ -456,6 +462,7 @@ fn accesskit_role(role: DocumentA11yRole) -> Role {
     }
 }
 
+#[cfg(feature = "accesskit")]
 fn lower_accesskit_tree<D: LayoutDom>(dom: &D, projection: DocumentA11yProjection) -> TreeUpdate
 where
     D::NodeId: Copy + Eq + Hash,
@@ -608,29 +615,11 @@ fn neutral_state<D: LayoutDom>(
         || dom
             .element_name(node)
             .is_some_and(|name| name.local.as_ref() == "textarea");
-    let toggled = aria_toggled(dom, node, "aria-checked")
-        .or_else(|| aria_toggled(dom, node, "aria-pressed"))
-        .map(|value| match value {
-            Toggled::True => DocumentA11yToggled::On,
-            Toggled::False => DocumentA11yToggled::Off,
-            Toggled::Mixed => DocumentA11yToggled::Mixed,
-        });
-    let live = aria_live(dom, node).map(|value| match value {
-        Live::Off => DocumentA11yLive::Off,
-        Live::Polite => DocumentA11yLive::Polite,
-        Live::Assertive => DocumentA11yLive::Assertive,
-    });
-    let orientation = aria_orientation(dom, node).map(|value| match value {
-        Orientation::Horizontal => DocumentA11yOrientation::Horizontal,
-        Orientation::Vertical => DocumentA11yOrientation::Vertical,
-    });
-    let has_popup = aria_has_popup(dom, node).map(|value| match value {
-        HasPopup::Menu => DocumentA11yHasPopup::Menu,
-        HasPopup::Listbox => DocumentA11yHasPopup::ListBox,
-        HasPopup::Tree => DocumentA11yHasPopup::Tree,
-        HasPopup::Grid => DocumentA11yHasPopup::Grid,
-        HasPopup::Dialog => DocumentA11yHasPopup::Dialog,
-    });
+    let toggled =
+        aria_toggled(dom, node, "aria-checked").or_else(|| aria_toggled(dom, node, "aria-pressed"));
+    let live = aria_live(dom, node);
+    let orientation = aria_orientation(dom, node);
+    let has_popup = aria_has_popup(dom, node);
     DocumentA11yState {
         disabled,
         selected: aria_bool(dom, node, "aria-selected"),
@@ -853,7 +842,7 @@ where
     DocumentA11yProjection::new(revision, support, root_id, nodes)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "accesskit"))]
 mod tests {
     use accesskit::{Action, HasPopup, Live, Node as AccessNode, Orientation, Role, Toggled};
     use document_session_api::{DocumentA11yRole, DocumentA11yToggled};

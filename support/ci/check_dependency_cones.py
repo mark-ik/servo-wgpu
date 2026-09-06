@@ -469,17 +469,16 @@ def self_test_resolved_cone() -> None:
     )
 
 
-def assert_ortet_cone(metadata: dict) -> None:
-    cone = resolved_cone(metadata, "ortet")
+def assert_ortet_forbidden_cone(cone: set[str], label: str) -> None:
     if "genet-documents" not in cone or "netrender" not in cone:
         fail(
-            "ortet's resolved cone is missing the engine crates it is built on "
+            f"{label}'s resolved cone is missing the engine crates it is built on "
             f"(saw {len(cone)} packages); the cone walk is not reading ortet"
         )
     breached = sorted(name for name in cone if is_ortet_forbidden(name))
     if breached:
         fail(
-            "ortet's cone reaches crates the platform boundary plan moves to "
+            f"{label}'s cone reaches crates the platform boundary plan moves to "
             f"Mere: {breached}"
         )
 
@@ -523,7 +522,7 @@ def assert_ortet_cone(metadata: dict) -> None:
         )
 
     print(
-        f"ortet cone: {len(cone)} packages, none forbidden; "
+        f"{label} cone: {len(cone)} packages, none forbidden; "
         "historical live positive control: none (retired with P3); "
         f"predicate control: forbids all {len(ORTET_FORBIDDEN)} exact names, "
         "forbids cambium-/mere-/pelt-anything, admits genet-livery"
@@ -532,9 +531,78 @@ def assert_ortet_cone(metadata: dict) -> None:
     reclassed = sorted(name for name in cone if name in ORTET_RECLASSED)
     if reclassed:
         print(
-            f"ortet cone note: {reclassed} present - reclassed independent by "
+            f"{label} cone note: {reclassed} present - reclassed independent by "
             "the boundary plan 9.1, reached through genet-documents' clip lane"
         )
+
+
+def assert_ortet_cone(metadata: dict) -> None:
+    assert_ortet_forbidden_cone(resolved_cone(metadata, "ortet"), "ortet")
+
+
+# The native Ortet host owns these adapters. The wasm host has a browser canvas
+# surface and DOM events instead, so none may be reachable in its normal cone.
+ORTET_WASM_NATIVE_ADAPTERS = frozenset({"accesskit", "winit", "genet-winit-host"})
+
+
+def ortet_wasm_native_adapters(cone: set[str]) -> list[str]:
+    return sorted(cone & ORTET_WASM_NATIVE_ADAPTERS)
+
+
+def cargo_tree_resolved_cone(package: str, target: str) -> set[str]:
+    """The target-filtered normal dependency graph for one package.
+
+    `cargo metadata --filter-platform` still unifies features from unrelated
+    workspace members. `cargo tree -p ... --target ...` is the resolved cone
+    Cargo will link for this package/target pair, so it is the witness for a
+    target-specific host boundary.
+    """
+    result = subprocess.run(
+        [
+            "cargo", "tree", "-p", package, "--target", target,
+            "--edges", "normal", "--prefix", "none",
+        ],
+        cwd=ROOT,
+        text=True,
+        encoding="utf-8",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        fail(f"cargo tree for {package} on {target} failed:\n{result.stderr}")
+    cone = {line.split()[0] for line in result.stdout.splitlines() if line.strip()}
+    if package not in cone:
+        fail(f"cargo tree for {package} on {target} did not list {package}")
+    return cone
+
+
+def assert_ortet_wasm_cone() -> None:
+    cone = cargo_tree_resolved_cone("ortet", "wasm32-unknown-unknown")
+    assert_ortet_forbidden_cone(cone, "ortet wasm32")
+    native_adapters = ortet_wasm_native_adapters(cone)
+    if native_adapters:
+        fail(
+            "ortet's wasm32 cone reaches native host adapters: "
+            f"{native_adapters}"
+        )
+    print(
+        f"ortet wasm32 cone: {len(cone)} packages, no native adapters "
+        f"({', '.join(sorted(ORTET_WASM_NATIVE_ADAPTERS))})"
+    )
+
+
+def self_test_ortet_wasm_cone() -> None:
+    clean = {"genet-documents", "netrender", "genet-render-host"}
+    if ortet_wasm_native_adapters(clean):
+        fail("ortet wasm32 cone negative control reaches a native adapter")
+    poison = {"accesskit", "winit", "genet-winit-host", "safe-middle"}
+    if ortet_wasm_native_adapters(poison) != sorted(ORTET_WASM_NATIVE_ADAPTERS):
+        fail(
+            "ortet wasm32 cone positive control did not name every native adapter: "
+            f"{ortet_wasm_native_adapters(poison)}"
+        )
+    print("ortet wasm32 synthetic controls: native adapter set rejects accesskit/winit host path")
 
 
 def main() -> None:
@@ -549,6 +617,8 @@ def main() -> None:
     assert_no_mere_source(resolved)
     assert_ortet_cone(resolved)
     assert_netfetcher_semantics_cone()
+    self_test_ortet_wasm_cone()
+    assert_ortet_wasm_cone()
     print("dependency-cone witnesses passed")
 
 

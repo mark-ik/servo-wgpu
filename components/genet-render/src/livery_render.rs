@@ -726,6 +726,7 @@ impl<'a> LaidOutDocument<'a> {
             .unwrap_or_default()
     }
 
+    #[cfg(feature = "accesskit")]
     pub fn accesskit_tree(&self, focus: Option<NodeId>) -> accesskit::TreeUpdate {
         crate::a11y::accesskit_tree(self.dom, &self.fragments, focus)
     }

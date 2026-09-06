@@ -1091,6 +1091,9 @@ where
 }
 
 fn resource_kind_for_css_url(url: &str) -> ResourceKind {
+    if data_url_is_font(url) {
+        return ResourceKind::Font;
+    }
     let path = url
         .split_once(['?', '#'])
         .map_or(url, |(path, _)| path)
@@ -1103,6 +1106,29 @@ fn resource_kind_for_css_url(url: &str) -> ResourceKind {
     } else {
         ResourceKind::Image
     }
+}
+
+fn data_url_is_font(url: &str) -> bool {
+    let Some(metadata) = url.strip_prefix("data:") else {
+        return false;
+    };
+    let media_type = metadata
+        .split_once(',')
+        .map_or(metadata, |(metadata, _)| metadata)
+        .split_once(';')
+        .map_or(metadata, |(media_type, _)| media_type);
+    matches!(
+        media_type.to_ascii_lowercase().as_str(),
+        "font/ttf"
+            | "font/otf"
+            | "font/woff"
+            | "font/woff2"
+            | "application/font-sfnt"
+            | "application/font-woff"
+            | "application/font-woff2"
+            | "application/x-font-ttf"
+            | "application/x-font-woff"
+    )
 }
 
 fn explicitly_unsupported_scheme(url: &str) -> bool {
@@ -1262,6 +1288,31 @@ mod tests {
                 .resources
                 .iter()
                 .any(|resource| resource.kind == ResourceKind::Font)
+        );
+    }
+
+    #[test]
+    fn classifies_data_font_face_as_a_font_resource() {
+        struct DataFontFetch;
+        impl ResourceFetcher for DataFontFetch {
+            fn fetch(&self, url: &str) -> Option<Vec<u8>> {
+                url.starts_with("data:font/ttf;base64,")
+                    .then_some(vec![0, 1, 2])
+            }
+        }
+
+        let document = StaticDocument::parse(
+            r#"<style>@font-face { font-family: receipt; src: url(data:font/ttf;base64,AAEC); }</style>"#,
+        );
+        let resources = ResolvedDocumentResources::resolve(&document, None, &DataFontFetch);
+        assert_eq!(
+            resources.resources,
+            vec![ResolvedResource {
+                kind: ResourceKind::Font,
+                authored_url: "data:font/ttf;base64,AAEC".to_owned(),
+                resolved_url: "data:font/ttf;base64,AAEC".to_owned(),
+                bytes: vec![0, 1, 2],
+            }]
         );
     }
 

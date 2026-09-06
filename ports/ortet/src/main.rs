@@ -6,10 +6,14 @@
 
 //! `ortet` — open one document in one window. See the crate docs in `lib.rs`.
 
+#[cfg(not(target_arch = "wasm32"))]
 use ortet::args::{self, Invocation};
+#[cfg(not(target_arch = "wasm32"))]
 use ortet::fetch::OrtetFetcher;
+#[cfg(not(target_arch = "wasm32"))]
 use ortet::shell;
 
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> std::process::ExitCode {
     match run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -20,6 +24,7 @@ fn main() -> std::process::ExitCode {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn run() -> Result<(), String> {
     let config = match args::parse(std::env::args().skip(1))? {
         Invocation::Help => {
@@ -52,3 +57,6 @@ fn run() -> Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(target_arch = "wasm32")]
+fn main() {}
