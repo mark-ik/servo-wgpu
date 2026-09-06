@@ -123,9 +123,10 @@ the fetcher's scheme split) is green; and the O0 witness still passes.
   advertised action. Pointer actions use the same current click-target
   revalidation before they enter ordinary input routing.
 
-**Done when:** the bridge reports a tree whose root carries the article's
-heading; a queued action from document A is rejected after navigation to
-document B even when B reuses A's local node ID; an action whose revision or
+**Done when:** the bridge reports the session-provided document root with an
+article-heading descendant named `Ortet`; a queued action from document A is
+rejected after navigation to document B even when B reuses A's local node ID;
+an action whose revision or
 advertised action changed is rejected; and one current focus or scroll action
 is accepted by a live session and visibly changes its projection or scroll
 state.
@@ -300,6 +301,24 @@ graph control.
   current projection, and drain requests back through the session's revision
   and action checks. `genet-winit-host/src/a11y.rs` supplies the platform
   adapter, but does not supply Ortet's session-generation custody.
+
+- 2026-09-05: a document root and its heading are distinct semantic nodes.
+  Ortet preserves the session-provided document-root name and exposes `Ortet`
+  as the fixture heading descendant; it does not fabricate a document name from
+  the first H1 merely to satisfy the earlier loose O2 wording. Native probes
+  therefore target the `Ortet` heading and the `Field notes` hyperlink rather
+  than asserting an invented root label.
+
+- 2026-09-05: `AccessKitBridge` queues only a host node ID, action, and data;
+  it does not preserve an engine projection revision. Ortet therefore gives
+  every published projection fresh host node IDs and retains each ID's
+  generation, local target, revision, and advertised actions. An asynchronous
+  request from an older publication then has no current binding and is rejected
+  instead of being re-stamped with a newer observation. This favors action
+  custody over stable platform IDs across revisions, so assistive technology
+  may observe node identity churn after a semantic update. Keeping stable IDs
+  would require a bridge-level publication token or an atomic queue/publication
+  contract; neither belongs in Ortet's host-local O2 slice.
 
 - 2026-09-05: O3 has a reusable target-neutral seam in
   `components/genet-render-host/src/lib.rs::RenderCore::create_surface`,
@@ -507,3 +526,23 @@ graph control.
 - 2026-09-05: read-only O2/O3 source review identified the host-side
   accessibility custody and target-gated canvas entrypoint as the next slices;
   no implementation or runtime receipt was claimed.
+
+- 2026-09-05: **O2 implementation is ready for native acceptance.** Ortet now
+  builds its AccessKit tree from `DocumentA11yProjection`, installs the native
+  bridge while the window is hidden, makes the window visible only afterward,
+  updates the tree after session changes, and drains platform actions on the
+  event loop's redraw wake. `ports/ortet/src/a11y.rs` owns the generation and
+  publication binding; `shell.rs` owns native bridge lifecycle and routes
+  accepted click actions through the ordinary pointer/navigation path. No new
+  `--actions` verb or accessibility CLI was added.
+
+  Automated receipt: with `CARGO_TARGET_DIR=Code/targets/genet-font-proof-20260905`,
+  `RUSTFLAGS=-C debuginfo=0`, `cargo test -p ortet --offline -j 1` passed all
+  13 tests. The three new O2 tests use a real Livery `DocumentSession`: they
+  retain a document root plus named `Ortet` heading, reject a queued A request
+  after a B publication that deliberately reuses A's local ID, and reject an
+  old same-session publication and an unadvertised action while accepting a
+  current Focus action for the `Field notes` link. The remaining O2 gate is a
+  native platform receipt:
+  inspect the published tree, invoke focus on `Field notes`, and observe the
+  resulting focused projection through the installed bridge.

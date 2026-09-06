@@ -22,7 +22,7 @@ use document_session_api::session_engine::{
 };
 use genet_documents::LiverySessionEngine;
 use genet_host_api::navigation::resolve_href;
-use genet_winit_host::{SurfaceHost, wheel_delta_from_winit};
+use genet_winit_host::{AccessKitBridge, BridgeStatus, SurfaceHost, wheel_delta_from_winit};
 use netrender::{ColorLoad, ExternalTexturePlacement, NetrenderOptions, Scene};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -30,6 +30,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
+use crate::a11y::{Accessibility, RoutedAction};
 use crate::args::{Action, Config};
 use crate::fetch::OrtetFetcher;
 use crate::receipt;
@@ -81,6 +82,8 @@ struct Ortet {
     session: Box<dyn DocumentSession<Scene>>,
     window: Option<Arc<Window>>,
     host: Option<SurfaceHost>,
+    a11y_bridge: Option<AccessKitBridge>,
+    a11y: Accessibility,
     width: u32,
     height: u32,
     /// Physical device pixels per logical layout pixel.
@@ -114,6 +117,8 @@ impl Ortet {
             session,
             window: None,
             host: None,
+            a11y_bridge: None,
+            a11y: Accessibility::default(),
             scale_factor: 1.0,
             frames: 0,
             modifiers: SessionModifiers::default(),
@@ -168,8 +173,10 @@ impl Ortet {
         match spawn(&self.engine, &resolved, self.logical_size()) {
             Ok(session) => {
                 self.session = session;
+                self.a11y.replace_session();
                 self.address = resolved;
                 self.retitle();
+                self.publish_accessibility();
                 self.request_redraw();
             },
             Err(error) => eprintln!("[ortet] {error}"),
@@ -186,6 +193,34 @@ impl Ortet {
                 eprintln!("[ortet] form submission to {action} is not wired in this host");
             },
             SessionClick::Handled | SessionClick::Miss => {},
+        }
+    }
+
+    fn publish_accessibility(&mut self) {
+        let update = self.a11y.publish(self.session.accessibility_projection());
+        if let Some(update) = update
+            && let Some(bridge) = self.a11y_bridge.as_mut()
+        {
+            bridge.update(update);
+        }
+    }
+
+    fn drain_accessibility_actions(&mut self) {
+        let requests = self
+            .a11y_bridge
+            .as_mut()
+            .map(AccessKitBridge::drain_actions)
+            .unwrap_or_default();
+        for request in requests {
+            match self.a11y.route(&mut *self.session, &request) {
+                RoutedAction::Rejected => {},
+                RoutedAction::Dispatched => self.request_redraw(),
+                RoutedAction::Click { x, y } => {
+                    let _ = self.session.pointer_down(x, y);
+                    let click = self.session.pointer_up(x, y);
+                    self.apply_click(click);
+                },
+            }
         }
     }
 
@@ -250,6 +285,7 @@ impl Ortet {
         if self.host.is_none() {
             return;
         }
+        self.drain_accessibility_actions();
         // The scene is produced before the host is borrowed: driving the
         // pending actions can replace the session, which needs `&mut self`.
         let (width, height) = self.logical_size();
@@ -260,6 +296,7 @@ impl Ortet {
             // session). Present that, not the geometry probe above.
             scene = self.session.frame(width, height);
         }
+        self.publish_accessibility();
         let Some(host) = self.host.as_ref() else {
             return;
         };
@@ -337,6 +374,7 @@ impl ApplicationHandler for Ortet {
         }
         let attributes = Window::default_attributes()
             .with_title(format!("ortet — {}", self.address))
+            .with_visible(false)
             .with_inner_size(winit::dpi::PhysicalSize::new(self.width, self.height));
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
@@ -350,6 +388,26 @@ impl ApplicationHandler for Ortet {
         self.width = size.width.max(1);
         self.height = size.height.max(1);
         self.scale_factor = window.scale_factor() as f32;
+        // The bridge must be installed while the native window is hidden on
+        // Windows. Frame once to obtain the session's first real projection;
+        // an honest empty document is used only if that engine has none.
+        let (logical_width, logical_height) = self.logical_size();
+        let _ = self.session.frame(logical_width, logical_height);
+        let initial = self
+            .a11y
+            .publish(self.session.accessibility_projection())
+            .unwrap_or_else(|| self.a11y.empty_tree());
+        let wake_window = window.clone();
+        let mut bridge = AccessKitBridge::new(move || wake_window.request_redraw());
+        if let Err(error) = bridge.install(&window, initial) {
+            self.failure = Some(format!("could not install accessibility bridge: {error}"));
+            event_loop.exit();
+            return;
+        }
+        if bridge.status() == BridgeStatus::Installed {
+            eprintln!("[ortet] accessibility bridge installed");
+        }
+        self.a11y_bridge = Some(bridge);
         // A raw browsing host is exactly the case wgpu's limit bucketing exists
         // for: adapter limits are a fingerprinting surface and the content here
         // is untrusted by construction.
@@ -366,8 +424,11 @@ impl ApplicationHandler for Ortet {
                 return;
             },
         }
-        window.request_redraw();
         self.window = Some(window);
+        if let Some(window) = self.window.as_ref() {
+            window.set_visible(true);
+            window.request_redraw();
+        }
     }
 
     fn window_event(
@@ -470,6 +531,9 @@ impl ApplicationHandler for Ortet {
                 let _ = self.apply_input(SessionInput::Ime(ime_from_winit(ime)));
             },
             WindowEvent::Focused(focused) => {
+                if let Some(bridge) = self.a11y_bridge.as_mut() {
+                    bridge.update_window_focus(focused);
+                }
                 if !focused && self.pointer_captured {
                     let _ = self.apply_input(SessionInput::Cancel);
                     self.pointer_captured = false;

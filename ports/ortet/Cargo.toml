@@ -20,6 +20,7 @@ path = "src/main.rs"
 bench = false
 
 [dependencies]
+accesskit = { workspace = true }
 # The session contracts ortet drives: SessionEngine, DocumentSession, the
 # neutral input vocabulary.
 document-session-api = { workspace = true }

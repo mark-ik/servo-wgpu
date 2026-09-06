@@ -53,6 +53,19 @@ The list runs **once**, after the first frame has laid the document out, so a
 click has real geometry to hit. Whatever the actions changed is what the next
 frame — and therefore the captured receipt — shows.
 
+## Accessibility
+
+On native platforms Ortet installs `genet-winit-host`'s AccessKit bridge before
+showing its window and publishes the Livery session's current semantic tree.
+There is no accessibility command-line action syntax: platform assistive
+technology sends normal AccessKit actions, which Ortet routes through the
+session's existing focus, scroll, and pointer paths.
+
+For the article fixture, probe the heading named `Ortet` and the hyperlink
+named `Field notes`. The document root is preserved as the session supplies it;
+Ortet does not rename it from the heading. Ortet logs
+`[ortet] accessibility bridge installed` when the native adapter is live.
+
 ## Receipts
 
 `--frames N --artifact out.png` presents N frames, composes the last one into a

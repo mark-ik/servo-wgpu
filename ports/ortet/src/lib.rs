@@ -28,6 +28,7 @@
 //! The library half exists so the argument parser and the scheme split can be
 //! unit-tested without a GPU; `main.rs` is a thin wrapper over [`shell::run`].
 
+pub(crate) mod a11y;
 pub mod args;
 pub mod fetch;
 pub mod receipt;
