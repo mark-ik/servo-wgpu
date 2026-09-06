@@ -118,7 +118,11 @@ pub enum InlineShorthandExpansion {
 /// inline CSSOM seam.
 pub fn specified_shorthand_longhands(name: &str) -> Option<Vec<&'static str>> {
     let shorthand = ShorthandId::from_css_name(&name.to_ascii_lowercase())?;
-    matches!(shorthand, ShorthandId::Flex | ShorthandId::FlexFlow).then(|| {
+    matches!(
+        shorthand,
+        ShorthandId::Columns | ShorthandId::Flex | ShorthandId::FlexFlow
+    )
+    .then(|| {
         shorthand
             .metadata()
             .longhands
@@ -254,6 +258,12 @@ pub fn reconstruct_specified_shorthand(
     }
 
     match name.as_str() {
+        "columns" => match (values[0].as_str(), values[1].as_str()) {
+            ("auto", "auto") => Some("auto".to_owned()),
+            ("auto", count) => Some(count.to_owned()),
+            (width, "auto") => Some(width.to_owned()),
+            (width, count) => Some(format!("{width} {count}")),
+        },
         "flex" => Some(values.join(" ")),
         "flex-flow" => {
             let direction = &values[0];

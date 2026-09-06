@@ -13,6 +13,7 @@ use super::{
 
 mod animation;
 mod backgrounds;
+mod columns;
 mod containment;
 mod layout;
 mod transforms;
@@ -22,6 +23,7 @@ mod typography;
 // arrangement, not a new public surface.
 pub use animation::*;
 pub use backgrounds::*;
+pub use columns::*;
 pub use containment::*;
 pub use layout::*;
 pub use transforms::*;

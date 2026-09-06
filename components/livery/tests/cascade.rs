@@ -107,6 +107,68 @@ fn expanded_css_values(css: &str) -> Vec<(String, String)> {
 }
 
 #[test]
+fn columns_shorthand_is_order_independent_and_resets_omitted_longhands() {
+    for (css, expected) in [
+        (
+            "columns: 2",
+            vec![
+                ("column-width".into(), "auto".into()),
+                ("column-count".into(), "2".into()),
+            ],
+        ),
+        (
+            "columns: 20px",
+            vec![
+                ("column-width".into(), "20px".into()),
+                ("column-count".into(), "auto".into()),
+            ],
+        ),
+        (
+            "columns: auto 20px",
+            vec![
+                ("column-width".into(), "20px".into()),
+                ("column-count".into(), "auto".into()),
+            ],
+        ),
+        (
+            "columns: 2 20px",
+            vec![
+                ("column-width".into(), "20px".into()),
+                ("column-count".into(), "2".into()),
+            ],
+        ),
+        (
+            "columns: auto auto",
+            vec![
+                ("column-width".into(), "auto".into()),
+                ("column-count".into(), "auto".into()),
+            ],
+        ),
+    ] {
+        assert_eq!(expanded_css_values(css), expected, "{css}");
+    }
+    assert!(!parse_declaration_block("columns: -1px").errors.is_empty());
+    assert!(
+        !parse_declaration_block("columns: 2 20px 3")
+            .errors
+            .is_empty()
+    );
+    for keyword in ["initial", "inherit", "unset"] {
+        let block = parse_declaration_block(&format!("columns: {keyword}"));
+        assert!(block.errors.is_empty(), "{keyword}: {:?}", block.errors);
+        assert_eq!(block.declarations.len(), 2);
+        assert!(block.declarations.iter().all(|declaration| {
+            matches!(
+                declaration.value,
+                livery::cascade::DeclaredValue::Initial
+                    | livery::cascade::DeclaredValue::Inherit
+                    | livery::cascade::DeclaredValue::Unset
+            )
+        }));
+    }
+}
+
+#[test]
 fn flex_shorthand_expands_keyword_and_arity_defaults() {
     for (css, expected) in [
         (

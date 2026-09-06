@@ -10,15 +10,15 @@ use livery::media::{ViewportSize, ViewportSizes};
 use livery::values::{
     Alignment, AnimationDelay, AnimationName, AspectRatio, BackgroundAttachment, BackgroundBox,
     BackgroundImage, BackgroundPosition, BackgroundRepeat, BackgroundSize, BorderCollapse,
-    BorderStyle, BorderWidth, BoxShadow, BoxSizing, CaptionSide, Clear, Color, Contain,
-    ContainIntrinsicSize, CssValue, Direction, Display, Duration, EmptyCells, FlexBasis,
-    FlexDirection, FlexFactor, FlexWrap, Float, FontFamily, FontFeatureSettings, FontSize,
-    FontStyle, FontVariantLigatures, FontWeight, Gap, Inset, Interpolate, LengthPercentage,
-    LengthUnit, LineHeight, ListStyleType, Margin, Opacity, Order, Overflow, Padding,
-    PointerEvents, Position, Radius, RelativeLengthEnvironment, ResolveViewport, Rotate, Scale,
-    Size, Spacing, TableBorderSpacing, TextAlign, TextDecorationLine, TextWrapMode, TimingFunction,
-    Transform, TransitionProperty, TreeCounts, VerticalAlign, Visibility, WhiteSpaceCollapse,
-    ZIndex,
+    BorderStyle, BorderWidth, BoxShadow, BoxSizing, BreakAfter, BreakBefore, BreakInside,
+    CaptionSide, Clear, Color, ColumnCount, ColumnFill, ColumnWidth, Contain, ContainIntrinsicSize,
+    CssValue, Direction, Display, Duration, EmptyCells, FlexBasis, FlexDirection, FlexFactor,
+    FlexWrap, Float, FontFamily, FontFeatureSettings, FontSize, FontStyle, FontVariantLigatures,
+    FontWeight, Gap, Inset, Interpolate, LengthPercentage, LengthUnit, LineHeight, ListStyleType,
+    Margin, Opacity, Order, Orphans, Overflow, Padding, PointerEvents, Position, Radius,
+    RelativeLengthEnvironment, ResolveViewport, Rotate, Scale, Size, Spacing, TableBorderSpacing,
+    TextAlign, TextDecorationLine, TextWrapMode, TimingFunction, Transform, TransitionProperty,
+    TreeCounts, VerticalAlign, Visibility, WhiteSpaceCollapse, Widows, ZIndex,
 };
 use livery::{
     AnimationClass, ComputedValues, InlineShorthandExpansion, PropertyId,
@@ -36,6 +36,55 @@ where
     let reparsed = T::parse_css(&serialized)
         .unwrap_or_else(|error| panic!("{css} serialized as {serialized}: {error}"));
     assert_eq!(parsed, reparsed, "{css} serialized as {serialized}");
+}
+
+#[test]
+fn k6a_fragmentation_values_enforce_css_grammars() {
+    for value in ["auto", "1", "12", "calc(1 + 234)", "calc(0)"] {
+        assert_round_trip::<ColumnCount>(value);
+    }
+    for value in [
+        "auto",
+        "0",
+        "20px",
+        "2em",
+        "calc(10px + 0.5em)",
+        "calc(20px /* 100% in a comment */)",
+    ] {
+        assert_round_trip::<ColumnWidth>(value);
+    }
+    for value in ["auto", "balance", "balance-all"] {
+        assert_round_trip::<ColumnFill>(value);
+    }
+    for value in ["auto", "avoid", "column", "avoid-page", "region"] {
+        assert_round_trip::<BreakBefore>(value);
+        assert_round_trip::<BreakAfter>(value);
+    }
+    for value in ["auto", "avoid-column", "avoid-region"] {
+        assert_round_trip::<BreakInside>(value);
+    }
+    for value in ["1", "2", "99", "calc(0)"] {
+        assert_round_trip::<Orphans>(value);
+        assert_round_trip::<Widows>(value);
+    }
+    for (ty, value) in [
+        ("column-count", "0"),
+        ("column-width", "-1px"),
+        ("column-width", "calc(10px + 0%)"),
+        ("orphans", "0"),
+        ("widows", "-2"),
+    ] {
+        assert!(
+            livery::canonicalize_specified_value(ty, value).is_none(),
+            "{ty}: {value} must be rejected"
+        );
+    }
+    for (source, expected) in [("2", "2"), ("20px", "20px"), ("auto 20px", "20px")] {
+        assert_eq!(
+            canonicalize_specified_shorthand("columns", source).as_deref(),
+            Some(expected)
+        );
+    }
 }
 
 #[test]

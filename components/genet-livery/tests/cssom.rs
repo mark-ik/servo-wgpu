@@ -149,6 +149,89 @@ fn computed_style_serializes_flex_shorthands_from_longhands() {
 }
 
 #[test]
+fn computed_style_serializes_k6a_columns_and_fragmentation_values() {
+    let (style_set, card) = retained(
+        ".card { columns: auto 20px; column-fill: balance-all; break-before: column; break-inside: avoid-column; orphans: 3; widows: 4; }",
+    );
+    assert_eq!(
+        style_set.computed_style(card, "column-count").as_deref(),
+        Some("auto")
+    );
+    assert_eq!(
+        style_set.computed_style(card, "column-fill").as_deref(),
+        Some("balance-all")
+    );
+    assert_eq!(
+        style_set.computed_style(card, "break-before").as_deref(),
+        Some("column")
+    );
+    assert_eq!(
+        style_set.computed_style(card, "break-inside").as_deref(),
+        Some("avoid-column")
+    );
+    assert_eq!(
+        style_set.computed_style(card, "orphans").as_deref(),
+        Some("3")
+    );
+    assert_eq!(
+        style_set.computed_style(card, "widows").as_deref(),
+        Some("4")
+    );
+
+    let (relative, card) = retained(".card { font-size: 10px; column-width: 2em; }");
+    assert_eq!(
+        relative.computed_style(card, "column-width").as_deref(),
+        Some("20px")
+    );
+
+    let (calc, card) = retained(
+        ".card { font-size: 40px; column-width: calc(10px + 0.5em); orphans: calc(1 + 234); widows: calc(1 + 234); }",
+    );
+    assert_eq!(
+        calc.computed_style(card, "column-width").as_deref(),
+        Some("30px")
+    );
+    assert_eq!(calc.computed_style(card, "orphans").as_deref(), Some("235"));
+    assert_eq!(calc.computed_style(card, "widows").as_deref(), Some("235"));
+
+    let (clamped, card) = retained(".card { font-size: 40px; column-width: calc(10px - 0.5em); }");
+    assert_eq!(
+        clamped.computed_style(card, "column-width").as_deref(),
+        Some("0px")
+    );
+
+    let (zero, card) = retained(".card { column-width: 0; }");
+    assert_eq!(
+        zero.computed_style(card, "column-width").as_deref(),
+        Some("0px")
+    );
+}
+
+#[test]
+fn inherited_column_width_keeps_the_parent_font_basis() {
+    let document = StaticDocument::parse(
+        "<html><body><div class='parent'><div class='child'>child</div></div></body></html>",
+    );
+    let styles = StyleSet::cambium(&[".parent { font-size: 40px; column-width: 2em; } \
+         .child { font-size: 10px; column-width: inherit; }"]);
+    let child = document
+        .first_with_class(document.document(), "child")
+        .expect("child node");
+    let parent = document
+        .first_with_class(document.document(), "parent")
+        .expect("parent node");
+    let retained = LiveryDocument::new(document, styles, Device::screen(200.0, 100.0));
+    assert_eq!(
+        retained.computed_style(parent, "column-width").as_deref(),
+        Some("80px")
+    );
+    assert_eq!(
+        retained.computed_style(child, "column-width").as_deref(),
+        Some("80px")
+    );
+}
+
+#[test]
 fn computed_transform_serializes_as_a_resolved_2d_matrix() {
     let (retained, card) =
         retained(".card { font-size: 10px; transform: translate(2em, 4px) skewX(45deg); }");
@@ -194,6 +277,26 @@ fn insert_and_delete_author_rules_restyle_the_retained_document() {
         retained.computed_style(card, "color").as_deref(),
         Some("rgb(17, 17, 17)")
     );
+}
+
+#[test]
+fn retained_k6a_mutation_matches_a_fresh_final_document() {
+    let (mut document, card) = retained(".card { columns: 2; }");
+    document.frame(200, 100).expect("initial K6a frame");
+    document
+        .insert_author_rule(0, ".card { columns: 20px; }", 1)
+        .expect("insert K6a rule");
+    document.frame(200, 100).expect("mutated K6a frame");
+
+    let (mut fresh, fresh_card) = retained(".card { columns: 20px; }");
+    fresh.frame(200, 100).expect("fresh K6a frame");
+    for property in ["column-width", "column-count"] {
+        assert_eq!(
+            document.computed_style(card, property),
+            fresh.computed_style(fresh_card, property),
+            "{property} differs after retained mutation"
+        );
+    }
 }
 
 #[test]

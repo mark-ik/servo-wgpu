@@ -15,10 +15,10 @@ use crate::media::{Device, SystemPalette};
 use crate::values::{
     AnimationDelay, AnimationName, BackgroundAttachment, BackgroundBox, BackgroundImage,
     BackgroundPosition, BackgroundRepeat, BackgroundSize, BorderStyle, BorderWidth, BoxShadow,
-    ColorScheme, ComputedColor, Duration, FlexBasis, FlexDirection, FlexFactor, FlexWrap,
-    FontFamily, FontFeatureSettings, FontSize, FontStyle, FontVariantLigatures, FontWeight, Inset,
-    LineHeight, Margin, Padding, Radius, SystemColor, TimingFunction, TransitionProperty,
-    UsedColorContext,
+    ColorScheme, ColumnCount, ColumnWidth, ComputedColor, Duration, FlexBasis, FlexDirection,
+    FlexFactor, FlexWrap, FontFamily, FontFeatureSettings, FontSize, FontStyle,
+    FontVariantLigatures, FontWeight, Inset, LineHeight, Margin, Padding, Radius, SystemColor,
+    TimingFunction, TransitionProperty, UsedColorContext,
 };
 use crate::{ComputedValues, PropertyId, PropertyValue, ShorthandId};
 
@@ -813,6 +813,68 @@ fn expand_flex_flow(block: &mut DeclarationBlock, value: &str, important: bool) 
     }
 }
 
+/// Expand the order-independent `columns` shorthand.  A single component
+/// selects its matching longhand and resets the other to its initial `auto`;
+/// the deliberately ambiguous single `auto` form resets both longhands.
+fn expand_columns(block: &mut DeclarationBlock, value: &str, important: bool) {
+    let components = split_components(value);
+    if components.is_empty() || components.len() > 2 {
+        block.errors.push(DeclarationError {
+            name: "columns".to_owned(),
+            value: value.to_owned(),
+            kind: DeclarationErrorKind::InvalidValue,
+        });
+        return;
+    }
+
+    let mut width = None;
+    let mut count = None;
+    let mut auto_count = 0_u8;
+    for component in components {
+        if component.eq_ignore_ascii_case("auto") {
+            auto_count += 1;
+            continue;
+        } else if component.parse::<ColumnWidth>().is_ok() && width.is_none() {
+            width = Some(component);
+            continue;
+        } else if component.parse::<ColumnCount>().is_ok() && count.is_none() {
+            count = Some(component);
+            continue;
+        }
+        block.errors.push(DeclarationError {
+            name: "columns".to_owned(),
+            value: value.to_owned(),
+            kind: DeclarationErrorKind::InvalidValue,
+        });
+        return;
+    }
+
+    if auto_count > 2 || (auto_count == 2 && (width.is_some() || count.is_some())) {
+        block.errors.push(DeclarationError {
+            name: "columns".to_owned(),
+            value: value.to_owned(),
+            kind: DeclarationErrorKind::InvalidValue,
+        });
+        return;
+    }
+    if auto_count > 0 {
+        if width.is_none() {
+            width = Some("auto");
+        } else if count.is_none() {
+            count = Some("auto");
+        }
+    }
+
+    let (width, count) = match (width, count) {
+        (Some(width), Some(count)) => (width, count),
+        (Some(width), None) => (width, "auto"),
+        (None, Some(count)) => ("auto", count),
+        (None, None) => unreachable!("non-empty columns shorthand has a component"),
+    };
+    push_longhand(block, "column-width", width, important);
+    push_longhand(block, "column-count", count, important);
+}
+
 fn expand_border(
     block: &mut DeclarationBlock,
     shorthand: ShorthandId,
@@ -1374,6 +1436,8 @@ pub fn parse_declaration_block(input: &str) -> DeclarationBlock {
             expand_flex(&mut block, value, important);
         } else if shorthand == ShorthandId::FlexFlow {
             expand_flex_flow(&mut block, value, important);
+        } else if shorthand == ShorthandId::Columns {
+            expand_columns(&mut block, value, important);
         }
     }
     block

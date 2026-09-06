@@ -115,6 +115,50 @@ fn class_snapshot_restyles_one_branch_and_preserves_sibling_matching() {
 }
 
 #[test]
+fn class_invalidation_recomputes_k6a_fragmentation_values() {
+    let mut dom = ScriptedDom::from_serialized_document(
+        "<html><body><div id='target' class='narrow'></div></body></html>",
+    );
+    let mut discarded = Vec::new();
+    dom.drain_mutations(&mut discarded);
+    let styles = StyleSet::cambium(
+        &[".narrow { columns: 2; break-inside: avoid; orphans: 2; } \
+         .wide { columns: 20px; break-inside: avoid-column; orphans: 4; }"],
+    );
+    let device = Device::screen(800.0, 600.0);
+    let states = InteractionStates::default();
+    let mut session = IncrementalStyle::new();
+    session.update(&dom, &styles, &device, &states, &[]);
+    let target = by_id(&dom, "target");
+    assert_eq!(
+        session.styles().computed_style(target, "column-count"),
+        Some("2".to_string())
+    );
+    assert_eq!(
+        session.styles().computed_style(target, "orphans"),
+        Some("2".to_string())
+    );
+
+    dom.set_attribute(target, attr("class"), "wide");
+    let mut mutations = Vec::new();
+    dom.drain_mutations(&mut mutations);
+    session.update(&dom, &styles, &device, &states, &mutations);
+    assert_eq!(
+        session.styles().computed_style(target, "column-width"),
+        Some("20px".to_string())
+    );
+    assert_eq!(
+        session.styles().computed_style(target, "break-inside"),
+        Some("avoid-column".to_string())
+    );
+    assert_eq!(
+        session.styles().computed_style(target, "orphans"),
+        Some("4".to_string())
+    );
+    assert_matches_full(&dom, &session, &styles, &states);
+}
+
+#[test]
 fn interaction_state_restyles_only_the_stateful_subtree() {
     let dom = ScriptedDom::from_serialized_document(
         "<html><body>\

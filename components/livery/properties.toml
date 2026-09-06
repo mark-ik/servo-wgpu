@@ -88,6 +88,12 @@ url = "https://www.w3.org/TR/CSS22/visuren.html#flow-control"
 [sources.css_shapes_1]
 url = "https://www.w3.org/TR/css-shapes-1/#shape-outside-property"
 
+[sources.css_multicol_1]
+url = "https://www.w3.org/TR/css-multicol-1/"
+
+[sources.css_break_3]
+url = "https://www.w3.org/TR/css-break-3/"
+
 [shorthands.inset]
 longhands = ["top", "right", "bottom", "left"]
 grammar = "auto | <length-percentage>, one to four values"
@@ -2135,12 +2141,16 @@ animation = "by-computed-value"
 spec = "Non-standard (https://github.com/atanassov/css-zoom/ is the closest)"
 
 # group: column
-[[unimplemented]]
+[[property]]
 name = "column-count"
+value_type = "column-count"
 group = "column"
 inherited = false
+initial = "auto"
+grammar = "auto | <integer [1,∞]>"
+seed_values = ["auto", "2"]
 animation = "by-computed-value"
-spec = "https://drafts.csswg.org/css-multicol/#propdef-column-count"
+source = "css_multicol_1"
 
 [[unimplemented]]
 name = "column-span"
@@ -2149,12 +2159,88 @@ inherited = false
 animation = "discrete"
 spec = "https://drafts.csswg.org/css-multicol/#propdef-column-span"
 
-[[unimplemented]]
+[[property]]
 name = "column-width"
+value_type = "column-width"
 group = "column"
 inherited = false
+initial = "auto"
+grammar = "auto | <length [0,∞]>"
+seed_values = ["auto", "20px"]
 animation = "by-computed-value"
-spec = "https://drafts.csswg.org/css-multicol/#propdef-column-width"
+source = "css_multicol_1"
+
+[[property]]
+name = "column-fill"
+value_type = "column-fill"
+group = "column"
+inherited = false
+initial = "balance"
+grammar = "auto | balance | balance-all"
+seed_values = ["auto", "balance", "balance-all"]
+animation = "discrete"
+source = "css_multicol_1"
+
+[shorthands.columns]
+longhands = ["column-width", "column-count"]
+grammar = "<column-width> || <column-count>"
+seed_values = ["auto", "20px 2"]
+source = "css_multicol_1"
+
+[[property]]
+name = "break-before"
+value_type = "break-before"
+group = "fragmentation"
+inherited = false
+initial = "auto"
+grammar = "auto | avoid | always | avoid-page | page | left | right | recto | verso | avoid-column | column | avoid-region | region"
+seed_values = ["auto", "page", "avoid-column"]
+animation = "discrete"
+source = "css_break_3"
+
+[[property]]
+name = "break-after"
+value_type = "break-after"
+group = "fragmentation"
+inherited = false
+initial = "auto"
+grammar = "auto | avoid | always | avoid-page | page | left | right | recto | verso | avoid-column | column | avoid-region | region"
+seed_values = ["auto", "page", "avoid-column"]
+animation = "discrete"
+source = "css_break_3"
+
+[[property]]
+name = "break-inside"
+value_type = "break-inside"
+group = "fragmentation"
+inherited = false
+initial = "auto"
+grammar = "auto | avoid | avoid-page | avoid-column | avoid-region"
+seed_values = ["auto", "avoid", "avoid-column"]
+animation = "discrete"
+source = "css_break_3"
+
+[[property]]
+name = "orphans"
+value_type = "orphans"
+group = "fragmentation"
+inherited = true
+initial = "2"
+grammar = "<integer [1,∞]>"
+seed_values = ["2", "3"]
+animation = "by-computed-value"
+source = "css_break_3"
+
+[[property]]
+name = "widows"
+value_type = "widows"
+group = "fragmentation"
+inherited = true
+initial = "2"
+grammar = "<integer [1,∞]>"
+seed_values = ["2", "3"]
+animation = "by-computed-value"
+source = "css_break_3"
 
 # group: counters
 [[unimplemented]]
@@ -2792,11 +2878,6 @@ spec = "https://drafts.csswg.org/css-logical/#propdef-border-inline-style"
 name = "border-inline-width"
 sub_properties = ["border-inline-start-width", "border-inline-end-width"]
 spec = "https://drafts.csswg.org/css-logical/#propdef-border-inline-width"
-
-[[unimplemented_shorthand]]
-name = "columns"
-sub_properties = ["column-width", "column-count"]
-spec = "https://drafts.csswg.org/css-multicol/#propdef-columns"
 
 [[unimplemented_shorthand]]
 name = "corner-block-end-shape"

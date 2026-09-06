@@ -29,17 +29,18 @@ pub use logical::{LogicalAxis, LogicalSide, PhysicalAxis, PhysicalSide};
 pub use property::{
     Alignment, AnimationDelay, AnimationName, AspectRatio, BackgroundAttachment, BackgroundBox,
     BackgroundImage, BackgroundPosition, BackgroundRepeat, BackgroundSize, BackgroundSizeComponent,
-    BorderCollapse, BorderStyle, BorderWidth, BoxShadow, BoxShadowValue, BoxSizing, CaptionSide,
-    Clear, Contain, ContainIntrinsicSize, ContainerName, ContainerType, Direction, Display,
-    Duration, EmptyCells, FlexBasis, FlexDirection, FlexFactor, FlexWrap, Float, FontFamily,
-    FontFeatureSetting, FontFeatureSettings, FontSize, FontStyle, FontVariantLigatures, FontWeight,
-    Gap, GridAutoFlow, GridPlacement, GridTemplate, GridTrack, HangingPunctuation, Hyphens, Inset,
-    LineBreak, LineHeight, ListStyleType, Margin, Opacity, Order, Overflow, OverflowWrap, Padding,
+    BorderCollapse, BorderStyle, BorderWidth, BoxShadow, BoxShadowValue, BoxSizing, BreakAfter,
+    BreakBefore, BreakInside, CaptionSide, Clear, ColumnCount, ColumnFill, ColumnWidth, Contain,
+    ContainIntrinsicSize, ContainerName, ContainerType, Direction, Display, Duration, EmptyCells,
+    FlexBasis, FlexDirection, FlexFactor, FlexWrap, Float, FontFamily, FontFeatureSetting,
+    FontFeatureSettings, FontSize, FontStyle, FontVariantLigatures, FontWeight, Gap, GridAutoFlow,
+    GridPlacement, GridTemplate, GridTrack, HangingPunctuation, Hyphens, Inset, LineBreak,
+    LineHeight, ListStyleType, Margin, Opacity, Order, Orphans, Overflow, OverflowWrap, Padding,
     PointerEvents, Position, Radius, RepeatStyle, Rotate, Scale, ShapeOutside, Size, Spacing,
     TabSize, TableBorderSpacing, TableLayout, TextAlign, TextAlignLast, TextDecorationColor,
     TextDecorationLine, TextIndent, TextJustify, TextTransform, TextTransformCase, TextWrapMode,
     TimingFunction, Transform, TransformFunction, TransitionProperty, VerticalAlign, Visibility,
-    WhiteSpaceCollapse, WordBreak, WritingMode, ZIndex,
+    WhiteSpaceCollapse, Widows, WordBreak, WritingMode, ZIndex,
 };
 pub use transform_matrix::Matrix2D;
 
@@ -116,10 +117,15 @@ unchanged_viewport_resolution!(
     CaptionSide,
     Clear,
     ColorSchemeList,
+    ColumnCount,
+    ColumnFill,
     Contain,
     ContainerName,
     ContainerType,
     ComputedColor,
+    BreakAfter,
+    BreakBefore,
+    BreakInside,
     Direction,
     Display,
     Duration,
@@ -137,6 +143,7 @@ unchanged_viewport_resolution!(
     GridPlacement,
     HangingPunctuation,
     Hyphens,
+    Orphans,
     LineBreak,
     ListStyleType,
     Opacity,
@@ -159,7 +166,17 @@ unchanged_viewport_resolution!(
     WhiteSpaceCollapse,
     WordBreak,
     WritingMode,
+    Widows,
 );
+
+impl ResolveViewport for ColumnWidth {
+    fn resolve_relative_lengths(&self, environment: RelativeLengthEnvironment) -> Self {
+        match self {
+            Self::Length(length) => Self::Length(length.resolve_relative(environment)),
+            Self::Auto => Self::Auto,
+        }
+    }
+}
 
 // The three bounded scalar families carry no lengths, but they can retain a
 // math program whose tree-counting leaves resolve from the same environment.
@@ -415,6 +432,9 @@ discrete_interpolation!(
     AnimationDelay,
     AnimationName,
     AspectRatio,
+    BreakAfter,
+    BreakBefore,
+    BreakInside,
     BackgroundAttachment,
     BackgroundBox,
     BorderCollapse,
@@ -422,6 +442,9 @@ discrete_interpolation!(
     CaptionSide,
     Clear,
     ColorSchemeList,
+    ColumnCount,
+    ColumnFill,
+    ColumnWidth,
     Contain,
     ContainIntrinsicSize,
     ContainerName,
@@ -446,6 +469,7 @@ discrete_interpolation!(
     GridTemplate,
     HangingPunctuation,
     Hyphens,
+    Orphans,
     Inset,
     LineBreak,
     LineHeight,
@@ -477,6 +501,7 @@ discrete_interpolation!(
     WhiteSpaceCollapse,
     WordBreak,
     WritingMode,
+    Widows,
     ZIndex,
 );
 

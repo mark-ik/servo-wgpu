@@ -470,6 +470,32 @@ cannot hide a moved regression.
 
 - Read-only source review grounded the K6a → K6b order above. No fragmentation
   source or WPT behavior was changed or runtime-validated in this review.
+- The bounded K6a input slice is now implemented in Livery: handwritten
+  `column-count`, `column-width`, `column-fill`, `break-before`,
+  `break-after`, `break-inside`, `orphans`, and `widows` values are catalogued
+  with their specified initial and inheritance metadata; `columns` expands in
+  either order and resets omitted longhands. Focused parsing, cascade,
+  computed-style, and incremental-style receipts passed with
+  `cargo test -p livery --offline -j 1` (6 unit, 34 cascade, 4 catalog, 3
+  computed-value, 4 consumed-set, 55 color, 8 contextual-color, 15 custom,
+  5 media, 6 property-space, 5 selectors, 11 stylesheet, and 42 value tests)
+  and `cargo test -p genet-livery --test cssom --test invalidation --offline
+  -j 1` (10 CSSOM and 5 invalidation tests). This only proves typed input,
+  cascade, serialization, and style invalidation; it grants no multicol
+  geometry or fragmentation credit. `column-span` remains K6c4 work.
+- Follow-up CSSOM coverage resolves `column-width: 2em` through the existing
+  font-size seam and covers the checked-in multicol computed cases:
+  `calc(10px + 0.5em)` at 40px resolves to 30px, a negative computed calc is
+  clamped to 0px, and `orphans`/`widows: calc(1 + 234)` resolve to 235.
+  Percentages remain rejected for `column-width`. The generic style plane
+  still uses its existing 16px root-font fallback for `rem`; a broader font
+  metric refactor is outside K6a, as recorded in the
+  [K4c table sizing plan](2026-07-28_buckram_k4c_table_inline_sizing_execution_plan.md)
+  and the [flex shorthand findings](2026-08-25_livery_flex_shorthand_plan.md).
+  Basic constant numeric and length calc forms are covered; deferred
+  environment-dependent math remains outside this typed-input receipt, per
+  the [Stylo harvest H5 boundary](2026-07-20_stylo_harvest_into_livery_plan.md).
+  No layout geometry credit is implied.
 
 ## Gate verification
 

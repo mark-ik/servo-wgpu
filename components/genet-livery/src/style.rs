@@ -28,9 +28,9 @@ use livery::{
         Stylesheet, StylesheetDiagnostic,
     },
     values::{
-        BackgroundImage, BorderStyle, BorderWidth, BoxShadow, ComputedColor, FlexBasis, FontSize,
-        Length, LengthPercentage, LengthUnit, LineHeight, Margin, Padding, Position, Size,
-        SystemColor, TreeCounts, UsedColorContext,
+        BackgroundImage, BorderStyle, BorderWidth, BoxShadow, ColumnWidth, ComputedColor,
+        FlexBasis, FontSize, Length, LengthPercentage, LengthUnit, LineHeight, Margin, Padding,
+        Position, Size, SystemColor, TreeCounts, UsedColorContext,
     },
 };
 
@@ -827,6 +827,12 @@ where
         if property == PropertyId::FlexBasis {
             return Some(computed_flex_basis_css(values.get(property)));
         }
+        if property == PropertyId::ColumnWidth
+            && let ColumnWidth::Length(LengthPercentage::Length(length)) = values.column_width
+            && length.value == 0.0
+        {
+            return Some("0px".to_owned());
+        }
         Some(computed_value_css(resolve_property_used_colors(
             values.get(property),
             self.used_color_context_for(values),
@@ -1413,6 +1419,16 @@ fn resolve_font_metrics(computed: &mut ComputedValues, parent: Option<&ComputedV
     }
     .max(0.0);
     computed.font_size = FontSize::Value(LengthPercentage::Length(Length::px(font_size)));
+    if let ColumnWidth::Length(length) = computed.column_width {
+        let resolved = length.resolve_font_relative(font_size, 16.0);
+        computed.column_width = ColumnWidth::Length(match resolved {
+            LengthPercentage::Zero => LengthPercentage::Length(Length::ZERO),
+            LengthPercentage::Length(length) if length.value < 0.0 => {
+                LengthPercentage::Length(Length::ZERO)
+            },
+            resolved => resolved,
+        });
+    }
     computed.transform.resolve_lengths(font_size, 16.0);
 
     if let LineHeight::Value(value) = computed.line_height {
