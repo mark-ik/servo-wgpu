@@ -7,12 +7,12 @@ Founded 2026-08-24, when the canonical policy core was distributed across the
 workspace and the component documents for inker, nematic and verso-tile were
 repatriated here from mere.
 
-> **Planned boundary correction, 2026-09-02:** Cambium and Genet's upper
-> application components are planned to move to Mere under
+> **Boundary correction landed, 2026-09-03:** Cambium and Genet's upper
+> application components moved to Mere under
 > `mere/design_docs/mere_docs/implementation_strategy/2026-09-02_platform_boundary_and_repository_topology_plan.md`.
-> Their documents remain indexed here while their code remains in Genet, then
-> move with the code. Genet retains web-platform implementation, observable
-> behavior, raw host contracts, WPT, and a minimal engine host.
+> Their documents moved with the code and are indexed in Mere. Genet retains
+> web-platform implementation, observable behavior, raw host contracts, WPT,
+> and a minimal engine host.
 
 > **Read the policy's "Two doc homes" section first.** This repository also has
 > a flat `docs/` directory of 166 older engine documents. The current engine
@@ -65,6 +65,11 @@ completed corpus census or bounded slice does not close its enclosing feature.
 
 ## fleece — reader extraction
 
+- [fleece_preservation_contract_plan](2026-09-05_fleece_preservation_contract_plan.md)
+  (**active 2026-09-05**: preserves Fleece extraction identity, wire values, and
+  arbitrary passage anchors for hashing, peer transfer, reopen, and annotations;
+  adds named Web Annotation, structured-data, HTML, provenance, validation, and
+  accessibility conformance gates with caller-owned capture and custody.)
 - [fleece_followthrough_plan](2026-08-26_fleece_followthrough_plan.md)
   (**complete 2026-08-26**: the
   `genet-extract` shim is retired; retained static/scripted hosts activate

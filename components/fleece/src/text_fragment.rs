@@ -4,12 +4,14 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 // SPDX-License-Identifier: MPL-2.0
 
-//! Pure projection of a [`crate::TextQuoteSelector`] into a URL text directive.
+//! Pure syntax projection of a [`crate::TextQuoteSelector`] into a URL text directive.
 //!
 //! The syntax and encoding are pinned to the WICG draft at commit
 //! [`b0ac8732fae68380674c86a5825bf3c2152c6439`](https://github.com/WICG/scroll-to-text-fragment/tree/b0ac8732fae68380674c86a5825bf3c2152c6439),
 //! `index.bs` (URL Fragment Text Directives). This module generates the
-//! directive component only; it does not compose a URL or implement activation.
+//! directive component only; it does not compose a URL, implement activation,
+//! or claim that Fleece's canonical DOM-text stream matches the browser's
+//! rendered-text matching stream.
 
 use crate::TextQuoteSelector;
 

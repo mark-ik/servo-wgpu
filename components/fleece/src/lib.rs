@@ -20,7 +20,7 @@
 //! extract), since both are just `LayoutDom`s.
 //!
 //! All output is **unresolved and rect-free**: an `href` is the raw attribute value
-//! (the caller owns the page URL and resolves it), and there is no geometry — this
+//! (the caller owns the document base URL and resolves it), and there is no geometry — this
 //! is the counterpart to the layout-coupled `LinkHit` (`href` + rect), for code that
 //! wants the link graph without laying the page out.
 
@@ -29,22 +29,45 @@
 use std::collections::{HashMap, HashSet};
 
 use layout_dom_api::{LayoutDom, LocalName, Namespace};
+use sha2::{Digest, Sha256};
+use unicode_bidi::{BidiClass, bidi_class};
 use unicode_segmentation::UnicodeSegmentation;
 
+mod annotation;
 mod metadata;
 mod structured;
 mod table;
 mod text_fragment;
+#[cfg(feature = "wire")]
+mod wire;
 
+pub use annotation::{
+    CanonicalTextSelectorProjection, FragmentSelector, RFC5147_CONFORMS_TO, anchor_for_range,
+    resolve_anchor, valid_range,
+};
 pub use metadata::{DocumentLink, Metadata, OpenGraphGroup, extract_metadata};
 pub use structured::{
-    StructuredData, StructuredDataSource, StructuredValue, extract_structured_data,
+    EmbeddedJsonLdBlock, JsonLdParseStatus, StructuredData, StructuredDataSource, StructuredValue,
+    extract_json_ld_blocks, extract_structured_data,
 };
 pub use table::{
     Table, TableCell, TableHeader, TableModelError, TableRow, TableRowGroup, TableRowGroupKind,
     TableScope, extract_table,
 };
 pub use text_fragment::{TextFragment, text_fragment};
+#[cfg(feature = "wire")]
+pub use wire::{
+    CanonicalTextRecordV1, JsonLdBlockRecordV1, WireDirectionEvidence, WireError,
+    WireJsonLdParseStatus, WireLanguageDirectionSpan, WireLanguageEvidence, WireTextAnchor,
+    WireTextDirection,
+};
+
+/// Stable schema identifier for one preserved embedded JSON-LD block.
+pub const JSON_LD_BLOCK_RECORD_SCHEMA_V1: &str =
+    "https://merely.dev/ns/fleece/json-ld-block-record/v1";
+
+/// Syntax parser used to interpret the DOM text of preserved JSON-LD blocks.
+pub const JSON_LD_PARSER_PROFILE_V1: &str = "FleeceJsonSyntaxV1";
 
 /// The textual representation against which Fleece selectors are measured.
 ///
@@ -83,6 +106,118 @@ pub struct TextAnchor {
     pub quote: TextQuoteSelector,
 }
 
+/// The closest declared HTML language and the language effective at a canonical
+/// text range. Fleece preserves the raw declaration even when it is not a
+/// plausible BCP 47 tag; it does not canonicalize language tags.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LanguageEvidence {
+    /// The raw nearest `lang` value, including an empty or invalid value.
+    pub declared: Option<String>,
+    /// Whether [`Self::declared`] is a syntactically plausible HTML language
+    /// declaration. `None` means this range inherits its language.
+    pub declaration_is_valid: Option<bool>,
+    /// The nearest inherited raw language declaration. `None` means Fleece found
+    /// no DOM declaration and leaves caller/transport fallback outside its scope.
+    pub effective: Option<String>,
+}
+
+/// The HTML text direction represented by a `dir` declaration or default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TextDirection {
+    #[default]
+    Ltr,
+    Rtl,
+    Auto,
+}
+
+/// The closest declared HTML direction and the direction effective at a
+/// canonical text range. This is DOM evidence only, never a claim about
+/// rendered bidi resolution or visual order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectionEvidence {
+    /// The raw nearest `dir` value, including an invalid value.
+    pub declared: Option<String>,
+    /// Whether [`Self::declared`] is one of `ltr`, `rtl`, or `auto` after ASCII
+    /// case-folding. `None` means this range inherits its direction.
+    pub declaration_is_valid: Option<bool>,
+    /// The inherited effective HTML direction.
+    pub effective: TextDirection,
+}
+
+/// Declared and inherited HTML language/direction evidence for a contiguous
+/// canonical-text range. Separator spaces inserted by Fleece normalization do
+/// not pretend to originate from a DOM text node and therefore have no span.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LanguageDirectionSpan {
+    pub position: TextPositionSelector,
+    pub language: LanguageEvidence,
+    pub direction: DirectionEvidence,
+}
+
+/// Stable schema identifier for the first preserved Fleece extraction record.
+pub const EXTRACTION_RECORD_SCHEMA_V1: &str = "https://merely.dev/ns/fleece/extraction-record/v1";
+
+/// Media type of Fleece's immutable canonical-text annotation resource.
+pub const CANONICAL_TEXT_MEDIA_TYPE: &str = "text/plain; charset=utf-8";
+
+/// The reader root-selection algorithm used for this extraction.
+///
+/// Later reader algorithms receive a new variant so a stored record never
+/// relies on an implementation version to infer its selection rules.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReaderSelectionProfile {
+    #[default]
+    FleeceReaderV1,
+}
+
+/// Identity and representation facts for the canonical Fleece text resource.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalTextResource {
+    /// Content-derived, immutable IRI for exactly [`Self::media_type`] bytes.
+    pub iri: String,
+    pub media_type: &'static str,
+}
+
+impl CanonicalTextResource {
+    pub(crate) fn for_text(text: &str) -> Self {
+        let digest = Sha256::digest(text.as_bytes());
+        Self {
+            iri: format!("urn:sha256:{digest:x}"),
+            media_type: CANONICAL_TEXT_MEDIA_TYPE,
+        }
+    }
+
+    /// Project sibling Web Annotation selector values for one canonical-text
+    /// anchor. The caller supplies the surrounding Annotation and target state.
+    pub fn selector_projection(&self, anchor: &TextAnchor) -> CanonicalTextSelectorProjection {
+        CanonicalTextSelectorProjection::from_anchor(self.iri.clone(), anchor)
+    }
+}
+
+/// Deterministic facts needed to interpret a Fleece extraction after reopening.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtractionContract {
+    pub schema_id: &'static str,
+    pub canonical_text: CanonicalTextResource,
+    pub normalization: TextNormalization,
+    pub reader_profile: ReaderSelectionProfile,
+    pub quote_context: usize,
+    pub fleece_version: String,
+}
+
+impl ExtractionContract {
+    fn new(text: &str, options: ExtractionOptions) -> Self {
+        Self {
+            schema_id: EXTRACTION_RECORD_SCHEMA_V1,
+            canonical_text: CanonicalTextResource::for_text(text),
+            normalization: TextNormalization::FleeceDomTextV1,
+            reader_profile: ReaderSelectionProfile::FleeceReaderV1,
+            quote_context: options.quote_context,
+            fleece_version: env!("CARGO_PKG_VERSION").to_string(),
+        }
+    }
+}
+
 /// Options for the selector-bearing extraction entry points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExtractionOptions {
@@ -101,9 +236,9 @@ impl Default for ExtractionOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Link {
     /// The raw `href` attribute value, **unresolved**: extraction owns no URL
-    /// context, so the caller resolves it against the page URL.
+    /// context, so the caller resolves it against the document base URL.
     pub href: String,
-    /// The anchor's visible text: its descendants' text, whitespace-collapsed.
+    /// The anchor's descendant DOM text, whitespace-collapsed.
     pub text: String,
     /// The `rel` token list, if present (`nofollow`, `noopener`, …). A crawler
     /// honours `nofollow` when building its frontier; extraction just reports it.
@@ -116,12 +251,12 @@ pub struct Link {
 pub struct Heading {
     /// The heading level, `1`–`6`.
     pub level: u8,
-    /// The heading's visible text, whitespace-collapsed.
+    /// The heading's descendant DOM text, whitespace-collapsed.
     pub text: String,
 }
 
 /// A rich inline run in a reader article. URLs remain raw attributes; callers
-/// resolve them against the source document address.
+/// resolve them against the source document's computed base URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Inline {
     Text(String),
@@ -206,8 +341,38 @@ pub struct Article {
 /// The two extraction views produced from one selected live document.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtractedDocument {
+    /// The deterministic extraction profile and canonical text identity. This is
+    /// present even when reader selection found no article.
+    pub contract: ExtractionContract,
     pub page: PageExtract,
     pub article: Option<Article>,
+    /// Source language and direction evidence for contributing canonical-text
+    /// ranges, in logical DOM order.
+    pub language_direction_spans: Vec<LanguageDirectionSpan>,
+}
+
+impl ExtractedDocument {
+    /// Project the required selector triple for this document's canonical text
+    /// resource.
+    pub fn selector_projection(&self, anchor: &TextAnchor) -> CanonicalTextSelectorProjection {
+        self.contract.canonical_text.selector_projection(anchor)
+    }
+
+    /// Return all source language/direction spans that overlap an anchored
+    /// canonical-text range. A mixed-language block can therefore retain more
+    /// than one effective language without inventing a single block-wide value.
+    pub fn language_direction_for_anchor(
+        &self,
+        anchor: &TextAnchor,
+    ) -> Vec<&LanguageDirectionSpan> {
+        self.language_direction_spans
+            .iter()
+            .filter(|span| {
+                span.position.start < anchor.position.end
+                    && anchor.position.start < span.position.end
+            })
+            .collect()
+    }
 }
 
 /// A render-free extraction of a parsed document: the structured content a crawler
@@ -221,9 +386,9 @@ pub struct PageExtract {
     pub metadata: Metadata,
     /// The `<h1>`–`<h6>` outline in document order.
     pub headings: Vec<Heading>,
-    /// The page's full **visible text**, whitespace-collapsed (non-rendered
-    /// subtrees — `<script>` / `<style>` / `<head>` / … — excluded). This is the
-    /// indexing/corpus text (everything the reader could see, chrome included);
+    /// The page's full canonical **DOM text**, whitespace-collapsed (pinned
+    /// non-content subtrees — `<script>` / `<style>` / `<head>` / … — excluded).
+    /// This is the indexing/corpus text (page chrome included);
     /// for the article body alone, see [`main_text`](Self::main_text).
     pub text: String,
     /// The **reader-mode article body**: the main content block by a
@@ -234,8 +399,10 @@ pub struct PageExtract {
     pub main_text: Option<String>,
     /// Every `<a href>` in document order — the crawl frontier's source.
     pub links: Vec<Link>,
-    /// JSON-LD and microdata blocks carried by the page.
+    /// Convenience projection of parsed JSON-LD objects and HTML Microdata.
     pub structured_data: Vec<StructuredData>,
+    /// Every HTML JSON-LD script retained before the convenience projection.
+    pub json_ld_blocks: Vec<EmbeddedJsonLdBlock>,
 }
 
 /// Extract the structured content of `dom` without rendering it. The one-call entry
@@ -265,6 +432,7 @@ pub fn extract_document_with_options<D: LayoutDom>(
         let text = chrome_free_text(dom, &selected.roots);
         (!text.is_empty()).then_some(text)
     });
+    let (json_ld_blocks, structured_data) = structured::extract_page_carried_data(dom);
     let page = PageExtract {
         title: extract_title(dom),
         metadata: extract_metadata(dom),
@@ -272,11 +440,19 @@ pub fn extract_document_with_options<D: LayoutDom>(
         text: text_index.text.clone(),
         main_text,
         links: extract_links(dom),
-        structured_data: extract_structured_data(dom),
+        structured_data,
+        json_ld_blocks,
     };
     let article = selected
         .and_then(|selected| extract_article_with_page(dom, &page, selected, &text_index, options));
-    ExtractedDocument { page, article }
+    let language_direction_spans = text_index.language_direction_spans(dom);
+    let contract = ExtractionContract::new(&page.text, options);
+    ExtractedDocument {
+        contract,
+        page,
+        article,
+        language_direction_spans,
+    }
 }
 
 /// Extract only the structured reader shape.
@@ -374,8 +550,8 @@ fn heading_level(name: &str) -> Option<u8> {
     }
 }
 
-/// The page's full **visible text**, whitespace-collapsed: every text node except
-/// those under non-rendered elements (`<script>` / `<style>` / `<template>` /
+/// The page's full canonical **DOM text**, whitespace-collapsed: every text node
+/// except those under pinned non-content elements (`<script>` / `<style>` / `<template>` /
 /// `<noscript>` / the document `<head>`). The indexing/corpus text — deliberately
 /// *not* a main-content heuristic (which would drop nav/footer chrome); that
 /// readability pass is a later slice that can build on this.
@@ -383,7 +559,7 @@ pub fn extract_text<D: LayoutDom>(dom: &D) -> String {
     FleeceTextIndex::build(dom).text
 }
 
-/// Names of subtrees that carry no visible page text and are skipped wholesale.
+/// Names of subtrees excluded from the canonical DOM-text profile.
 fn is_non_rendered(name: &str) -> bool {
     matches!(name, "script" | "style" | "template" | "noscript" | "head")
 }
@@ -400,6 +576,7 @@ struct TextRange {
 struct FleeceTextIndex<Id> {
     text: String,
     ranges: HashMap<Id, TextRange>,
+    source_ranges: Vec<(Id, TextRange)>,
     grapheme_boundaries: HashSet<u64>,
     pending_space: bool,
 }
@@ -463,6 +640,7 @@ impl<Id: std::hash::Hash + Eq + Copy> FleeceTextIndex<Id> {
         let mut index = Self {
             text: String::new(),
             ranges: HashMap::new(),
+            source_ranges: Vec::new(),
             grapheme_boundaries: HashSet::new(),
             pending_space: false,
         };
@@ -483,6 +661,9 @@ impl<Id: std::hash::Hash + Eq + Copy> FleeceTextIndex<Id> {
         if let Some(text) = dom.text(id) {
             let range = self.append_text(text);
             self.ranges.insert(id, range);
+            if range.start < range.end {
+                self.source_ranges.push((id, range));
+            }
             // Preserve Fleece 0.1's explicit separator between adjacent DOM text
             // nodes, even where HTML source omitted whitespace between elements.
             self.pending_space = true;
@@ -490,6 +671,23 @@ impl<Id: std::hash::Hash + Eq + Copy> FleeceTextIndex<Id> {
         for child in dom.dom_children(id) {
             self.collect(dom, child);
         }
+    }
+
+    fn language_direction_spans<D: LayoutDom<NodeId = Id>>(
+        &self,
+        dom: &D,
+    ) -> Vec<LanguageDirectionSpan> {
+        self.source_ranges
+            .iter()
+            .map(|(id, range)| LanguageDirectionSpan {
+                position: TextPositionSelector {
+                    start: range.start,
+                    end: range.end,
+                },
+                language: language_evidence(dom, *id),
+                direction: direction_evidence(dom, *id),
+            })
+            .collect()
     }
 }
 
@@ -1349,6 +1547,167 @@ fn figure_block<D: LayoutDom>(dom: &D, figure: D::NodeId) -> Option<Block> {
     })
 }
 
+// ---- source language and direction evidence ---------------------------------
+
+const HTML_NAMESPACE: &str = "http://www.w3.org/1999/xhtml";
+const SVG_NAMESPACE: &str = "http://www.w3.org/2000/svg";
+const XML_NAMESPACE: &str = "http://www.w3.org/XML/1998/namespace";
+
+fn language_evidence<D: LayoutDom>(dom: &D, id: D::NodeId) -> LanguageEvidence {
+    let declared = nearest_language_declaration(dom, id);
+    let declaration_is_valid = declared.as_deref().map(is_language_declaration);
+    let effective = declared.clone();
+    LanguageEvidence {
+        declared,
+        declaration_is_valid,
+        effective,
+    }
+}
+
+/// Find the closest language declaration by the HTML language inheritance
+/// lookup: XML `xml:lang` wins on each element, followed by no-namespace `lang`
+/// on HTML or SVG elements. Caller/transport fallback remains outside Fleece.
+fn nearest_language_declaration<D: LayoutDom>(dom: &D, id: D::NodeId) -> Option<String> {
+    let mut current = Some(id);
+    while let Some(node) = current {
+        if let Some(value) = attr_in_namespace(dom, node, XML_NAMESPACE, "lang") {
+            return Some(value);
+        }
+        if is_html_or_svg_element(dom, node)
+            && let Some(value) = attr(dom, node, "lang")
+        {
+            return Some(value);
+        }
+        current = dom.parent(node);
+    }
+    None
+}
+
+/// A conservative syntax check that separates raw invalid evidence from a
+/// plausible BCP 47 language tag without claiming complete BCP 47 validation.
+fn is_language_declaration(value: &str) -> bool {
+    if value.is_empty() {
+        return true;
+    }
+    let mut subtags = value.split('-');
+    let Some(primary) = subtags.next() else {
+        return false;
+    };
+    let primary_valid = if matches!(primary, "x" | "X" | "i" | "I") {
+        true
+    } else {
+        (2..=8).contains(&primary.len()) && primary.bytes().all(|byte| byte.is_ascii_alphabetic())
+    };
+    primary_valid
+        && subtags.all(|subtag| {
+            (1..=8).contains(&subtag.len())
+                && subtag.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        })
+        && !value.ends_with('-')
+}
+
+fn direction_evidence<D: LayoutDom>(dom: &D, id: D::NodeId) -> DirectionEvidence {
+    let declared = nearest_direction_declaration(dom, id);
+    let declaration_is_valid = declared
+        .as_deref()
+        .map(|value| parse_direction(value).is_some());
+    DirectionEvidence {
+        declared,
+        declaration_is_valid,
+        effective: effective_direction(dom, id),
+    }
+}
+
+fn nearest_direction_declaration<D: LayoutDom>(dom: &D, id: D::NodeId) -> Option<String> {
+    let mut current = Some(id);
+    while let Some(node) = current {
+        if is_html_element(dom, node)
+            && let Some(value) = attr(dom, node, "dir")
+        {
+            return Some(value);
+        }
+        current = dom.parent(node);
+    }
+    None
+}
+
+fn effective_direction<D: LayoutDom>(dom: &D, id: D::NodeId) -> TextDirection {
+    let mut current = Some(id);
+    while let Some(node) = current {
+        if is_html_element(dom, node) {
+            if let Some(value) = attr(dom, node, "dir")
+                && let Some(direction) = parse_direction(&value)
+            {
+                return match direction {
+                    TextDirection::Auto => auto_direction(dom, node),
+                    direction => direction,
+                };
+            }
+            if local_name(dom, node) == Some("bdi") {
+                return auto_direction(dom, node);
+            }
+        }
+        current = dom.parent(node);
+    }
+    TextDirection::Ltr
+}
+
+fn parse_direction(value: &str) -> Option<TextDirection> {
+    if value.eq_ignore_ascii_case("ltr") {
+        Some(TextDirection::Ltr)
+    } else if value.eq_ignore_ascii_case("rtl") {
+        Some(TextDirection::Rtl)
+    } else if value.eq_ignore_ascii_case("auto") {
+        Some(TextDirection::Auto)
+    } else {
+        None
+    }
+}
+
+/// Resolve `dir=auto` and an unlabelled `<bdi>` from their first strong
+/// contained character. The walk excludes nested `bdi`, scripting/style and
+/// textarea content, and descendants with a defined `dir`, following the
+/// content boundary relevant to HTML auto directionality. The no-strong-
+/// character fallback is `ltr`; form control and shadow-tree directionality are
+/// host semantics and are not represented by a `LayoutDom` text walk.
+fn auto_direction<D: LayoutDom>(dom: &D, id: D::NodeId) -> TextDirection {
+    let mut text = String::new();
+    collect_auto_direction_text(dom, id, id, &mut text);
+    for character in text.chars() {
+        match bidi_class(character) {
+            BidiClass::L => return TextDirection::Ltr,
+            BidiClass::R | BidiClass::AL => return TextDirection::Rtl,
+            _ => {},
+        }
+    }
+    TextDirection::Ltr
+}
+
+fn collect_auto_direction_text<D: LayoutDom>(
+    dom: &D,
+    id: D::NodeId,
+    root: D::NodeId,
+    out: &mut String,
+) {
+    if id != root
+        && is_html_element(dom, id)
+        && (matches!(
+            local_name(dom, id),
+            Some("bdi" | "script" | "style" | "textarea")
+        ) || attr(dom, id, "dir")
+            .as_deref()
+            .is_some_and(|value| parse_direction(value).is_some()))
+    {
+        return;
+    }
+    if let Some(text) = dom.text(id) {
+        out.push_str(text);
+    }
+    for child in dom.dom_children(id) {
+        collect_auto_direction_text(dom, child, root, out);
+    }
+}
+
 // ---- small DOM helpers (rect-free, allocation-light) --------------------------
 
 /// `id`'s element local name as `&str`, or `None` for non-elements.
@@ -1362,8 +1721,28 @@ fn attr<D: LayoutDom>(dom: &D, id: D::NodeId, name: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+fn attr_in_namespace<D: LayoutDom>(
+    dom: &D,
+    id: D::NodeId,
+    namespace: &str,
+    name: &str,
+) -> Option<String> {
+    dom.attribute(id, &Namespace::from(namespace), &LocalName::from(name))
+        .map(str::to_string)
+}
+
+fn is_html_element<D: LayoutDom>(dom: &D, id: D::NodeId) -> bool {
+    dom.element_name(id)
+        .is_some_and(|name| name.ns.as_ref() == HTML_NAMESPACE)
+}
+
+fn is_html_or_svg_element<D: LayoutDom>(dom: &D, id: D::NodeId) -> bool {
+    dom.element_name(id)
+        .is_some_and(|name| matches!(name.ns.as_ref(), HTML_NAMESPACE | SVG_NAMESPACE))
+}
+
 /// The whitespace-collapsed concatenation of all descendant text under `id` — an
-/// element's "visible text" for extraction (script/style content is parsed as text
+/// element's descendant DOM text for extraction (script/style content is parsed as text
 /// children, but anchors and titles do not contain them, so no filtering is needed
 /// at this slice; a main-text extractor will skip `<script>`/`<style>`).
 fn text_of<D: LayoutDom>(dom: &D, id: D::NodeId) -> String {
@@ -1424,7 +1803,7 @@ mod tests {
     #[test]
     fn anchor_href_is_unresolved_raw_attribute() {
         // Extraction owns no URL context: the relative href comes back verbatim, for
-        // the caller to resolve against the page URL.
+        // the caller to resolve against the document base URL.
         let doc = StaticDocument::parse("<body><a href=\"../sub/page.html\">x</a></body>");
         assert_eq!(extract_links(&doc)[0].href, "../sub/page.html");
     }

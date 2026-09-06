@@ -26,6 +26,32 @@ pub enum StructuredValue {
     Cycle,
 }
 
+/// One HTML JSON-LD script retained before any JSON-LD semantic processing.
+///
+/// `dom_text` is the exact descendant text supplied by the parsed DOM. It is
+/// not the original response bytes, which remain acquisition-owned. The
+/// document order is the script element's zero-based DOM preorder position,
+/// including non-element nodes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddedJsonLdBlock {
+    pub document_order: u64,
+    /// The exact DOM `id` attribute value, including an empty or duplicate value.
+    pub element_id: Option<String>,
+    /// The exact DOM `type` attribute value that matched `application/ld+json`.
+    pub declared_type: String,
+    pub dom_text: String,
+    pub parse: JsonLdParseStatus,
+}
+
+/// Syntax outcome for one retained JSON-LD script.
+///
+/// A parsed value is still JSON syntax, not expanded JSON-LD or RDF.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JsonLdParseStatus {
+    Parsed(StructuredValue),
+    InvalidJson,
+}
+
 impl StructuredValue {
     /// Return an object member by name.
     pub fn get(&self, name: &str) -> Option<&StructuredValue> {
@@ -65,33 +91,55 @@ pub enum StructuredDataSource {
     Microdata,
 }
 
+/// Retain every HTML `application/ld+json` script in DOM order.
+pub fn extract_json_ld_blocks<D: LayoutDom>(dom: &D) -> Vec<EmbeddedJsonLdBlock> {
+    extract_page_carried_data(dom).0
+}
+
 /// Harvest JSON-LD and microdata without interpreting consumer policy.
 pub fn extract_structured_data<D: LayoutDom>(dom: &D) -> Vec<StructuredData> {
+    extract_page_carried_data(dom).1
+}
+
+pub(crate) fn extract_page_carried_data<D: LayoutDom>(
+    dom: &D,
+) -> (Vec<EmbeddedJsonLdBlock>, Vec<StructuredData>) {
     let index = DomIndex::build(dom);
-    let mut out = Vec::new();
-    walk_structured_data(dom, dom.document(), &index, &mut out);
-    out
+    let mut blocks = Vec::new();
+    let mut projection = Vec::new();
+    walk_structured_data(dom, dom.document(), &index, &mut blocks, &mut projection);
+    (blocks, projection)
 }
 
 fn walk_structured_data<D: LayoutDom>(
     dom: &D,
     id: D::NodeId,
     index: &DomIndex<D::NodeId>,
+    blocks: &mut Vec<EmbeddedJsonLdBlock>,
     out: &mut Vec<StructuredData>,
 ) {
-    if is_html_element(dom, id)
-        && local_name(dom, id) == Some("script")
-        && attr(dom, id, "type").is_some_and(|value| {
-            value
-                .split(';')
-                .next()
-                .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/ld+json"))
-        })
-    {
+    if let Some(declared_type) = json_ld_script_type(dom, id) {
         let raw = raw_text_of(dom, id);
-        if let Some(value) = JsonParser::new(&raw).parse() {
-            collect_json_ld_root(value, out);
-        }
+        let parse = match parse_json_ld_dom_text(&raw) {
+            Some(value) => {
+                collect_json_ld_root(value.clone(), out);
+                JsonLdParseStatus::Parsed(value)
+            },
+            None => JsonLdParseStatus::InvalidJson,
+        };
+        blocks.push(EmbeddedJsonLdBlock {
+            document_order: u64::try_from(
+                *index
+                    .order
+                    .get(&id)
+                    .expect("walked node must have a DOM preorder position"),
+            )
+            .expect("DOM preorder position must fit u64"),
+            element_id: attr(dom, id, "id"),
+            declared_type,
+            dom_text: raw,
+            parse,
+        });
     }
     if is_html_element(dom, id)
         && attr(dom, id, "itemscope").is_some()
@@ -100,8 +148,26 @@ fn walk_structured_data<D: LayoutDom>(
         out.push(microdata_item(dom, id, index, &mut HashSet::new()));
     }
     for child in dom.dom_children(id) {
-        walk_structured_data(dom, child, index, out);
+        walk_structured_data(dom, child, index, blocks, out);
     }
+}
+
+fn json_ld_script_type<D: LayoutDom>(dom: &D, id: D::NodeId) -> Option<String> {
+    if !is_html_element(dom, id) || local_name(dom, id) != Some("script") {
+        return None;
+    }
+    attr(dom, id, "type").filter(|value| is_json_ld_media_type(value))
+}
+
+pub(crate) fn is_json_ld_media_type(value: &str) -> bool {
+    value
+        .split(';')
+        .next()
+        .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/ld+json"))
+}
+
+pub(crate) fn parse_json_ld_dom_text(source: &str) -> Option<StructuredValue> {
+    JsonParser::new(source).parse()
 }
 
 fn collect_json_ld_root(value: StructuredValue, out: &mut Vec<StructuredData>) {
