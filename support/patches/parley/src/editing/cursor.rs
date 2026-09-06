@@ -294,7 +294,7 @@ impl Cursor {
                 } else {
                     cursor_rect(&left, true, width)
                 }
-            }
+            },
             [Some(left), None] if left.is_hard_line_break() => last_line_cursor_rect(layout, width),
             [Some(left), _] => cursor_rect(&left, true, width),
             [_, Some(right)] => cursor_rect(&right, false, width),

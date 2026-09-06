@@ -20,7 +20,7 @@ pub fn match_font(
     match set.len() {
         0 => return None,
         1 => return Some(0),
-        _ => {}
+        _ => {},
     }
     #[derive(Copy, Clone)]
     struct Candidate {

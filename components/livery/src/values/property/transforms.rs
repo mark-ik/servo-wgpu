@@ -4,8 +4,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 // SPDX-License-Identifier: MPL-2.0
 
-//! Visual transform values: opacity, rotate and scale, the transform
-//! list and its functions, and box shadows.
+//! Visual transform values: opacity, clip paths, rotate and scale, the
+//! transform list and its functions, and box shadows.
 
 use super::*;
 
@@ -176,6 +176,116 @@ impl fmt::Display for Scale {
 pub enum Transform {
     None,
     Functions(Vec<TransformFunction>),
+}
+
+/// The bounded `clip-path` subset used by Cambium's tile geometry.
+///
+/// A polygon coordinate is a regular Livery length-percentage. The cascade
+/// resolves its environment-relative terms before paint supplies the element
+/// box as the percentage basis.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ClipPath {
+    None,
+    Polygon(Vec<(LengthPercentage, LengthPercentage)>),
+}
+
+impl ClipPath {
+    pub const fn is_none(&self) -> bool {
+        matches!(self, Self::None)
+    }
+
+    /// Resolve the polygon against its border-box dimensions for the shared
+    /// paint and hit-testing paths. `None` deliberately has no geometry.
+    pub fn polygon_points(&self, width: f32, height: f32) -> Option<Vec<(f32, f32)>> {
+        let Self::Polygon(points) = self else {
+            return None;
+        };
+        Some(
+            points
+                .iter()
+                .map(|(x, y)| (x.to_px(16.0, 16.0, width), y.to_px(16.0, 16.0, height)))
+                .collect(),
+        )
+    }
+}
+
+impl FromStr for ClipPath {
+    type Err = ParseError;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let input = input.trim();
+        if input.eq_ignore_ascii_case("none") {
+            return Ok(Self::None);
+        }
+        let open = input
+            .find('(')
+            .ok_or_else(|| ParseError::expected("none or polygon()"))?;
+        if !input[..open].trim().eq_ignore_ascii_case("polygon") || !input.ends_with(')') {
+            return Err(ParseError::expected("none or polygon()"));
+        }
+        let arguments = &input[open + 1..input.len() - 1];
+        let mut points = Vec::new();
+        for point in polygon_arguments(arguments)? {
+            let coordinates = shadow_components(point);
+            let [x, y] = coordinates.as_slice() else {
+                return Err(ParseError::expected("two polygon coordinates"));
+            };
+            points.push((x.parse()?, y.parse()?));
+        }
+        if points.len() < 3 {
+            return Err(ParseError::expected("at least three polygon points"));
+        }
+        Ok(Self::Polygon(points))
+    }
+}
+
+fn polygon_arguments(input: &str) -> Result<Vec<&str>, ParseError> {
+    let mut arguments = Vec::new();
+    let mut start = 0;
+    let mut depth = 0_u32;
+    for (index, ch) in input.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' if depth > 0 => depth -= 1,
+            ')' => return Err(ParseError::expected("closed polygon coordinates")),
+            ',' if depth == 0 => {
+                let argument = input[start..index].trim();
+                if argument.is_empty() {
+                    return Err(ParseError::expected("a polygon coordinate pair"));
+                }
+                arguments.push(argument);
+                start = index + 1;
+            },
+            _ => {},
+        }
+    }
+    if depth != 0 {
+        return Err(ParseError::expected("closed polygon coordinates"));
+    }
+    let argument = input[start..].trim();
+    if argument.is_empty() {
+        return Err(ParseError::expected("a polygon coordinate pair"));
+    }
+    arguments.push(argument);
+    Ok(arguments)
+}
+
+impl fmt::Display for ClipPath {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => formatter.write_str("none"),
+            Self::Polygon(points) => {
+                formatter.write_str("polygon(")?;
+                for (index, (x, y)) in points.iter().enumerate() {
+                    if index > 0 {
+                        formatter.write_str(", ")?;
+                    }
+                    write!(formatter, "{x} {y}")?;
+                }
+                formatter.write_str(")")
+            },
+        }
+    }
 }
 
 /// A bounded single-layer CSS box shadow.

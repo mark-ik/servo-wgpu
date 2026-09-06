@@ -88,9 +88,7 @@ pub struct AnchorInfo {
 
 /// Generic semantic role consumers can ask about, independent of any
 /// specific markup language. Map onto each lane's native vocabulary.
-#[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize,
-)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum SemanticRole {
     Main,
     Navigation,

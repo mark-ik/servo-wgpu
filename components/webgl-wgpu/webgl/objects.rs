@@ -381,7 +381,8 @@ impl WebGlContext {
         });
         buffer
             .slice(..)
-            .get_mapped_range_mut().expect("map range")
+            .get_mapped_range_mut()
+            .expect("map range")
             .copy_from_slice(&bytes);
         buffer.unmap();
         self.buffers.insert(
@@ -419,7 +420,8 @@ impl WebGlContext {
         });
         buffer
             .slice(..)
-            .get_mapped_range_mut().expect("map range")
+            .get_mapped_range_mut()
+            .expect("map range")
             .copy_from_slice(&padded_bytes);
         buffer.unmap();
         self.buffers.insert(

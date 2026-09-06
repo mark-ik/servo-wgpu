@@ -30,7 +30,7 @@ pub use property::{
     Alignment, AnimationDelay, AnimationName, AspectRatio, BackgroundAttachment, BackgroundBox,
     BackgroundImage, BackgroundPosition, BackgroundRepeat, BackgroundSize, BackgroundSizeComponent,
     BorderCollapse, BorderStyle, BorderWidth, BoxShadow, BoxShadowValue, BoxSizing, BreakAfter,
-    BreakBefore, BreakInside, CaptionSide, Clear, ColumnCount, ColumnFill, ColumnWidth, Contain,
+    BreakBefore, BreakInside, CaptionSide, Clear, ClipPath, ColumnCount, ColumnFill, ColumnWidth, Contain,
     ContainIntrinsicSize, ContainerName, ContainerType, Direction, Display, Duration, EmptyCells,
     FlexBasis, FlexDirection, FlexFactor, FlexWrap, Float, FontFamily, FontFeatureSetting,
     FontFeatureSettings, FontSize, FontStyle, FontVariantLigatures, FontWeight, Gap, GridAutoFlow,
@@ -189,6 +189,25 @@ impl ResolveViewport for Rotate {
 impl ResolveViewport for Scale {
     fn resolve_relative_lengths(&self, environment: RelativeLengthEnvironment) -> Self {
         self.resolve_math(environment)
+    }
+}
+
+impl ResolveViewport for ClipPath {
+    fn resolve_relative_lengths(&self, environment: RelativeLengthEnvironment) -> Self {
+        match self {
+            Self::None => Self::None,
+            Self::Polygon(points) => Self::Polygon(
+                points
+                    .iter()
+                    .map(|(x, y)| {
+                        (
+                            x.resolve_relative(environment),
+                            y.resolve_relative(environment),
+                        )
+                    })
+                    .collect(),
+            ),
+        }
     }
 }
 
@@ -440,6 +459,7 @@ discrete_interpolation!(
     BorderCollapse,
     BoxSizing,
     CaptionSide,
+    ClipPath,
     Clear,
     ColorSchemeList,
     ColumnCount,

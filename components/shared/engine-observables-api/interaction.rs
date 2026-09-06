@@ -89,9 +89,7 @@ pub struct Affordance {
     pub label: Option<String>,
 }
 
-#[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize,
-)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum AffordanceKind {
     /// Hyperlink — left-click navigates, hover shows URL.
     Link,

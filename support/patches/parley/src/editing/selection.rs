@@ -150,10 +150,10 @@ impl Selection {
             AnchorBase::Cluster => AnchorBase::Cluster,
             AnchorBase::Word(start, end) => {
                 AnchorBase::Word(start.refresh(layout), end.refresh(layout))
-            }
+            },
             AnchorBase::Line(start, end) => {
                 AnchorBase::Line(start.refresh(layout), end.refresh(layout))
-            }
+            },
         };
         let h_pos = self.h_pos;
         Self {
@@ -445,7 +445,7 @@ impl Selection {
                     anchor_base: self.anchor_base,
                     h_pos: None,
                 }
-            }
+            },
             AnchorBase::Line(start, end) => {
                 let target = Self::line_from_point(layout, x, y);
                 let [anchor, focus] = extend_selection(target, [start, end]);
@@ -455,7 +455,7 @@ impl Selection {
                     anchor_base: self.anchor_base,
                     h_pos: None,
                 }
-            }
+            },
         }
     }
 
@@ -478,7 +478,7 @@ impl Selection {
                     anchor_base: self.anchor_base,
                     h_pos: None,
                 }
-            }
+            },
         }
     }
 
@@ -573,7 +573,7 @@ impl Selection {
                                     start_x = cur_x;
                                 }
                             }
-                        }
+                        },
                         LineItem::InlineBox(inline_box) => {
                             box_advance += inline_box.width as f64;
                             // HACK: Don't display selections for inline boxes
@@ -584,7 +584,7 @@ impl Selection {
                                 box_advance = 0.0;
                                 start_x = cur_x;
                             }
-                        }
+                        },
                     }
                 }
                 let mut end_x = cur_x;

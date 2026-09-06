@@ -37,11 +37,11 @@ impl FontInfo {
                 let mapped = unsafe { memmap2::Mmap::map(&file).ok()? };
                 let font = FontRef::from_index(&mapped, index).ok()?;
                 Self::from_font_ref(&font, source.clone(), index)
-            }
+            },
             SourceKind::Memory(memory) => {
                 let font = FontRef::from_index(memory.as_ref(), index).ok()?;
                 Self::from_font_ref(&font, source.clone(), index)
-            }
+            },
         }
     }
 
@@ -104,7 +104,7 @@ impl FontInfo {
         }
         if self.style != style {
             match style {
-                FontStyle::Normal => {}
+                FontStyle::Normal => {},
                 FontStyle::Italic => {
                     if self.style == FontStyle::Normal {
                         if self.has_italic_axis() {
@@ -117,7 +117,7 @@ impl FontInfo {
                             synth.skew = 14;
                         }
                     }
-                }
+                },
                 FontStyle::Oblique(angle) => {
                     if self.style == FontStyle::Normal {
                         let degrees = angle.unwrap_or(14.0);
@@ -131,7 +131,7 @@ impl FontInfo {
                             synth.skew = degrees as i8;
                         }
                     }
-                }
+                },
             }
         }
         synth.len = len as u8;
@@ -230,7 +230,7 @@ impl FontInfo {
                     b"slnt" => attrs_axes |= SLANT_AXIS,
                     b"ital" => attrs_axes |= ITALIC_AXIS,
                     b"opsz" => attrs_axes |= OPTICAL_SIZE_AXIS,
-                    _ => {}
+                    _ => {},
                 }
             }
             (axes, attrs_axes)

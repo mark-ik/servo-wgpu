@@ -6,12 +6,13 @@
 
 use std::fmt::Debug;
 
+use livery::cascade::{DeclarationErrorKind, parse_declaration_block};
 use livery::media::{ViewportSize, ViewportSizes};
 use livery::values::{
     Alignment, AnimationDelay, AnimationName, AspectRatio, BackgroundAttachment, BackgroundBox,
     BackgroundImage, BackgroundPosition, BackgroundRepeat, BackgroundSize, BorderCollapse,
     BorderStyle, BorderWidth, BoxShadow, BoxSizing, BreakAfter, BreakBefore, BreakInside,
-    CaptionSide, Clear, Color, ColumnCount, ColumnFill, ColumnWidth, Contain, ContainIntrinsicSize,
+    CaptionSide, Clear, ClipPath, Color, ColumnCount, ColumnFill, ColumnWidth, Contain, ContainIntrinsicSize,
     CssValue, Direction, Display, Duration, EmptyCells, FlexBasis, FlexDirection, FlexFactor,
     FlexWrap, Float, FontFamily, FontFeatureSettings, FontSize, FontStyle, FontVariantLigatures,
     FontWeight, Gap, Inset, Interpolate, LengthPercentage, LengthUnit, LineHeight, ListStyleType,
@@ -21,7 +22,7 @@ use livery::values::{
     TreeCounts, VerticalAlign, Visibility, WhiteSpaceCollapse, Widows, ZIndex,
 };
 use livery::{
-    AnimationClass, ComputedValues, InlineShorthandExpansion, PropertyId,
+    AnimationClass, ComputedValues, InlineShorthandExpansion, PropertyId, PropertyValue,
     canonicalize_specified_longhand, canonicalize_specified_shorthand,
     canonicalize_specified_value, classify_specified_shorthand, expand_specified_shorthand,
     reconstruct_specified_shorthand, specified_shorthand_longhands,
@@ -1257,6 +1258,51 @@ fn invalid_seed_values_are_rejected() {
     assert!("perspective(20px)".parse::<Transform>().is_err());
     assert_eq!("120%".parse::<Opacity>().unwrap().value(), 1.0);
     assert_eq!("-0.5".parse::<Opacity>().unwrap().value(), 0.0);
+}
+
+#[test]
+fn polygon_clip_path_round_trips_and_refuses_invalid_declarations() {
+    let diamond = "polygon(50% 0%, 100% 7px, 50% 100%, 0px 7px)";
+    // Length serialization canonicalizes `0px` to unitless `0`.
+    assert_round_trip::<ClipPath>("polygon(50% 0%, 100% 7px, 50% 100%, 0 7px)");
+    assert_round_trip::<ClipPath>("none");
+    let points = diamond
+        .parse::<ClipPath>()
+        .expect("mixed percentage and pixel polygon")
+        .polygon_points(28.0, 14.0)
+        .expect("polygon has resolved points");
+    assert_eq!(
+        points,
+        vec![(14.0, 0.0), (28.0, 7.0), (14.0, 14.0), (0.0, 7.0)]
+    );
+
+    let valid = parse_declaration_block(&format!("clip-path: {diamond}"));
+    assert!(valid.errors.is_empty(), "{:?}", valid.errors);
+    assert!(matches!(
+        valid
+            .declarations
+            .first()
+            .map(|declaration| &declaration.value),
+        Some(livery::cascade::DeclaredValue::Value(
+            PropertyValue::ClipPath(ClipPath::Polygon(_))
+        ))
+    ));
+
+    for invalid in [
+        "polygon(50% 0%, 100% 50%)",
+        "polygon(50% 0%,, 100% 50%, 50% 100%)",
+        "circle(50%)",
+    ] {
+        let block = parse_declaration_block(&format!("clip-path: {invalid}"));
+        assert!(
+            block
+                .errors
+                .iter()
+                .any(|error| error.kind == DeclarationErrorKind::InvalidValue),
+            "{invalid}: {:?}",
+            block.errors
+        );
+    }
 }
 
 #[test]

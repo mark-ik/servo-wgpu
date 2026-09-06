@@ -63,7 +63,7 @@ impl<'a, B: Brush> Line<'a, B> {
             }),
             LayoutItemKind::InlineBox => {
                 LineItem::InlineBox(self.layout.data.inline_boxes.get(item.index)?)
-            }
+            },
         })
     }
 
@@ -89,7 +89,7 @@ impl<'a, B: Brush> Line<'a, B> {
                 }),
                 LayoutItemKind::InlineBox => {
                     LineItem::InlineBox(&copy.layout.data.inline_boxes[line_data.index])
-                }
+                },
             })
     }
 
@@ -277,7 +277,7 @@ impl<'a, B: Brush> Iterator for GlyphRunIter<'a, B> {
                         id: inline_box.id,
                         kind: inline_box.kind,
                     }));
-                }
+                },
                 LineItem::Run(run) => {
                     let mut iter = run
                         .visual_clusters()
@@ -311,7 +311,7 @@ impl<'a, B: Brush> Iterator for GlyphRunIter<'a, B> {
                     }
                     self.item_index += 1;
                     self.glyph_start = 0;
-                }
+                },
             }
         }
     }

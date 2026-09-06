@@ -22,9 +22,9 @@ use super::{
     source::{SourceId, SourceInfo, SourceKind},
 };
 use crate::AtomicCounter;
-use alloc::{string::String, sync::Arc, vec::Vec};
 #[cfg(all(target_os = "windows", feature = "system"))]
 use alloc::vec;
+use alloc::{string::String, sync::Arc, vec::Vec};
 use hashbrown::HashMap;
 use read_fonts::types::NameId;
 #[cfg(feature = "std")]

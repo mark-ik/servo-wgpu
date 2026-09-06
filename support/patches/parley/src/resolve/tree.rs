@@ -132,7 +132,7 @@ impl<B: Brush> TreeStyleBuilder<B> {
                         }
                     })
                     .collect()
-            }
+            },
         };
 
         // Nothing to do if there is no uncommitted text.

@@ -130,14 +130,14 @@ impl LayoutAccessibility {
                     } else {
                         TextAlign::Left
                     }
-                }
+                },
                 Alignment::End => {
                     if run.is_rtl() {
                         TextAlign::Left
                     } else {
                         TextAlign::Right
                     }
-                }
+                },
                 Alignment::Left => TextAlign::Left,
                 Alignment::Center => TextAlign::Center,
                 Alignment::Right => TextAlign::Right,

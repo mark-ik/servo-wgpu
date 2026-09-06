@@ -35,9 +35,7 @@ pub trait LoadingQuery {
     fn error(&self) -> Option<&LoadError>;
 }
 
-#[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize,
-)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum LoadingState {
     /// No load in progress yet; session created but request not sent.
     #[default]
@@ -72,9 +70,7 @@ pub struct TlsSummary {
     pub host: String,
 }
 
-#[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize,
-)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum CacheOrigin {
     /// Response came from cache (HTTP cache, lane-specific cache).
     CacheHit,
@@ -95,9 +91,7 @@ pub struct LoadError {
     pub message: String,
 }
 
-#[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize,
-)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum LoadErrorKind {
     /// Couldn't reach the host (DNS, connection refused, timeout).
     Network,

@@ -175,8 +175,8 @@ impl BidiResolver {
                     if isolates == 0 =>
                 {
                     return if ty == BidiClass::LeftToRight { 0 } else { 1 };
-                }
-                _ => {}
+                },
+                _ => {},
             }
         }
         0
@@ -196,13 +196,13 @@ impl BidiResolver {
                     } else {
                         return 0;
                     }
-                }
+                },
                 BidiClass::LeftToRight | BidiClass::RightToLeft | BidiClass::ArabicLetter
                     if isolates == 0 =>
                 {
                     return if ty == BidiClass::LeftToRight { 0 } else { 1 };
-                }
-                _ => {}
+                },
+                _ => {},
             }
         }
         0
@@ -501,13 +501,13 @@ impl BidiResolver {
                                 break;
                             }
                             bracket_stack.push(i, bracket.mirroring_glyph.unwrap());
-                        }
+                        },
                         BidiPairedBracketType::Close => {
                             if let Some(open) = bracket_stack.find_and_pop(ch) {
                                 self.bracket_pairs.push((open, i));
                             }
-                        }
-                        _ => {}
+                        },
+                        _ => {},
                     }
                 }
             }

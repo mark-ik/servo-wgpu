@@ -158,7 +158,10 @@ mod tests {
     /// miss, never a guess at a transport or a fall-through to the filesystem.
     #[test]
     fn every_other_scheme_is_an_honest_miss() {
-        assert_eq!(lane_for("gemini://capsule.invalid/"), FetchLane::Unsupported);
+        assert_eq!(
+            lane_for("gemini://capsule.invalid/"),
+            FetchLane::Unsupported
+        );
         assert_eq!(lane_for("ws://example.invalid/"), FetchLane::Unsupported);
         assert_eq!(lane_for("about:blank"), FetchLane::Unsupported);
 

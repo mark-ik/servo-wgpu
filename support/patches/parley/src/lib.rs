@@ -138,8 +138,8 @@ pub use context::LayoutContext;
 pub use font::FontContext;
 #[cfg(feature = "font-diagnostic")]
 pub use font_diagnostic::{
-    FontDiagnosticCandidate, FontDiagnosticCandidateStatus, FontDiagnosticEvent,
-    FontDiagnosticCapture, begin_font_diagnostic_capture,
+    FontDiagnosticCandidate, FontDiagnosticCandidateStatus, FontDiagnosticCapture,
+    FontDiagnosticEvent, begin_font_diagnostic_capture,
 };
 pub use inline_box::{InlineBox, InlineBoxKind};
 #[doc(inline)]

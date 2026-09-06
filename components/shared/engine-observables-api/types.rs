@@ -13,18 +13,14 @@ use serde::{Deserialize, Serialize};
 ///
 /// The wire shape is `u64` so consumers can serialize hits + selection
 /// ranges across IPC without needing a generic NodeId parameter.
-#[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize,
-)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct SourceNodeId(pub u64);
 
 /// Half-open `[start, end)` byte-offset range into the lane's source
 /// text. Returned by `text_range_for_fragment` and consumed by
 /// `rects_for_selection`. Byte offsets, not chars or grapheme
 /// clusters, because that's what source/edit machinery needs.
-#[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize,
-)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct SourceRange {
     pub start: usize,
     pub end: usize,

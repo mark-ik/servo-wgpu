@@ -244,7 +244,7 @@ impl std::fmt::Debug for Pattern {
                     );
                 };
                 res
-            }
+            },
             None => f.debug_struct("Pattern").finish(),
         }
     }
@@ -581,7 +581,7 @@ impl ScriptCharSetMap {
                     charset.add(c);
                 }
                 e.insert(Some(charset)).as_ref()
-            }
+            },
         }
     }
 }
@@ -724,7 +724,7 @@ impl SystemFonts {
         match self.family_map.get(&id) {
             Some(Some(family)) => return Some(family.clone()),
             Some(None) => return None,
-            None => {}
+            None => {},
         }
 
         let family = self.family_uncached(id);

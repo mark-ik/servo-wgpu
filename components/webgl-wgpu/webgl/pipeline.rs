@@ -229,7 +229,8 @@ pub(super) fn build_group_zero_bind_group(
         });
         buffer
             .slice(..)
-            .get_mapped_range_mut().expect("map range")
+            .get_mapped_range_mut()
+            .expect("map range")
             .copy_from_slice(bytes);
         buffer.unmap();
         buffer

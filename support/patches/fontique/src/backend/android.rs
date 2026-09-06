@@ -93,7 +93,7 @@ impl SystemFonts {
                                     let to_n = name_map.get_or_insert(to);
                                     name_map.add_alias(to_n.id(), name);
                                 }
-                            }
+                            },
                             "family" => {
                                 if let Some(name) = child.attribute("name") {
                                     let f = name_map.get_or_insert(name);
@@ -173,8 +173,8 @@ impl SystemFonts {
                                 //       fallback for system-ui, as falling back to a
                                 //       variant="elegant" for system-ui can mess up a layout
                                 //       in some scripts.
-                            }
-                            _ => {}
+                            },
+                            _ => {},
                         }
                     }
                 }

@@ -583,6 +583,18 @@ where
             if style.display == Display::None || style.visibility != Visibility::Visible {
                 return None;
             }
+            // `clip-path` applies to this box's own decoration and content as
+            // well as every descendant. Keep it outside the overflow/table
+            // clips below so the normal reverse-pop closes the narrow scopes
+            // first.
+            if let Some(fragment) = fragments
+                .get(id)
+                .filter(|fragment| paintable_fragment(fragment))
+                && let Some(clip) = polygon_clip(style, fragment)
+            {
+                list.commands.push(PaintCmd::PushClip(clip));
+                clips_descendants += 1;
+            }
             text.system
                 .prepare_inline_children(text.frame, dom, styles, fragments, id, style);
             let background_propagated = scope.canvas_background_source == Some(id);
@@ -1528,7 +1540,9 @@ mod positioned_paint_tests {
         fn pane_of(tiles: usize) -> LiveryPaintList {
             let mut html = String::from("<div id=app><div id=side></div><div id=pane>");
             for index in 0..tiles {
-                html.push_str(&format!("<div class=tile style=\"z-index: {index}\"></div>"));
+                html.push_str(&format!(
+                    "<div class=tile style=\"z-index: {index}\"></div>"
+                ));
             }
             html.push_str("</div></div>");
             render(
@@ -1548,8 +1562,16 @@ mod positioned_paint_tests {
 
         let few = pane_of(4);
         let many = pane_of(64);
-        assert_eq!(clips(&few).0, clips(&few).1, "the clip stack stays balanced");
-        assert_eq!(clips(&many).0, clips(&many).1, "the clip stack stays balanced");
+        assert_eq!(
+            clips(&few).0,
+            clips(&few).1,
+            "the clip stack stays balanced"
+        );
+        assert_eq!(
+            clips(&many).0,
+            clips(&many).1,
+            "the clip stack stays balanced"
+        );
         assert_eq!(
             clips(&many).0,
             clips(&few).0,
@@ -2162,7 +2184,10 @@ where
     if let Some(level) = z_index_stacking_level(dom, styles, id) {
         return Some(level);
     }
-    (style.opacity.value() < 1.0 || establishes_transform_context(style)).then_some(0)
+    (style.opacity.value() < 1.0
+        || establishes_transform_context(style)
+        || !style.clip_path.is_none())
+    .then_some(0)
 }
 
 fn establishes_transform_context(style: &ComputedValues) -> bool {
@@ -2251,6 +2276,26 @@ fn descendant_clip(
             LayoutPoint::new(min_x, min_y),
             LayoutPoint::new(max_x, max_y),
         )),
+    })
+}
+
+fn polygon_clip(style: &ComputedValues, fragment: &Fragment) -> Option<ClipSpec> {
+    let points = style
+        .clip_path
+        .polygon_points(fragment.width, fragment.height)?;
+    let (first, rest) = points.split_first()?;
+    let mut commands = Vec::with_capacity(points.len() + 1);
+    commands.push(PathCommand::MoveTo(LayoutPoint::new(
+        fragment.x + first.0,
+        fragment.y + first.1,
+    )));
+    commands.extend(
+        rest.iter()
+            .map(|(x, y)| PathCommand::LineTo(LayoutPoint::new(fragment.x + x, fragment.y + y))),
+    );
+    commands.push(PathCommand::Close);
+    Some(ClipSpec {
+        kind: ClipKind::Path(PathData { commands }),
     })
 }
 

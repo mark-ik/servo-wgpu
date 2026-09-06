@@ -80,7 +80,7 @@ impl Charmap<'_> {
                 } else {
                     None
                 }
-            }
+            },
             CmapSubtable::Format4(table) => table.map_codepoint(c),
             CmapSubtable::Format12(table) => table.map_codepoint(c),
             CmapSubtable::Format13(table) => table.map_codepoint(c),

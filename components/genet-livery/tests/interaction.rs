@@ -41,6 +41,49 @@ fn hit_test_skips_pointer_events_none_overlays() {
 }
 
 #[test]
+fn polygon_clip_path_excludes_the_tile_rectangle_corners() {
+    let document = StaticDocument::parse(
+        r#"<html><body><div class="stage"><a class="under" href="/under"></a><div class="tile"></div></div></body></html>"#,
+    );
+    let styles = StyleSet::cambium(&[r#"
+        html, body { margin: 0; padding: 0; }
+        .stage { position: relative; width: 100px; height: 50px; }
+        .under, .tile { position: absolute; inset: 0; width: 100px; height: 50px; }
+        .under { z-index: 1; }
+        .tile {
+            z-index: 2;
+            clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
+        }
+    "#]);
+    let plane = resolve_styles(
+        &document,
+        &styles,
+        &Device::screen(200.0, 100.0),
+        &InteractionStates::default(),
+    );
+    let fragments = layout(&document, &plane, 200.0, 100.0).unwrap();
+    let tile = document
+        .first_with_class(document.document(), "tile")
+        .expect("tile exists");
+    let under = document
+        .first_with_class(document.document(), "under")
+        .expect("underlay exists");
+
+    for point in [(0.5, 0.5), (99.5, 0.5), (99.5, 49.5), (0.5, 49.5)] {
+        assert_eq!(
+            hit_test(&document, &plane, &fragments, point.0, point.1),
+            Some(under),
+            "rectangle corner {point:?} passes through the polygon",
+        );
+    }
+    assert_eq!(
+        hit_test(&document, &plane, &fragments, 50.0, 25.0),
+        Some(tile),
+        "diamond center selects the clipped tile",
+    );
+}
+
+#[test]
 fn retained_document_routes_scroll_fragment_and_links() {
     let document = StaticDocument::parse(
         r##"<html><body>

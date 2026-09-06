@@ -301,7 +301,11 @@ mod tests {
         assert_eq!(url_scheme("C:\\pages\\a.html"), None);
         assert_eq!(url_scheme("a.html"), None);
         assert_eq!(url_scheme("#deep"), None);
-        assert_eq!(url_scheme("2fast://x"), None, "a scheme starts with a letter");
+        assert_eq!(
+            url_scheme("2fast://x"),
+            None,
+            "a scheme starts with a letter"
+        );
     }
 
     #[test]

@@ -88,6 +88,9 @@ url = "https://www.w3.org/TR/CSS22/visuren.html#flow-control"
 [sources.css_shapes_1]
 url = "https://www.w3.org/TR/css-shapes-1/#shape-outside-property"
 
+[sources.css_masking_1]
+url = "https://drafts.fxtf.org/css-masking-1/#propdef-clip-path"
+
 [sources.css_multicol_1]
 url = "https://www.w3.org/TR/css-multicol-1/"
 
@@ -1406,6 +1409,17 @@ animation = "by-computed-value"
 source = "css_sizing_3"
 
 [[property]]
+name = "clip-path"
+value_type = "clip-path"
+inherited = false
+initial = "none"
+grammar = "none | polygon(<length-percentage>{2}#{3,})"
+seed_values = ["none", "polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)", "polygon(0px 50%, 50% 0px, 100% 50%, 50% 100%)"]
+animation = "discrete"
+source = "css_masking_1"
+partial = "none and polygon() with three or more comma-separated length-percentage coordinate pairs; URL, reference-box, inset, circle, ellipse, path, fill rules, animation, and clip-rule controls remain deferred"
+
+[[property]]
 name = "opacity"
 value_type = "opacity"
 inherited = false
@@ -2610,14 +2624,6 @@ group = "position"
 inherited = false
 animation = "discrete"
 spec = "https://drafts.csswg.org/css-anchor-position-1/#position-try-fallbacks"
-
-# group: svg
-[[unimplemented]]
-name = "clip-path"
-group = "svg"
-inherited = false
-animation = "by-computed-value"
-spec = "https://drafts.fxtf.org/css-masking-1/#propdef-clip-path"
 
 [[unimplemented]]
 name = "mask-clip"

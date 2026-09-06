@@ -60,17 +60,17 @@ impl AnalysisDataSources {
                 let mut opt = LineBreakOptions::default();
                 opt.word_option = Some(LineBreakWordOption::Normal);
                 line_segmenter_impl(opt)
-            }
+            },
             WordBreak::BreakAll => {
                 let mut opt = LineBreakOptions::default();
                 opt.word_option = Some(LineBreakWordOption::BreakAll);
                 line_segmenter_impl(opt)
-            }
+            },
             WordBreak::KeepAll => {
                 let mut opt = LineBreakOptions::default();
                 opt.word_option = Some(LineBreakWordOption::KeepAll);
                 line_segmenter_impl(opt)
-            }
+            },
         }
     }
 

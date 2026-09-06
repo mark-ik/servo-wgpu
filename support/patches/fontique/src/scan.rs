@@ -182,7 +182,7 @@ fn scan_memory_impl<'a>(
     match font_file {
         FileRef::Font(font) => {
             scan_font(font, path, 0, f);
-        }
+        },
         FileRef::Collection(collection) => {
             for i in 0..collection.len() {
                 let Ok(font) = collection.get(i) else {
@@ -190,7 +190,7 @@ fn scan_memory_impl<'a>(
                 };
                 scan_font(font, path, i, f);
             }
-        }
+        },
     }
     Some(())
 }
@@ -238,7 +238,7 @@ fn all_names(
                 best_index = i;
                 best_record = Some(record);
                 break;
-            }
+            },
             (_, 0) => 2,
             (0, _) => 1,
             _ => continue,
@@ -298,7 +298,7 @@ fn english_or_first<'a>(names: &name::Name<'a>, id: NameId) -> Option<name::Name
             (_, 0x0409) => {
                 best_record = Some(record);
                 break;
-            }
+            },
             (_, 0) => 2,
             (0, _) => 1,
             _ => continue,

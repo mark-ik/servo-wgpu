@@ -597,7 +597,8 @@ impl WebGlContext {
         });
         buffer
             .slice(..)
-            .get_mapped_range_mut().expect("map range")
+            .get_mapped_range_mut()
+            .expect("map range")
             .copy_from_slice(&raw);
         buffer.unmap();
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {

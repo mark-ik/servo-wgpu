@@ -13,6 +13,7 @@ use genet_static_dom::StaticDocument;
 use layout_dom_api::LayoutDom;
 use paint_list_api::{
     BorderDetails, ClipKind, ColorF, DeviceIntSize, EngineId, PaintCmd, PaintEnvelope, PaintList,
+    PathCommand,
 };
 
 fn render(html: &str, css: &str, generation: u64) -> genet_livery::LiveryPaintList {
@@ -82,6 +83,106 @@ fn backgrounds_and_borders_follow_dom_paint_order() {
         panic!("child background follows the parent box");
     };
     assert_eq!(child.color, ColorF::new(0.0, 0.0, 1.0, 1.0));
+}
+
+#[test]
+fn polygon_clip_path_scopes_its_box_and_descendants() {
+    let list = render(
+        r#"<html><body><div class="tile"><div class="child"></div></div></body></html>"#,
+        r#"
+        html, body { margin: 0; padding: 0; }
+        .tile {
+            display: block;
+            position: relative;
+            width: 100px;
+            height: 50px;
+            background-color: #ff0000;
+            clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
+        }
+        .child {
+            display: block;
+            position: absolute;
+            inset: 0;
+            width: 100px;
+            height: 50px;
+            background-color: #0000ff;
+        }
+        "#,
+        9,
+    );
+    let commands = list.commands();
+    let push = commands
+        .iter()
+        .position(|command| matches!(command, PaintCmd::PushClip(spec) if matches!(&spec.kind, ClipKind::Path(_))))
+        .expect("polygon enters the paint-list clip stack");
+    let PaintCmd::PushClip(spec) = &commands[push] else {
+        unreachable!();
+    };
+    let ClipKind::Path(path) = &spec.kind else {
+        unreachable!();
+    };
+    assert!(matches!(
+        path.commands.as_slice(),
+        [
+            PathCommand::MoveTo(_),
+            PathCommand::LineTo(_),
+            PathCommand::LineTo(_),
+            PathCommand::LineTo(_),
+            PathCommand::Close,
+        ]
+    ));
+    let red = commands
+        .iter()
+        .position(|command| {
+            matches!(command, PaintCmd::DrawRect(rect) if rect.color == ColorF::new(1.0, 0.0, 0.0, 1.0))
+        })
+        .expect("tile background paints");
+    let blue = commands
+        .iter()
+        .position(|command| {
+            matches!(command, PaintCmd::DrawRect(rect) if rect.color == ColorF::new(0.0, 0.0, 1.0, 1.0))
+        })
+        .expect("tile child paints");
+    let pop = commands
+        .iter()
+        .enumerate()
+        .skip(push + 1)
+        .find_map(|(index, command)| matches!(command, PaintCmd::PopClip).then_some(index))
+        .expect("polygon clip closes");
+    assert!(push < red && red < blue && blue < pop);
+}
+
+#[test]
+fn polygon_clip_path_establishes_a_stacking_context() {
+    let list = render(
+        r#"<html><body><div class="stage"><div class="clipped"><div class="raised"></div></div><div class="middle"></div></div></body></html>"#,
+        r#"
+        html, body { margin: 0; padding: 0; }
+        .stage { position: relative; width: 100px; height: 50px; }
+        .clipped, .middle { position: absolute; inset: 0; width: 100px; height: 50px; }
+        .clipped { clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%); }
+        .raised { position: absolute; inset: 0; z-index: 2; width: 100px; height: 50px; background: #0000ff; }
+        .middle { z-index: 1; background: #00ff00; }
+        "#,
+        10,
+    );
+    let commands = list.commands();
+    let blue = commands
+        .iter()
+        .position(|command| {
+            matches!(command, PaintCmd::DrawRect(rect) if rect.color == ColorF::new(0.0, 0.0, 1.0, 1.0))
+        })
+        .expect("raised child paints inside its clipped context");
+    let green = commands
+        .iter()
+        .position(|command| {
+            matches!(command, PaintCmd::DrawRect(rect) if rect.color == ColorF::new(0.0, 1.0, 0.0, 1.0))
+        })
+        .expect("sibling stacking item paints");
+    assert!(
+        blue < green,
+        "the raised descendant cannot escape its clipped zero-level context"
+    );
 }
 
 #[test]

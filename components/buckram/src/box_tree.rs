@@ -1251,9 +1251,7 @@ fn materialize<Id>(
 where
     Id: Copy + Eq + Hash,
 {
-    with_box_tree_stack(move || {
-        materialize_on_this_stack(tree, proto, parent, containing_blocks)
-    })
+    with_box_tree_stack(move || materialize_on_this_stack(tree, proto, parent, containing_blocks))
 }
 
 fn materialize_on_this_stack<Id>(

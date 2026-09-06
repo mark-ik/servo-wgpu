@@ -200,7 +200,11 @@ pub fn wheel_delta_from_winit_logical(delta: MouseScrollDelta, scale_factor: f64
     match delta {
         MouseScrollDelta::LineDelta(..) => wheel_delta_from_winit(delta),
         MouseScrollDelta::PixelDelta(p) => {
-            let scale = if scale_factor > 0.0 { scale_factor } else { 1.0 };
+            let scale = if scale_factor > 0.0 {
+                scale_factor
+            } else {
+                1.0
+            };
             ((-(p.x / scale)) as f32, (-(p.y / scale)) as f32)
         },
     }
@@ -242,8 +246,7 @@ mod tests {
     /// trackpad moves the document exactly as far as it moves the pointer.
     #[test]
     fn wheel_pixel_delta_scales_to_logical_pixels() {
-        let physical =
-            MouseScrollDelta::PixelDelta(PhysicalPosition::new(3.0, -10.0));
+        let physical = MouseScrollDelta::PixelDelta(PhysicalPosition::new(3.0, -10.0));
         assert_eq!(
             wheel_delta_from_winit_logical(physical, 1.0),
             wheel_delta_from_winit(physical),

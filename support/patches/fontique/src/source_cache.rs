@@ -128,19 +128,19 @@ impl SourceCache {
                                 None
                             }
                         }
-                    }
+                    },
                     HashEntry::Occupied(mut occupied) => {
                         let entry = occupied.get_mut();
                         match entry {
                             Entry::Loaded(data) => {
                                 data.serial = self.serial;
                                 Some(data.font_data.clone())
-                            }
+                            },
                             Entry::Failed => None,
                         }
-                    }
+                    },
                 }
-            }
+            },
         }
     }
 
@@ -193,7 +193,7 @@ impl Shared {
                     vacant.insert(Entry::Failed);
                     None
                 }
-            }
+            },
             HashEntry::Occupied(mut occupied) => {
                 let entry = occupied.get_mut();
                 match entry {
@@ -210,10 +210,10 @@ impl Shared {
                             *entry = Entry::Failed;
                             None
                         }
-                    }
+                    },
                     Entry::Failed => None,
                 }
-            }
+            },
         }
     }
 }

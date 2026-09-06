@@ -269,9 +269,9 @@ fn canonical_locale(script: Script, locale: Option<&Language>) -> Option<(bool, 
                             // Default to simplified Chinese
                             (true, "zh-CN")
                         }
-                    }
+                    },
                 }
-            }
+            },
             _ => return None,
         },
         b"Hebr" => match (lang, region) {

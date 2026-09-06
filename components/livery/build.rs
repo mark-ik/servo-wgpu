@@ -206,6 +206,7 @@ fn value_type_path(value_type: &str) -> &'static str {
         "break-before" => "crate::values::BreakBefore",
         "break-inside" => "crate::values::BreakInside",
         "caption-side" => "crate::values::CaptionSide",
+        "clip-path" => "crate::values::ClipPath",
         "column-count" => "crate::values::ColumnCount",
         "column-fill" => "crate::values::ColumnFill",
         "column-width" => "crate::values::ColumnWidth",
@@ -287,6 +288,7 @@ fn value_type_is_copy(value_type: &str) -> bool {
             | "background-image"
             | "box-shadow"
             | "color-scheme"
+            | "clip-path"
             | "color"
             | "container-name"
             | "font-family"
@@ -322,6 +324,7 @@ fn initial_expression(property: &Property) -> &'static str {
         ("break-before", "auto") => "crate::values::BreakBefore::Auto",
         ("break-inside", "auto") => "crate::values::BreakInside::Auto",
         ("caption-side", "top") => "crate::values::CaptionSide::Top",
+        ("clip-path", "none") => "crate::values::ClipPath::None",
         ("column-count", "auto") => "crate::values::ColumnCount::Auto",
         ("column-fill", "balance") => "crate::values::ColumnFill::Balance",
         ("column-width", "auto") => "crate::values::ColumnWidth::Auto",
