@@ -396,7 +396,7 @@ impl ApplicationHandler for Ortet {
         let initial = self
             .a11y
             .publish(self.session.accessibility_projection())
-            .unwrap_or_else(|| self.a11y.empty_tree());
+            .expect("accessibility publication always supplies a tree");
         let wake_window = window.clone();
         let mut bridge = AccessKitBridge::new(move || wake_window.request_redraw());
         if let Err(error) = bridge.install(&window, initial) {

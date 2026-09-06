@@ -320,6 +320,21 @@ graph control.
   would require a bridge-level publication token or an atomic queue/publication
   contract; neither belongs in Ortet's host-local O2 slice.
 
+- 2026-09-05: a replacement session can temporarily have no accessibility
+  projection. Ortet now publishes a single content-free Document tree in that
+  state and clears the old action map, rather than leaving the former document
+  visible to the platform while merely rejecting its actions. It publishes that
+  withdrawal once per absence, avoiding empty-tree churn on later frames.
+
+- 2026-09-05: Ortet now lowers the projection's selected, expanded,
+  checked/toggled, live, orientation, popup, and numeric range state, retaining
+  absent option values rather than converting them to false. `multiline` maps
+  to AccessKit's multiline text role. AccessKit 0.24 has no independent
+  editable-state property; Ortet retains the text role and explicit read-only
+  bit but does not invent a value for `editable`. That missing direct mapping
+  is a contract limitation to revisit with the bridge/API, not a claim that
+  whole-projection state is faithful.
+
 - 2026-09-05: O3 has a reusable target-neutral seam in
   `components/genet-render-host/src/lib.rs::RenderCore::create_surface`,
   including `wgpu::SurfaceTarget::Canvas`, while `ports/ortet` still has only
@@ -538,11 +553,16 @@ graph control.
 
   Automated receipt: with `CARGO_TARGET_DIR=Code/targets/genet-font-proof-20260905`,
   `RUSTFLAGS=-C debuginfo=0`, `cargo test -p ortet --offline -j 1` passed all
-  13 tests. The three new O2 tests use a real Livery `DocumentSession`: they
+  15 tests. Four new O2 tests use a real Livery `DocumentSession`: they
   retain a document root plus named `Ortet` heading, reject a queued A request
-  after a B publication that deliberately reuses A's local ID, and reject an
-  old same-session publication and an unadvertised action while accepting a
-  current Focus action for the `Field notes` link. The remaining O2 gate is a
-  native platform receipt:
+  after a B publication that deliberately reuses A's local ID, withdraw a
+  missing projection's old tree and actions, and reject an old same-session
+  publication and an unadvertised action while accepting a current Focus action
+  for the `Field notes` link. The remaining O2 gate is a native platform
+  receipt:
   inspect the published tree, invoke focus on `Field notes`, and observe the
   resulting focused projection through the installed bridge.
+
+  One additional lowering test builds a semantic checkbox/range projection and
+  proves checked, selected false, live, numeric min/value/max, orientation and
+  popup state arrive in AccessKit while missing state stays absent.

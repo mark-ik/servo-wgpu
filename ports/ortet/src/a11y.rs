@@ -16,12 +16,14 @@
 use std::collections::HashMap;
 
 use accesskit::{
-    Action, ActionData, Node as AccessNode, NodeId as AccessNodeId, Role, Tree, TreeId, TreeUpdate,
+    Action, ActionData, HasPopup, Live, Node as AccessNode, NodeId as AccessNodeId, Orientation,
+    Role, Toggled, Tree, TreeId, TreeUpdate,
 };
 use document_session_api::session_engine::DocumentSession;
 use document_session_api::{
-    DocumentA11yAction, DocumentA11yActionData, DocumentA11yActionRequest, DocumentA11yNode,
-    DocumentA11yNodeId, DocumentA11yProjection, DocumentA11yRole,
+    DocumentA11yAction, DocumentA11yActionData, DocumentA11yActionRequest, DocumentA11yHasPopup,
+    DocumentA11yLive, DocumentA11yNode, DocumentA11yNodeId, DocumentA11yOrientation,
+    DocumentA11yProjection, DocumentA11yRole, DocumentA11yState, DocumentA11yToggled,
 };
 use genet_winit_host::A11yActionRequest;
 use netrender::Scene;
@@ -48,6 +50,7 @@ pub(crate) struct Accessibility {
     generation: u64,
     next_host_id: u64,
     revision: Option<u64>,
+    empty_published: bool,
     published: HashMap<AccessNodeId, PublishedNode>,
 }
 
@@ -57,6 +60,7 @@ impl Default for Accessibility {
             generation: 1,
             next_host_id: 1,
             revision: None,
+            empty_published: false,
             published: HashMap::new(),
         }
     }
@@ -69,21 +73,28 @@ impl Accessibility {
             .checked_add(1)
             .expect("Ortet a11y generation overflow");
         self.revision = None;
+        self.empty_published = false;
         self.published.clear();
     }
 
-    /// Lower a newly observed projection. `None` means the session cannot
-    /// expose accessibility and publishes no fabricated content.
+    /// Lower a newly observed projection. `None` withdraws the former session's
+    /// content with a content-free document tree; routing is cleared with it.
     pub(crate) fn publish(
         &mut self,
         projection: Option<DocumentA11yProjection>,
     ) -> Option<TreeUpdate> {
-        let projection = projection?;
+        let Some(projection) = projection else {
+            if self.empty_published {
+                return None;
+            }
+            return Some(self.publish_empty());
+        };
         if self.revision == Some(projection.revision()) {
             return None;
         }
 
         self.published.clear();
+        self.empty_published = false;
         let mut ids = HashMap::new();
         for node in projection.nodes() {
             ids.insert(node.id, self.allocate_host_id());
@@ -122,9 +133,10 @@ impl Accessibility {
         })
     }
 
-    /// A complete, content-free initial tree for the platform adapter while a
-    /// session has not yet produced a projection.
-    pub(crate) fn empty_tree(&mut self) -> TreeUpdate {
+    fn publish_empty(&mut self) -> TreeUpdate {
+        self.revision = None;
+        self.empty_published = true;
+        self.published.clear();
         let root = self.allocate_host_id();
         let node = AccessNode::new(Role::Document);
         TreeUpdate {
@@ -200,9 +212,7 @@ fn document_action(action: Action, data: Option<&ActionData>) -> Option<Document
     Some(match action {
         Action::Click => DocumentA11yAction::Click,
         Action::Focus => DocumentA11yAction::Focus,
-        Action::SetValue | Action::ReplaceSelectedText
-            if matches!(data, Some(ActionData::Value(_))) =>
-        {
+        Action::SetValue if matches!(data, Some(ActionData::Value(_))) => {
             DocumentA11yAction::SetValue
         },
         Action::ScrollIntoView => DocumentA11yAction::ScrollIntoView,
@@ -223,7 +233,7 @@ fn lower_node(
     node: &DocumentA11yNode,
     ids: &HashMap<DocumentA11yNodeId, AccessNodeId>,
 ) -> AccessNode {
-    let mut access = AccessNode::new(role(node.role));
+    let mut access = AccessNode::new(role(node.role, node.state));
     if let DocumentA11yRole::Heading { level } = node.role
         && level > 0
     {
@@ -246,6 +256,59 @@ fn lower_node(
     }
     if node.state.required {
         access.set_required();
+    }
+    // AccessKit 0.24 has no separate editable-state property. Text fields
+    // retain their text role and read-only bit; multiline selects the distinct
+    // multiline text role below. Do not invent a false editable value here.
+    if let Some(selected) = node.state.selected {
+        access.set_selected(selected);
+    }
+    if let Some(expanded) = node.state.expanded {
+        access.set_expanded(expanded);
+    }
+    if let Some(toggled) = node.state.toggled {
+        access.set_toggled(match toggled {
+            DocumentA11yToggled::On => Toggled::True,
+            DocumentA11yToggled::Off => Toggled::False,
+            DocumentA11yToggled::Mixed => Toggled::Mixed,
+        });
+    } else if let Some(checked) = node.state.checked {
+        access.set_toggled(if checked {
+            Toggled::True
+        } else {
+            Toggled::False
+        });
+    }
+    if let Some(live) = node.state.live {
+        access.set_live(match live {
+            DocumentA11yLive::Off => Live::Off,
+            DocumentA11yLive::Polite => Live::Polite,
+            DocumentA11yLive::Assertive => Live::Assertive,
+        });
+    }
+    if let Some(orientation) = node.state.orientation {
+        access.set_orientation(match orientation {
+            DocumentA11yOrientation::Horizontal => Orientation::Horizontal,
+            DocumentA11yOrientation::Vertical => Orientation::Vertical,
+        });
+    }
+    if let Some(has_popup) = node.state.has_popup {
+        access.set_has_popup(match has_popup {
+            DocumentA11yHasPopup::Menu => HasPopup::Menu,
+            DocumentA11yHasPopup::ListBox => HasPopup::Listbox,
+            DocumentA11yHasPopup::Tree => HasPopup::Tree,
+            DocumentA11yHasPopup::Grid => HasPopup::Grid,
+            DocumentA11yHasPopup::Dialog => HasPopup::Dialog,
+        });
+    }
+    if let Some(value) = node.numeric_value {
+        access.set_numeric_value(value);
+    }
+    if let Some(value) = node.numeric_minimum {
+        access.set_min_numeric_value(value);
+    }
+    if let Some(value) = node.numeric_maximum {
+        access.set_max_numeric_value(value);
     }
     if let Some(bounds) = node.bounds {
         access.set_bounds(accesskit::Rect::new(
@@ -274,7 +337,7 @@ fn lower_node(
     access
 }
 
-fn role(role: DocumentA11yRole) -> Role {
+fn role(role: DocumentA11yRole, state: DocumentA11yState) -> Role {
     match role {
         DocumentA11yRole::Window => Role::Window,
         DocumentA11yRole::Document | DocumentA11yRole::Article => Role::Document,
@@ -286,6 +349,7 @@ fn role(role: DocumentA11yRole) -> Role {
         DocumentA11yRole::StaticText => Role::TextRun,
         DocumentA11yRole::Link => Role::Link,
         DocumentA11yRole::Button => Role::Button,
+        DocumentA11yRole::TextField if state.multiline => Role::MultilineTextInput,
         DocumentA11yRole::TextField => Role::TextInput,
         DocumentA11yRole::CheckBox => Role::CheckBox,
         DocumentA11yRole::RadioButton => Role::RadioButton,
@@ -381,6 +445,99 @@ mod tests {
     }
 
     #[test]
+    fn lowering_preserves_checkbox_and_range_state_without_inventing_absence() {
+        use document_session_api::{A11yCapability, DocumentA11ySupport};
+
+        let root = DocumentA11yNodeId::new(1);
+        let checkbox = DocumentA11yNodeId::new(2);
+        let slider = DocumentA11yNodeId::new(3);
+        let projection = DocumentA11yProjection::new(
+            1,
+            DocumentA11ySupport::new(A11yCapability::Full, std::iter::empty::<String>())
+                .expect("full support"),
+            root,
+            vec![
+                DocumentA11yNode {
+                    id: root,
+                    parent: None,
+                    children: vec![checkbox, slider],
+                    role: DocumentA11yRole::Document,
+                    name: None,
+                    value: None,
+                    numeric_value: None,
+                    numeric_minimum: None,
+                    numeric_maximum: None,
+                    bounds: None,
+                    state: DocumentA11yState::default(),
+                    actions: Vec::new(),
+                },
+                DocumentA11yNode {
+                    id: checkbox,
+                    parent: Some(root),
+                    children: Vec::new(),
+                    role: DocumentA11yRole::CheckBox,
+                    name: Some("Subscribe".into()),
+                    value: None,
+                    numeric_value: None,
+                    numeric_minimum: None,
+                    numeric_maximum: None,
+                    bounds: None,
+                    state: DocumentA11yState {
+                        checked: Some(true),
+                        selected: Some(false),
+                        live: Some(DocumentA11yLive::Polite),
+                        ..DocumentA11yState::default()
+                    },
+                    actions: Vec::new(),
+                },
+                DocumentA11yNode {
+                    id: slider,
+                    parent: Some(root),
+                    children: Vec::new(),
+                    role: DocumentA11yRole::Slider,
+                    name: Some("Volume".into()),
+                    value: None,
+                    numeric_value: Some(4.0),
+                    numeric_minimum: Some(0.0),
+                    numeric_maximum: Some(10.0),
+                    bounds: None,
+                    state: DocumentA11yState {
+                        orientation: Some(DocumentA11yOrientation::Horizontal),
+                        has_popup: Some(DocumentA11yHasPopup::Dialog),
+                        ..DocumentA11yState::default()
+                    },
+                    actions: Vec::new(),
+                },
+            ],
+        );
+        let mut custody = Accessibility::default();
+        let tree = custody.publish(Some(projection)).expect("publish tree");
+        let checkbox = &tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Subscribe"))
+            .expect("checkbox")
+            .1;
+        assert_eq!(checkbox.toggled(), Some(Toggled::True));
+        assert_eq!(checkbox.is_selected(), Some(false));
+        assert_eq!(checkbox.live(), Some(Live::Polite));
+        let root = &tree.nodes.iter().find(|(_, node)| node.role() == Role::Document).expect("root").1;
+        assert_eq!(root.toggled(), None, "absent source state stays absent");
+        assert_eq!(root.is_selected(), None, "absence is not false");
+        let slider = &tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Volume"))
+            .expect("slider")
+            .1;
+        assert_eq!(slider.numeric_value(), Some(4.0));
+        assert_eq!(slider.min_numeric_value(), Some(0.0));
+        assert_eq!(slider.max_numeric_value(), Some(10.0));
+        assert_eq!(slider.orientation(), Some(Orientation::Horizontal));
+        assert_eq!(slider.has_popup(), Some(HasPopup::Dialog));
+    }
+
+    #[test]
     fn queued_action_from_replaced_session_is_rejected_even_when_local_id_repeats() {
         let first = session("<input aria-label=\"First\" value=\"a\">");
         let first_projection = first.accessibility_projection().expect("first projection");
@@ -414,6 +571,27 @@ mod tests {
         custody.replace_session();
         custody.publish(Some(second_projection)).expect("publish B");
         assert_eq!(custody.route(&mut *second, &queued), RoutedAction::Rejected);
+    }
+
+    #[test]
+    fn absent_projection_withdraws_the_old_tree_and_its_actions() {
+        let mut session = session("<a href=\"notes.html\">Field notes</a>");
+        let projection = session.accessibility_projection().expect("projection");
+        let local = projection
+            .nodes()
+            .iter()
+            .find(|node| node.actions.contains(&DocumentA11yAction::Focus))
+            .expect("focusable link")
+            .id;
+        let mut custody = Accessibility::default();
+        custody.publish(Some(projection)).expect("publish content");
+        let stale = action(Action::Focus, custody.host_id_for(local));
+        custody.replace_session();
+        let withdrawn = custody.publish(None).expect("withdraw old tree");
+        assert_eq!(withdrawn.nodes.len(), 1, "only the empty document remains");
+        assert_eq!(withdrawn.nodes[0].1.role(), Role::Document);
+        assert_eq!(custody.route(&mut *session, &stale), RoutedAction::Rejected);
+        assert_eq!(custody.publish(None), None, "do not churn empty trees");
     }
 
     #[test]
