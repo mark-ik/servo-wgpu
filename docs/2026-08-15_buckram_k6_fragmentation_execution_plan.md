@@ -2,11 +2,12 @@
 
 **Date:** 2026-08-15
 
-**Status:** K6a typed inputs implemented and reviewed, 2026-09-06. The clean
-pre-K6 source, release runner, and corpus are frozen. All 6,077 named
-candidate WPT records are identical to that baseline. Continuation state,
-fragmentainers, and multicol geometry remain unimplemented; K6b is next.
-The verification record below distinguishes focused receipts from broad checks.
+**Status:** K6a typed inputs and K6b's retained fragmentation model are
+implemented and reviewed, 2026-09-06. The clean pre-K6 source, release runner,
+and corpus are frozen. All 6,077 named candidate WPT records are identical to
+that baseline. Live formatter continuation and multicol geometry remain
+unimplemented; K6c is next. The verification record below distinguishes model,
+focused, and broad receipts.
 
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md),
 K6.
@@ -56,11 +57,11 @@ The current K5 shape is still specific enough to fix ownership:
 
 | Existing seam | Current boundary | K6 action |
 |---|---|---|
-| `components/buckram/src/fragment_tree.rs` | `FragmentationContextId::INITIAL` is the only context. `BreakToken` is a placeholder `resume_at: u32`. `FragmentTree::by_box` already permits one box to own several fragments. | Add fragmentainer/context records and algorithm-owned continuation tokens to this tree. Do not replace the tree. |
+| `components/buckram/src/fragment_tree.rs` | K6b added retained fragmentation contexts, ordered fragmentainers, fragmentainer association on each fragment, and typed continuation tokens. `FragmentTree::by_box` permits one box to own several fragments. | K6c must make the live formatter populate these records. Do not replace the tree. |
 | `FragmentTree::static_positions` | One static-position record per box is asserted as an unfragmented K5 invariant. | Index the record by the fragment or fragmentainer that supplied it. Positioned descendants must resume in the correct containing fragment. |
 | `FragmentTree::replace_subtree` | Correctly rejects a replacement that selects only some fragments of a box. | Add a continuation-chain replacement operation. Keep the K5 operation for unfragmented roots. |
 | `components/buckram/src/box_tree.rs` | K5 retains generated `BoxId` provenance independently from storage order. | One continued box keeps one `BoxId`; fragmentainers and continuations never synthesize duplicate CSS boxes. |
-| `components/buckram/src/block.rs` | Owns ordinary block flow, margin collapse, floats, clearance, and intrinsic block queries in continuous media. | Make its formatter resumable. Its break token owns carried margin, float, clearance, and nested-child state. |
+| `components/buckram/src/taffy_adapter/run.rs` and `block.rs` | The live ordinary block route spans the Taffy adapter and Buckram's block placement state. K6b's executable kernel is intentionally synthetic. | Make the live formatter resumable. Export exact snapshots from their current owners before claiming margin, float/exclusion, clearance, inline, or nested continuation state. |
 | `components/genet-livery/src/layout.rs` | Produces Buckram fragments and selected-root replacements. Several consumer paths still use `get` or `principal_fragment`, which select one rectangle. | Lower fragmentation inputs, materialize all continued fragments, and remove single-fragment selection from fragment-aware paint, hit-test, scroll, and geometry paths. |
 | `components/genet-livery/src/document.rs` | K5 damage selection and fresh-final equivalence are authoritative. Fragmented roots remain outside local replacement. | Promote damage to the fragmentation context when necessary, then replace only the affected continuation chain and compare with a fresh final document. |
 | `components/genet-livery/src/{text,paint}.rs` | Text and paint are retained side data keyed by the K5 result. | Consume continued fragment identity and fragmentainer clips. They do not get independent break decisions. |
@@ -180,35 +181,43 @@ source work cannot.
    fragmentainer has a logical content rectangle, flow, parent context,
    sequence position, and kind. The first kind is `Column`.
 2. Replace the placeholder numeric `BreakToken` with algorithm-owned token
-   variants. A block token retains the next child, a nested child token,
-   carried collapsed-margin state, float/exclusion state, clearance state, and
-   enough inline state to resume without replaying accepted earlier content.
-3. Make ordinary block and inline formatting accept a fragmentainer constraint
-   and return completed fragments plus an optional continuation token.
-4. Implement forced breaks first, then unforced overflow breaks, then
-   `break-inside`, widows, and orphans. A monolithic child reports that fact;
-   it is not silently clipped or split.
-5. Preserve containing-fragment links, baselines, logical coordinate spaces,
-   overflow, and one `BoxId` across all fragments.
+   variants. The model token retains the next child, a nested child token, and
+   typed slots for later formatter-owned state.
+3. Prove unforced overflow between ordinary synthetic children. The token is
+   the sole resume input and accepted children are not replayed. A monolithic
+   child reports that fact without emitting blank geometry or a looping token.
+4. Preserve containing-fragment links, logical coordinate spaces, overflow,
+   and one `BoxId` across all model fragments.
+
+K6b does not yet make the live block or inline formatter resumable. The live
+route is `components/buckram/src/taffy_adapter/run.rs`, with placement state in
+`block.rs`. K6c must integrate the model there before it can claim real margin,
+float/exclusion, clearance, inline, nested-child, or baseline continuation.
+Forced breaks, `break-inside`, widows, and orphans move with that live route.
 
 **Files**
 
 - new `components/buckram/src/fragmentation.rs`
-- `components/buckram/src/{lib,fragment_tree,block,intrinsic}.rs`
-- `components/genet-livery/src/{layout,text}.rs`
+- `components/buckram/src/{lib,fragment_tree}.rs`
+
+`block.rs`, `taffy_adapter/run.rs`, intrinsic queries, and Genet-Livery
+consumers are K6c files. They are not part of the K6b model receipt.
 
 **Model receipt**
 
 A synthetic fixed-size pair of fragmentainers resumes one ordinary block
 without reconstructing the box tree. The first fragment owns a typed block
-token and the second resumes from its complete state. Tests assert context
-ancestry, fragmentainer order, containing fragments, baseline state, carried
-float state, and final overflow.
+token and the second can resume only from that token. Tests assert context
+ancestry, fragmentainer order, containing fragments, exact child placement,
+one retained `BoxId`, and final overflow. Margin state is a provisional model
+value. Float/exclusion, clearance, inline state, real nested formatter state,
+and baselines are explicitly deferred until the live owner can provide a
+lossless snapshot or produced value.
 
 **Stop boundary**
 
-K6b is algorithm/model work. It does not receive a live multicol or WPT pass
-until K6c consumes it.
+K6b is model work. It receives no live layout, multicol, paint, interaction, or
+WPT credit. K6c consumes it through the live formatter and browser path.
 
 ### K6c. Live multicol and first load-bearing continuation
 
@@ -456,11 +465,11 @@ cannot hide a moved regression.
   then verify the generated property/cascade path and consumed-set
   invalidation before adding declarations or geometry credit.
 - The first code slice after that freeze is K6b's typed context/token seam:
-  `fragment_tree.rs` plus a new `components/buckram/src/fragmentation.rs`,
-  with the ordinary block resume boundary in `components/buckram/src/block.rs`.
-  The existing `genet-livery/src/layout.rs` and `layout/query.rs` consumers
-  still expose `get`/`principal_fragment`; they remain a later K6 consumer
-  gate, after a synthetic two-fragment continuation receipt exists.
+  `fragment_tree.rs` plus a new `components/buckram/src/fragmentation.rs`.
+  Review of the live route corrected the formatter file ownership to
+  `taffy_adapter/run.rs` plus `block.rs`; those files and the existing
+  `genet-livery/src/layout.rs` and `layout/query.rs` consumers remain K6c work,
+  after the synthetic two-fragment continuation receipt.
 
 ## Progress
 
@@ -537,6 +546,28 @@ cannot hide a moved regression.
 - Logs live under `C:/Users/mark_/Code/scratch/genet-k6-ortet-20260905/`.
   The frozen suite log and status are `all-targets-frozen.log` and
   `all-targets-frozen-status.txt`. These are local receipts, not uploaded CI.
+
+### 2026-09-06 K6b model receipt
+
+- Integrated commit `b89be5e14c3` replaces the numeric continuation
+  placeholder with typed block and deferred token variants. `FragmentTree`
+  now owns explicit context ancestry, ordered fixed column fragmentainers,
+  per-fragment fragmentainer association, and invariants that validate those
+  links and flows.
+- The executable kernel is crate-private. A synthetic 100 by 100 column pair
+  resumes one retained block after two 50px children, consumes the first
+  token as the only resume authority, emits the remaining two children in the
+  second column, and leaves the five-box `CssBoxTree` unchanged. An oversized
+  first child returns `Monolithic(BoxId)` without adding blank fragments or a
+  continuation that can loop.
+- `cargo test -p buckram --offline -j 1` passed all 258 library tests and the
+  doc-test target. The focused continuation test and `git diff --check` also
+  passed in the isolated worktree.
+- This receipt is model-only. `BlockMarginState` is provisional there;
+  float/exclusion, clearance, inline, real nested-child state, and baselines
+  remain typed deferrals. K6c must source exact state from
+  `taffy_adapter/run.rs` and `block.rs`, then prove the live Livery geometry,
+  paint, hit-test, mutation, and named WPT path.
 
 ## Gate verification
 
