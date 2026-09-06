@@ -391,6 +391,28 @@ consumer resolution is clean.
 - Inventory and implement the remaining grid surface, including auto tracks
   and template areas, under its own current-main receipt.
 
+### 2026-09-06 guard regression review
+
+The [refreshed K6 baseline](../docs/2026-08-24_buckram_k6_corpus_census_reconciliation.md#2026-09-06-baseline-refresh)
+uses clean pre-K6 source `0987ed25271` and the same WPT test-tree object as
+the archived harness receipt. Flexbox improves by 170 net passes and grid by
+10, but the named comparison also exposes five flexbox and sixteen grid
+pass-to-fail changes. These precede K6a. Their causes remain unisolated;
+they are review work, not a newly accepted regression allowance.
+
+The complete names and old/current records are in
+`C:/Users/mark_/Code/scratch/genet-k6-ortet-20260905/baseline-vs-archive.json`.
+Flex losses cover image expansion, minimum heights, a vertical image case,
+and `gap-010-ltr`. Grid losses cover negative positioned indices,
+max-content/border sizing, grid-lanes row sizing/alignment/gaps, and subgrid
+line names, orthogonal writing mode, and auto-fill.
+
+Before claiming a wider Row 18 closure, reproduce these 21 cases with pinned
+old/current runners on the same host, then isolate stable source regressions
+and assign each result to its owning sizing, positioning, gap, or subgrid seam.
+Keep them separate from the 143 direct fragmentation passes, which remain
+reference-unverified and carry no K6 layout credit.
+
 ## Progress
 
 ### 2026-08-25

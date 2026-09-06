@@ -1,13 +1,65 @@
 # Buckram K6 corpus census: current-main reconciliation
 
-**Date:** 2026-08-24
+**Date:** 2026-08-24; baseline refreshed 2026-09-06
 
-**Status:** Complete on current main.
+**Status:** Complete for the dated sources below. The 2026-09-06 baseline is frozen; K6a candidate comparison is pending.
 
 **Parent:** [Buckram and Livery lane program](2026-08-21_buckram_livery_lane_program_plan.md),
 row 13, and the [K6 fragmentation execution plan](2026-08-15_buckram_k6_fragmentation_execution_plan.md).
 
-## Ruling
+## 2026-09-06 baseline refresh
+
+The pre-K6 source is `0987ed2527167135431c41afd35c263a28d56c56`, checked
+clean in a detached worktree. The release runner completed with
+`cargo build --locked --offline --release --all-features -j 1 -p genet-wpt`
+and `RUSTFLAGS=-C debuginfo=0`. Its cold build took 104m 25s; existing
+scripted-capture, paint, and adapter warnings did not fail the build.
+
+- Runner SHA-256: `DAF60CB93E9A0B2907B9EF52DF67994E3F8BAC27E3F48E814838BACCB6FF7FA7`.
+- Lock SHA-256: `0FDF7926973C4498BA0F7608DDA2B03B5E10ACB728804F82C18C37E77EFAE126`.
+- Manifest SHA-256: `D5EC5BE9BF1A75ED00D7E7AB28AFE8A694A55E11682BA74305874D70B18DD422`.
+- WPT test-tree Git object: `443263e92be6e828c04b5d039f57412855e7a0ba`,
+  identical at the archived harness source `f9d5174b68d` and this baseline.
+
+Each family ran through `reftest css/css-<family> --renderer livery` with
+an absolute `--tests-root`, `--write-expectations`, and
+`--expectation-policy exact`. Direct fragmentation passes retain
+`reference-unverified`; they earn no continuation or multicol capability credit.
+
+| Family | Total | Pass | Fail | Skip | Unverified passes |
+|---|---:|---:|---:|---:|---:|
+| multicol | 708 | 60 | 337 | 311 | 60 |
+| break | 1,170 | 83 | 832 | 255 | 83 |
+| tables | 328 | 53 | 77 | 198 | 0 |
+| position | 344 | 45 | 73 | 226 | 1 |
+| flexbox | 1,358 | 486 | 398 | 474 | 11 |
+| grid | 1,891 | 295 | 848 | 748 | 2 |
+| page | 278 | 0 | 0 | 278 | 0 |
+
+The break subdirectories are included in its total: table is 11/109/44,
+flexbox 29/261/39, and grid 3/91/6 (pass/fail/skip). No crash or error status
+was emitted. Exact skip reasons, in family order above, are
+`non-reftest`: 248, 226, 170, 121, 423, 634, 278, and `needs-script`:
+63, 29, 28, 105, 51, 114, 0. Every page test still skips as `non-reftest`.
+
+Comparison with the archived full-CSS map finds 10 named break changes
+(five gains and five losses among unverified passes), 180 flexbox changes
+(175 gains, five losses), and 42 grid changes (26 gains, sixteen losses).
+Multicol, tables, position, and page have identical named results. Thus net
+flex/grid gains conceal 21 former guard passes that now fail; these predate
+K6a and belong in the [Row 18 review](../design_docs/2026-08-25_livery_flex_shorthand_plan.md#2026-09-06-guard-regression-review).
+The causes have not been isolated. Aggregate equality is not a named-result
+stability receipt.
+
+Artifacts are retained under
+`C:/Users/mark_/Code/scratch/genet-k6-ortet-20260905/`: the frozen
+`genet-wpt-baseline.exe`, `baseline-identity.json`, seven
+`baseline-css-<family>.json` maps and logs, `baseline-summary.json`,
+`baseline-vs-archive.json`, `k6-handoff.json`, and `run-baseline.ps1`.
+The summary records every map hash and the full reason counts. The handoff
+records verified K5 ancestry and the remaining single-fragment consumers.
+
+## 2026-08-24 ruling
 
 The archived 2026-08-21 census was diagnostically sound but was compiled
 under the lane program's uncommitted read-only overlay. Its result maps also
@@ -42,7 +94,7 @@ properties, `break-*`, `page-break-*`, `orphans`, `widows`,
 reference, or both use one of those declarations. `column-gap` alone does not
 flag a result because it is independently consumed by flex and grid.
 
-## Current absolute inventory
+## 2026-08-24 absolute inventory (historical)
 
 Runnable is pass plus fail. The current runner reports no crash results in
 these maps; non-reftest and script-dependent items remain skipped.
