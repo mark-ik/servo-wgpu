@@ -16,6 +16,7 @@ mod block;
 mod box_tree;
 mod flow;
 mod fragment_tree;
+mod fragmentation;
 mod intrinsic;
 mod positioning;
 mod sticky;
@@ -42,8 +43,13 @@ pub use flow::{
     PhysicalOffset, PhysicalRect, PhysicalSide, PhysicalSides, PhysicalSize, WritingMode,
 };
 pub use fragment_tree::{
-    Baselines, BreakToken, Fragment, FragmentId, FragmentTree, FragmentationContextId,
-    LayoutIdentityMap, LayoutResult, StaticPosition, StaticPositionSource,
+    Baselines, Fragment, FragmentId, FragmentTree, LayoutIdentityMap, LayoutResult, StaticPosition,
+    StaticPositionSource,
+};
+pub use fragmentation::{
+    BlockBreakToken, BreakToken, ClearanceState, DeferredBreakKind, DeferredBreakToken,
+    FloatExclusionState, Fragmentainer, FragmentainerId, FragmentainerKind, FragmentationContext,
+    FragmentationContextId, InlineResumeState,
 };
 pub use intrinsic::{
     IntrinsicQueryError, IntrinsicQueryState, IntrinsicSizeCache, IntrinsicSizeKind,

@@ -13,8 +13,9 @@ use std::{
 };
 
 use crate::{
-    BoxId, ContainingBlock, CssBoxTree, FlowAxes, LogicalRect, PhysicalOffset, PhysicalRect,
-    PhysicalSize,
+    BoxId, BreakToken, ContainingBlock, CssBoxTree, FlowAxes, Fragmentainer, FragmentainerId,
+    FragmentainerKind, FragmentationContext, FragmentationContextId, LogicalRect, PhysicalOffset,
+    PhysicalRect, PhysicalSize,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -55,20 +56,6 @@ pub struct StaticPosition {
     /// An optional grid-area replacement for the selected containing block,
     /// expressed in the source fragment's logical coordinates.
     pub containing_block_area: Option<LogicalRect>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct FragmentationContextId(u32);
-
-impl FragmentationContextId {
-    /// The unfragmented root context used during K0.
-    pub const INITIAL: Self = Self(0);
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct BreakToken {
-    /// Opaque algorithm-owned continuation position.
-    pub resume_at: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -114,6 +101,7 @@ pub struct Fragment {
     parent: Option<FragmentId>,
     containing_fragment: Option<FragmentId>,
     fragmentation_context: FragmentationContextId,
+    fragmentainer: Option<FragmentainerId>,
     pub logical_rect: LogicalRect,
     pub continuation: Option<BreakToken>,
     pub baselines: Baselines,
@@ -136,6 +124,7 @@ impl Fragment {
             parent: None,
             containing_fragment: None,
             fragmentation_context: FragmentationContextId::INITIAL,
+            fragmentainer: None,
             logical_rect,
             continuation: None,
             baselines: Baselines::default(),
@@ -159,6 +148,7 @@ impl Fragment {
             parent: None,
             containing_fragment: None,
             fragmentation_context: FragmentationContextId::INITIAL,
+            fragmentainer: None,
             logical_rect,
             continuation: None,
             baselines: Baselines::default(),
@@ -184,6 +174,7 @@ impl Fragment {
             parent: None,
             containing_fragment: None,
             fragmentation_context: FragmentationContextId::INITIAL,
+            fragmentainer: None,
             logical_rect,
             continuation: None,
             baselines: Baselines::default(),
@@ -212,6 +203,10 @@ impl Fragment {
 
     pub fn fragmentation_context(&self) -> FragmentationContextId {
         self.fragmentation_context
+    }
+
+    pub fn fragmentainer(&self) -> Option<FragmentainerId> {
+        self.fragmentainer
     }
 
     pub fn flow(&self) -> FlowAxes {
@@ -243,7 +238,7 @@ impl Deref for Fragment {
 }
 
 /// Fragments in tree order, indexed independently by box identity.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct FragmentTree {
     roots: Vec<FragmentId>,
     fragments: Vec<Fragment>,
@@ -252,9 +247,135 @@ pub struct FragmentTree {
     next_id: u32,
     by_box: HashMap<BoxId, Vec<FragmentId>>,
     static_positions: HashMap<BoxId, StaticPosition>,
+    fragmentation_contexts: HashMap<FragmentationContextId, FragmentationContext>,
+    fragmentainers: HashMap<FragmentainerId, Fragmentainer>,
+    next_context_id: u32,
+    next_fragmentainer_id: u32,
+}
+
+impl Default for FragmentTree {
+    fn default() -> Self {
+        let mut fragmentation_contexts = HashMap::new();
+        fragmentation_contexts.insert(
+            FragmentationContextId::INITIAL,
+            FragmentationContext {
+                id: FragmentationContextId::INITIAL,
+                parent: None,
+                flow: FlowAxes::HORIZONTAL_LTR,
+                fragmentainers: Vec::new(),
+            },
+        );
+        Self {
+            roots: Vec::new(),
+            fragments: Vec::new(),
+            ids: Vec::new(),
+            slots: HashMap::new(),
+            next_id: 0,
+            by_box: HashMap::new(),
+            static_positions: HashMap::new(),
+            fragmentation_contexts,
+            fragmentainers: HashMap::new(),
+            next_context_id: 1,
+            next_fragmentainer_id: 0,
+        }
+    }
 }
 
 impl FragmentTree {
+    /// Register a formatting context while retaining its parent context and
+    /// fragmentainer order in the same layout result.
+    pub fn create_fragmentation_context(
+        &mut self,
+        parent: Option<FragmentationContextId>,
+        flow: FlowAxes,
+    ) -> FragmentationContextId {
+        if let Some(parent) = parent {
+            assert!(
+                self.fragmentation_contexts.contains_key(&parent),
+                "a fragmentation context parent must be registered"
+            );
+        }
+        let id = FragmentationContextId::from_index(self.next_context_id.max(1));
+        self.next_context_id = (id.index() as u32)
+            .checked_add(1)
+            .expect("a fragment tree exceeded u32::MAX fragmentation contexts");
+        let previous = self.fragmentation_contexts.insert(
+            id,
+            FragmentationContext {
+                id,
+                parent,
+                flow,
+                fragmentainers: Vec::new(),
+            },
+        );
+        assert!(
+            previous.is_none(),
+            "a fragmentation context id cannot repeat"
+        );
+        id
+    }
+
+    pub fn fragmentation_context(
+        &self,
+        id: FragmentationContextId,
+    ) -> Option<&FragmentationContext> {
+        self.fragmentation_contexts.get(&id)
+    }
+
+    /// Register one ordered fragmentainer in an existing context.
+    pub fn create_fragmentainer(
+        &mut self,
+        context: FragmentationContextId,
+        logical_rect: LogicalRect,
+        kind: FragmentainerKind,
+    ) -> FragmentainerId {
+        let (flow, parent_context, sequence) = {
+            let context_record = self
+                .fragmentation_contexts
+                .get(&context)
+                .expect("a fragmentainer belongs to a live context");
+            (
+                context_record.flow(),
+                context_record.parent(),
+                context_record.fragmentainers().len(),
+            )
+        };
+        assert!(
+            logical_rect.inline_start.is_finite()
+                && logical_rect.block_start.is_finite()
+                && logical_rect.inline_size.is_finite()
+                && logical_rect.inline_size >= 0.0
+                && logical_rect.block_size.is_finite()
+                && logical_rect.block_size >= 0.0,
+            "a fragmentainer must have a finite non-negative logical size"
+        );
+        let id = FragmentainerId::from_index(self.next_fragmentainer_id);
+        self.next_fragmentainer_id = self
+            .next_fragmentainer_id
+            .checked_add(1)
+            .expect("a fragment tree exceeded u32::MAX fragmentainers");
+        let record = Fragmentainer {
+            id,
+            context,
+            parent_context,
+            sequence,
+            kind,
+            flow,
+            logical_rect,
+        };
+        self.fragmentainers.insert(id, record);
+        self.fragmentation_contexts
+            .get_mut(&context)
+            .expect("the context remains live while adding a fragmentainer")
+            .fragmentainers
+            .push(id);
+        id
+    }
+
+    pub fn fragmentainer(&self, id: FragmentainerId) -> Option<&Fragmentainer> {
+        self.fragmentainers.get(&id)
+    }
+
     pub fn roots(&self) -> &[FragmentId] {
         &self.roots
     }
@@ -344,6 +465,30 @@ impl FragmentTree {
         id
     }
 
+    /// Push a fragment into a registered fragmentainer. This is the only
+    /// insertion route that can attach a non-initial fragmentation context.
+    pub fn push_in_fragmentainer(
+        &mut self,
+        mut fragment: Fragment,
+        parent: Option<FragmentId>,
+        containing_fragment: Option<FragmentId>,
+        fragmentainer: FragmentainerId,
+    ) -> FragmentId {
+        let record = self
+            .fragmentainers
+            .get(&fragmentainer)
+            .expect("a fragment must name a live fragmentainer")
+            .clone();
+        assert_eq!(
+            fragment.flow(),
+            record.flow(),
+            "a fragment's flow must match its fragmentainer"
+        );
+        fragment.fragmentation_context = record.context();
+        fragment.fragmentainer = Some(fragmentainer);
+        self.push(fragment, parent, containing_fragment)
+    }
+
     fn allocate_fragment_id(&mut self) -> FragmentId {
         let id = FragmentId(self.next_id);
         self.next_id = self
@@ -357,7 +502,7 @@ impl FragmentTree {
     /// current structural children. This is intentionally tree-owned rather
     /// than a paint-side union so a later K5h subtree replacement can shrink
     /// as well as extend an ancestor's scrollable overflow.
-    fn recompute_overflow(&mut self) {
+    pub(crate) fn recompute_overflow(&mut self) {
         for fragment in &mut self.fragments {
             fragment.overflow = fragment.own_overflow;
         }
@@ -874,6 +1019,44 @@ impl FragmentTree {
                     .get(&fragment.box_id())
                     .is_some_and(|ids| ids.contains(&id))
             );
+            if let Some(fragmentainer) = fragment.fragmentainer() {
+                let record = self
+                    .fragmentainers
+                    .get(&fragmentainer)
+                    .expect("a fragmentainer link must name a live record");
+                assert_eq!(fragment.fragmentation_context(), record.context());
+                assert_eq!(fragment.flow(), record.flow());
+                assert!(
+                    self.fragmentation_contexts
+                        .get(&record.context())
+                        .is_some_and(|context| context.fragmentainers.contains(&fragmentainer))
+                );
+            }
+        }
+        for (id, context) in &self.fragmentation_contexts {
+            assert_eq!(*id, context.id());
+            if let Some(parent) = context.parent() {
+                assert!(self.fragmentation_contexts.contains_key(&parent));
+            }
+            for (sequence, fragmentainer) in context.fragmentainers().iter().copied().enumerate() {
+                let record = self
+                    .fragmentainers
+                    .get(&fragmentainer)
+                    .expect("a context must own live fragmentainers");
+                assert_eq!(record.context(), *id);
+                assert_eq!(record.sequence(), sequence);
+            }
+        }
+        for (id, fragmentainer) in &self.fragmentainers {
+            assert_eq!(*id, fragmentainer.id());
+            assert!(
+                self.fragmentation_contexts
+                    .contains_key(&fragmentainer.context())
+            );
+            assert_eq!(
+                self.fragmentation_contexts[&fragmentainer.context()].flow(),
+                fragmentainer.flow()
+            );
         }
         for (box_id, ids) in &self.by_box {
             let mut seen = HashSet::new();
@@ -895,6 +1078,7 @@ fn same_fragment_context(current: &Fragment, previous: &Fragment) -> bool {
     current.box_id == previous.box_id
         && current.flow == previous.flow
         && current.fragmentation_context == previous.fragmentation_context
+        && current.fragmentainer == previous.fragmentainer
 }
 
 fn union_logical_rects(one: LogicalRect, other: LogicalRect) -> LogicalRect {
