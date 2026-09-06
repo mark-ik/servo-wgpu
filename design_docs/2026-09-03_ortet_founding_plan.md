@@ -633,8 +633,9 @@ graph control.
   29,400 content-card pixels, 6,084 border pixels, and 32,328 glyph-tone
   pixels. RGBA FNV-32 is `0x04cf0045`; PNG SHA-256 is
   `50cda9fd2c7c613c4fe192f140900a71ff4f4b6658b705e44b7a806a62fc6542`.
-  Local artifacts are under
-  `C:/Users/mark_/Code/scratch/genet-k6b-ortet-o3-20260906/chrome-ahem/`.
+  The checked-in runner repeated those exact counts and hash from combined
+  final source `96f2f65c5bf`; local artifacts are under
+  `C:/Users/mark_/Code/scratch/genet-k6b-ortet-o3-20260906/chrome-final-main/`.
 
   The remaining browser boundary is http(s) resource loading. The synchronous
   `ResourceFetcher` cannot await browser fetch, so the wasm entrypoint currently
