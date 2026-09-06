@@ -1,7 +1,7 @@
 # Ortet founding plan
 
-**Status:** in progress, updated 2026-09-05. O0, O1 and O4 landed on
-2026-09-03; the crates.io claim stays pending. O2 and O3 are open. The
+**Status:** in progress, updated 2026-09-05. O0, O1, O2 and O4 landed; the
+crates.io claim stays pending. O3 is open. The
 `fleece` carve-out is reconciled with the boundary plan's §9.1 (see Findings);
 the witness still names fleece on every run.
 
@@ -335,6 +335,19 @@ graph control.
   is a contract limitation to revisit with the bridge/API, not a claim that
   whole-projection state is faithful.
 
+- 2026-09-05: **O2 accepted on Windows.** The final native probe opened
+  `C:/Users/mark_/Code/targets/genet-font-proof-20260905/debug/ortet.exe`
+  built from `28fee14166580c19df464fa26845e2b998d9d75e` (SHA-256
+  `71E3CC1F4750191128D785F6035265A80C2A1EE05905DC2881E92812D2494B1D`).
+  Windows UIAutomation found the Document, the named `Ortet` heading, and the
+  `Field notes` hyperlink; `SetFocus` made that link the OS focused element.
+  After a fresh tree acquisition across Ortet's intentionally rotated
+  publication IDs, Invoke navigated to `notes.html`, whose `Field notes`
+  heading replaced the old `Ortet` heading. The reproducible probe is
+  `C:/Users/mark_/Code/scratch/genet-k6-ortet-20260905/probe-uia.ps1`; receipts
+  are `uia-final.log` and `ortet-uia-final-launch.log` in the same directory.
+  O3 remains the separate raw-web-host and Chromium-readback gate.
+
 - 2026-09-05: O3 has a reusable target-neutral seam in
   `components/genet-render-host/src/lib.rs::RenderCore::create_surface`,
   including `wgpu::SurfaceTarget::Canvas`, while `ports/ortet` still has only
@@ -566,3 +579,13 @@ graph control.
   One additional lowering test builds a semantic checkbox/range projection and
   proves checked, selected false, live, numeric min/value/max, orientation and
   popup state arrive in AccessKit while missing state stays absent.
+
+- 2026-09-05: **O2 landed on Windows.** The final UIAutomation receipt used
+  source `28fee14166580c19df464fa26845e2b998d9d75e` and executable SHA-256
+  `71E3CC1F4750191128D785F6035265A80C2A1EE05905DC2881E92812D2494B1D`.
+  It found the Document, `Ortet` heading, and `Field notes` hyperlink; focused
+  the link; re-acquired the rotated publication tree; invoked the link; and
+  observed `notes.html`'s `Field notes` heading replace `Ortet`. This accepts
+  O2's Windows gate. The host's fresh-ID publication policy remains deliberate:
+  it rejects asynchronously queued stale actions at the cost of platform node
+  identity churn after semantic updates. O3 remains open.

@@ -66,6 +66,15 @@ named `Field notes`. The document root is preserved as the session supplies it;
 Ortet does not rename it from the heading. Ortet logs
 `[ortet] accessibility bridge installed` when the native adapter is live.
 
+Windows receipt, 2026-09-05: source
+`28fee14166580c19df464fa26845e2b998d9d75e` built
+`debug/ortet.exe` with SHA-256
+`71E3CC1F4750191128D785F6035265A80C2A1EE05905DC2881E92812D2494B1D`.
+The UIAutomation probe found the Document, `Ortet`, and `Field notes`; focused
+the link; re-acquired the rotated tree; invoked the link; and observed the
+`Field notes` heading in `notes.html`. The probe and its logs are in
+`C:/Users/mark_/Code/scratch/genet-k6-ortet-20260905/`.
+
 ## Receipts
 
 `--frames N --artifact out.png` presents N frames, composes the last one into a
