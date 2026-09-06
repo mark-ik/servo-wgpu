@@ -39,7 +39,7 @@ older `docs/` corpus without changing their location or governance.
 | Work | Current boundary and next proof |
 |---|---|
 | [Font fallback](2026-09-04_common_script_font_fallback_plan.md) | Windows T1 is accepted with focused regressions and Ortet readback. Consumer revision adoption, upstream disposition, and other-platform measurements remain open. |
-| [Ortet](2026-09-03_ortet_founding_plan.md) | Desktop host and default-member migration landed. O2 needs accessibility identity/action receipts across navigation; O3 needs a raw web host and browser readback. Publication remains separate. |
+| [Ortet](2026-09-03_ortet_founding_plan.md) | Desktop host and default-member migration landed. O2 passed Windows tree, focus, navigation, and stale-action checks. O3 needs a raw web host and browser readback; stable accessibility IDs still need bridge publication custody. Publication remains separate. |
 | [K6 fragmentation](../docs/2026-08-15_buckram_k6_fragmentation_execution_plan.md) | The named K5 prerequisites have accepted receipts. K6a starts with a refreshed source and corpus freeze; the census is complete, continuation behavior is unimplemented. |
 | [Flex and grid, Row 18](2026-08-25_livery_flex_shorthand_plan.md#row-18-closure-and-remaining-work) | Bounded vertical-flex slices landed. Remaining work includes mixed-writing-mode baselines, generated/pseudo self edges, shared font metrics and percentage provenance, then a measured grid inventory. |
 | [Floats and shapes, Row 12](../docs/2026-08-25_buckram_horizontal_float_direction_reconciliation.md) | Horizontal box-shape and direction slices landed. Vertical/orthogonal transforms and remaining shape families retain their own unproved boundaries. |
@@ -56,8 +56,8 @@ completed corpus census or bounded slice does not close its enclosing feature.
 ## ortet — the raw host
 
 - [ortet_founding_plan](2026-09-03_ortet_founding_plan.md) (**O0, O1 and O4
-  landed 2026-09-03, publication pending; O2 accessibility and O3 web target
-  open**: the one headed port that proves the
+  landed 2026-09-03; O2 Windows accessibility accepted 2026-09-05;
+  publication and O3 web target open**: the one headed port that proves the
   engine runs without Mere, over `genet-winit-host`, `genet-render-host`,
   `genet-documents`' Livery lane and `document-session-api`, with a cone
   witness that forbids every Mere crate and a self-driven frame receipt.

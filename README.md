@@ -27,8 +27,8 @@ conformance harnesses and the Ortet host. Publication is set per package.
   (primary native), Boa (pure Rust, wasm and conformance oracle), and Piccolo
   (Lua).
 - Ortet proves the script-free Livery route through a minimal desktop host
-  with frame capture and driven navigation receipts. Accessibility integration
-  and the raw web target remain open in its
+  with frame capture, driven navigation, and Windows accessibility receipts.
+  The raw web target remains open in its
   [founding plan](design_docs/2026-09-03_ortet_founding_plan.md).
 - Pelt's tiled reference browser and static/scripted adapters now live in
   Mere, alongside the other application components.
