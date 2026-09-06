@@ -1,7 +1,7 @@
 # Ortet founding plan
 
-**Status:** in progress, updated 2026-09-05. O0, O1, O2 and O4 landed; the
-crates.io claim stays pending. O3 is open. The
+**Status:** implementation gates complete, updated 2026-09-06. O0 through O4
+landed; the crates.io claim stays pending. The
 `fleece` carve-out is reconciled with the boundary plan's §9.1 (see Findings);
 the witness still names fleece on every run.
 
@@ -36,6 +36,10 @@ when the crate has one worth publishing (naming ledger rule).
   `DocumentSession<Scene>` for the address it was given, and maps winit events
   onto the session's semantic input directly. Following a link is spawning a
   new session for the new address.
+- Its wasm target drives the same Livery session and target-neutral
+  `genet-render-host::RenderCore` through an `HtmlCanvasElement` and DOM input.
+  Target selection excludes winit, `genet-winit-host`, and AccessKit from the
+  wasm dependency cone.
 - It has no chrome. One window, one document, no tabs, no tiles, no reader
   lane, no smolweb, no settings, no persistence. Anything of that kind is Mere.
 - **Its dependency cone contains no Mere crate**, and the cone witness says
@@ -50,6 +54,10 @@ when the crate has one worth publishing (naming ledger rule).
   `genet-render-host`, writes the PNG, prints the frame digest and exits
   non-zero on a blank frame. That is what CI and a plan can cite; a person
   looking at the window is confirmation, not the gate.
+- The web receipt is `support/ci/run_ortet_chromium_receipt.ps1`. It builds the
+  wasm library, packages it with `wasm-bindgen`, drives headed Chromium through
+  DevTools, serializes the WebGPU canvas to PNG, decodes the PNG through a
+  separate 2D canvas, and rejects missing page, box, border, or glyph tones.
 
 ## Phases
 
@@ -152,6 +160,14 @@ non-blank canvas readback; a screenshot alone is insufficient.
 **Done when:** `wasm32-unknown-unknown` builds, the article renders in Chromium
 with a non-blank canvas readback, and the witness holds for the web target's
 cone too.
+
+**Landed 2026-09-06:** `ports/ortet/src/web.rs` owns the canvas surface and DOM
+input adapter. The target-filtered witness reuses the Ortet forbidden set and
+also rejects AccessKit, winit, and `genet-winit-host`. The checked-in Chromium
+receipt proves the article field, a content box and border, and bundled Ahem
+glyph paint from decoded canvas pixels. Browser http(s) fetching remains a
+separate adapter problem because the current engine `ResourceFetcher` is
+synchronous; O3's reproducible fixture uses a data document and data font.
 
 ### O4. Take over Pelt's place
 
@@ -589,3 +605,38 @@ graph control.
   O2's Windows gate. The host's fresh-ID publication policy remains deliberate:
   it rejects asynchronously queued stale actions at the cost of platform node
   identity churn after semantic updates. O3 remains open.
+
+- 2026-09-06: **O3 landed.** Integrated commit `0903067b4df` adds the
+  wasm-only Ortet canvas host, DOM pointer/wheel/keyboard/focus/resize routing,
+  browser pointer capture, target-gated native dependencies, and a checked-in
+  Chromium DevTools receipt. `genet-render` now separates neutral document
+  projection from optional AccessKit lowering, retaining AccessKit in its
+  default native feature set while `genet-documents` consumes the Livery-only
+  path.
+
+  The first pixel receipt painted the page field and heading border but exposed
+  missing glyphs. The cause was shared resource classification:
+  `data:font/ttf` had no filename extension and entered the image ledger.
+  `genet-document-resources` now recognizes font data MIME types, and its
+  focused resource-ledger test passes. The final receipt loads the checked-in
+  Ahem TTF through the ordinary `@font-face` data URL and retained
+  `TextSystem`, without an Ortet-private text path.
+
+  `cargo check -p ortet --target wasm32-unknown-unknown --locked --offline`
+  passed, as did both default and Livery-only `genet-render` feature checks,
+  the 15 native Ortet tests, the focused data-font test, script syntax checks,
+  and `git diff --check`. The durable dependency witness reports 600 packages
+  in the native Ortet cone and 283 in the target-filtered wasm cone, with no
+  Mere/Cambium names and no AccessKit, winit, or `genet-winit-host` in wasm.
+
+  The final 640 by 400 decoded canvas contains 156,808 page-tone pixels,
+  29,400 content-card pixels, 6,084 border pixels, and 32,328 glyph-tone
+  pixels. RGBA FNV-32 is `0x04cf0045`; PNG SHA-256 is
+  `50cda9fd2c7c613c4fe192f140900a71ff4f4b6658b705e44b7a806a62fc6542`.
+  Local artifacts are under
+  `C:/Users/mark_/Code/scratch/genet-k6b-ortet-o3-20260906/chrome-ahem/`.
+
+  The remaining browser boundary is http(s) resource loading. The synchronous
+  `ResourceFetcher` cannot await browser fetch, so the wasm entrypoint currently
+  accepts local data documents and data/package resources. Authored text on
+  wasm must supply font bytes through `@font-face`; no system fonts exist there.
