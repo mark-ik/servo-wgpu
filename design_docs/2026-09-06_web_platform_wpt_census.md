@@ -447,3 +447,81 @@ paint bugs.
 Raw per-directory JSON exact maps and logs: `Code/testing/genet/wpt-ledger/2026-09-07_reftest_platform/reftest/`.
 `summary.md` in that directory is `aggregate.py`'s output and is the source
 of the table above.
+
+### The mismatch-eq bucket
+
+**Status:** complete. Verdict only; no runner source changed.
+
+Reconciled the 75 `mismatch-eq` fail records flagged above as a candidate
+false-negative pool. The question per file: is it a `!=` (mismatch) reftest
+whose candidate and reference render identically — a genuine engine failure
+(the feature under test did nothing, so both pages painted the same wrong
+picture) — or an `==` reftest failing with identical pixels, which would be a
+runner defect (a match should never fail on zero pixel delta)?
+
+**Bucket construction rules out the second case by code shape.** In
+`ports/genet-wpt/src/reftest.rs::reftest`, `mismatch-eq` is only ever
+incremented in the `MatchKind::Mismatch` arm of the fail branch (the
+`MatchKind::Match` arm buckets through `diff_label`, which has its own
+`equal?` label for a `==` test that fails on zero diff). An `==` test failing
+with identical pixels cannot land in `mismatch-eq`; it would show up as
+`equal?`.
+
+**Grouping.** All 75 records are `FAIL  mismatch` lines (verified against the
+raw logs, not inferred from the code alone: `grep -rn "FAIL  mismatch"
+*.log` across `Code/testing/genet/wpt-ledger/2026-09-07_reftest_platform/reftest/`
+returns exactly 75 lines, matching the bucket total file-for-file). By
+relation: **75 of 75 are `!=`, 0 are `==`.** The `equal?` label (the bucket an
+`==` runner defect would use) does not appear anywhere in the 42 directories'
+logs. By directory:
+
+| Directory | mismatch-eq count |
+|---|---:|
+| mathml | 33 |
+| html_semantics_permission-element | 16 |
+| html_rendering | 11 |
+| html_semantics_forms | 9 |
+| html_semantics_text-level-semantics | 2 |
+| svg | 3 |
+| html_semantics_embedded-content | 1 |
+| **Total** | **75** |
+
+Cross-checked all 75 against `tests/wpt/tests/MANIFEST.json` (SHA-256 prefix
+`d5ec5be9bf1a75ed`, the same tree the lane used): every one carries a single
+reference entry, relation `!=`, no manifest `fuzzy` extras, and no
+alternate/chained reference. `final_ref` in `reftest.rs` does not walk
+mismatch chains (correct per WPT semantics — a `!=` reference is terminal),
+so chain-following is not a factor here, and none of the 75 has more than one
+reference for the `refs.first()` simplification to drop.
+
+**Sample rerun.** Built a fresh release runner:
+`CARGO_TARGET_DIR=C:/t/lane8c-target cargo build --release -p genet-wpt`,
+SHA-256 `a96fb204d0a974133d128cb0c040fb765e6a89bb0a9f31089374c5c3092860a3`. Reran
+14 of the 75 alone (`genet-wpt reftest <file> --engine boa --renderer livery
+-v --tests-root tests/wpt/tests`), spanning 6 of the 7 directories above
+(`html_rendering` x3, `html_semantics_forms` x2,
+`html_semantics_permission-element` x2, `html_semantics_text-level-semantics`
+x1, `html_semantics_embedded-content` x1, `mathml` x3, `svg` x2). All 14
+reproduced `FAIL  mismatch` on the isolated rerun — no flake, no batch-run
+artifact. A sample of 3 (`html/rendering/the-details-element/details-after.html`,
+`mathml/relations/css-styling/mathbackground-001.html`,
+`svg/text/reftests/lang-attribute.svg`) was also rendered with `genet-wpt
+dump`; all three reported `diff=0% maxδ=0` between the candidate and
+reference PNGs, confirming the pixels really are identical, not merely
+within the widened GPU-jitter fuzzy band. Could not sample the `==` relation
+or a runner-defect case, because none exists in this bucket: 75 of 75 are
+`!=`, 0 are `==`, so there is only one relation to span. Dumped PNGs and the
+rerun file list are under
+`Code/testing/genet/wpt-ledger/2026-09-07_reftest_platform_sample/`.
+
+**Verdict: no runner defect. All 75 are genuine `!=` engine failures.** Every
+record in the bucket is a mismatch reftest whose candidate and reference
+rendered the same picture — Livery did not distinguish the state the test
+exists to probe (a details/summary open-state toggle, a checked/disabled
+widget state, a permission-icon CSS property, a MathML `mathbackground`/
+`mathcolor` value, stretchy operator sizing, an SVG `lang`/`xml:lang` text
+render, and so on). The bucket is not a false-negative pool to reconcile
+before spending effort on paint bugs, contrary to the hedge in the "Far
+reading" note above — it *is* the paint-bug pool, just one where the feature
+under test is entirely inert rather than partially wrong. `ports/genet-wpt`
+was not touched.
