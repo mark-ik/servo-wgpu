@@ -39,7 +39,7 @@ older `docs/` corpus without changing their location or governance.
 | Work | Current boundary and next proof |
 |---|---|
 | [Font fallback](2026-09-04_common_script_font_fallback_plan.md) | Windows T1 is accepted with focused regressions and Ortet readback. Consumer revision adoption, upstream disposition, and other-platform measurements remain open. |
-| [Ortet](2026-09-03_ortet_founding_plan.md) | O0-O4 landed. Native accessibility and the raw wasm canvas host have platform receipts; the wasm cone excludes AccessKit and winit. Browser http(s) provisioning has structural resolver/session and headed HTTP runtime receipts; stable accessibility IDs and publication remain open. |
+| [Ortet](2026-09-03_ortet_founding_plan.md) | O0-O4 landed, including native accessibility and wasm/HTTP receipts. O5 planned: selectable script-free/Boa/Nova modes through the shared session contract, production async scheduling/resource wiring, and headed engine proofs without Mere. genet-wpt owns WPT scoring; Pelt supplies downstream integration evidence. Stable accessibility IDs and publication remain open. |
 | [K6 fragmentation](../docs/2026-08-15_buckram_k6_fragmentation_execution_plan.md) | K6a typed inputs, K6b's retained context/token model, and a dormant pre-K6c style/input dispatch seam landed. All 6,077 named records match the frozen pre-K6 baseline. Live formatter continuation and multicol geometry remain K6c work. |
 | [Flex and grid, Row 18](2026-08-25_livery_flex_shorthand_plan.md#row-18-closure-and-remaining-work) | Bounded vertical-flex slices landed. Remaining work includes mixed-writing-mode baselines, generated/pseudo self edges, shared font metrics and percentage provenance, then a measured grid inventory. The dated guard review records 21 pre-K6 flex/grid pass-to-fail cases. |
 | [Floats and shapes, Row 12](../docs/2026-08-25_buckram_horizontal_float_direction_reconciliation.md) | Horizontal box-shape and direction slices landed. Vertical/orthogonal transforms and remaining shape families retain their own unproved boundaries. |
@@ -77,8 +77,8 @@ completed corpus census or bounded slice does not close its enclosing feature.
   storage, Web Animations, and editing. Reviewed against the landed globals,
   observer and selection lanes: required semantics, remaining design choices,
   shared scripted/persistent host prerequisites, and exact-slice acceptance
-  requirements. Census counts stay historical. Nothing scheduled; promote a
-  section to a dated plan before implementation.)
+  requirements. Census counts stay historical. API lanes require dated plans;
+  the shared scripted-host direction is planned in Ortet O5.)
 
 ## WPT census — the web platform beyond CSS
 
@@ -182,6 +182,12 @@ completed corpus census or bounded slice does not close its enclosing feature.
   `genet-documents`' Livery lane and `document-session-api`, with a cone
   witness that forbids every Mere crate and a self-driven frame receipt.
   Replaced Pelt as Genet's default host when Pelt moved to Mere.)
+  [O5 scripted platform host](2026-09-03_ortet_founding_plan.md#o5-scripted-platform-host-planned-2026-09-07)
+  is **planned 2026-09-07**: script-free/Boa/Nova selection, real session
+  scheduling and resource integration, and native headed receipts. Ortet is
+  Genet's reference host; `genet-wpt` owns conformance scoring and Pelt proves
+  downstream composition. Browser-hosted scripting and persistent test storage
+  require their own later receipts.
 
 ## fleece — reader extraction
 

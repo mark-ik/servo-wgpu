@@ -1,6 +1,7 @@
 # Ortet founding plan
 
-**Status:** O0 through O4 landed, updated 2026-09-06. Browser http(s) resource
+**Status:** O0 through O4 landed; O5 scripted platform host planned, updated
+2026-09-07. Browser http(s) resource
 provisioning landed structurally in `35efc1985bc` and its headed HTTP runtime
 gate is accepted in `247a52e612a`. The crates.io claim stays pending. The
 `fleece` carve-out is reconciled with the boundary plan's §9.1 (see Findings);
@@ -25,7 +26,8 @@ when the crate has one worth publishing (naming ledger rule).
 
 ## What ortet is, and is not
 
-- A `ports/ortet` binary over engine crates only: `genet-winit-host` (window,
+- A `ports/ortet` binary over engine crates only. The landed route uses
+  `genet-winit-host` (window,
   wheel translation, AccessKit bridge) and through it `genet-render-host`
   (wgpu + netrender boot, rasterize, acquire, compose), `genet-documents` with
   its `livery` feature (`LiverySessionEngine`), `document-session-api`
@@ -41,8 +43,12 @@ when the crate has one worth publishing (naming ledger rule).
   `genet-render-host::RenderCore` through an `HtmlCanvasElement` and DOM input.
   Target selection excludes winit, `genet-winit-host`, and AccessKit from the
   wasm dependency cone.
-- It has no chrome. One window, one document, no tabs, no tiles, no reader
-  lane, no smolweb, no settings, no persistence. Anything of that kind is Mere.
+- It hosts one top-level document in one window. Browser chrome, workspace
+  orchestration, reader/product composition and user profiles belong to Mere.
+  Engine selection and bounded test configuration belong in Ortet. An explicit
+  test storage provider/directory may support future restart receipts without
+  making Ortet a product profile manager. Nested documents belong to the
+  engine's iframe model when that lane lands.
 - **Its dependency cone contains no Mere crate**, and the cone witness says
   so on every CI run: none of `inker`, `workbench`, `cambium*`, `mere-*`,
   `nematic`, `errand`, `document-canvas`, `pelt*`, `tabard`,
@@ -62,15 +68,27 @@ when the crate has one worth publishing (naming ledger rule).
 
 ## Phases
 
-### Receipt boundary clarification (2026-09-07)
+### Platform testing roles (Mark's ruling, 2026-09-07)
+
+| Vehicle | Responsibility |
+|---|---|
+| `genet-wpt` | Primary automated conformance runner: WPT discovery, variants, assertions, scoring, exact maps and regression manifests. |
+| Ortet | Genet's headed reference host: prove real session execution, input, scheduling, resource delivery, presentation and teardown without Mere. |
+| Pelt in Mere | Browser-port composition and downstream integration of Mere with Genet. Its receipts supplement Genet's own proofs. |
+
+Ortet's script-free founding route is an implementation stage, not a permanent
+restriction. Add scripting through the shared engine/session seam under O5.
+A missing Genet headed proof should drive that integration rather than make
+Pelt a prerequisite. Ortet does not duplicate WPT discovery or scoring; a
+fixture or WPT-driven hosted check records the actual execution route, and
+only the conformance runner awards WPT credit.
 
 O0-O4 prove the raw `LiverySessionEngine` route. They do not establish page
 JavaScript execution or a persistent storage provider. The
 [deferred web-platform scoping](2026-09-07_deferred_web_platform_lanes_scoping.md#shared-acceptance-and-host-prerequisites)
-uses a named scripted host for Worker, Canvas 2D and other JS-driven receipts.
-Using Ortet for those receipts first requires a separately scoped scripted
-route; restart/storage tests also require an explicit provider. This note
-does not add either capability to Ortet's completed phases.
+uses scripted Ortet as the target for Genet's JS-driven headed receipts.
+Until O5 is accepted, runtime/harness results and the open Ortet gate remain
+separate. Restart/storage tests additionally need an explicit provider.
 
 ### O0. Found the crate
 
@@ -205,7 +223,82 @@ edges are excluded and retains an allowed graph control. Predicate assertions
 remain a separate guard on the name list; they are not presented as a live
 graph control.
 
+### O5. Scripted platform host (planned 2026-09-07)
+
+Extend the existing host with selectable script-free, Boa and Nova execution
+modes, using the same window, session input, rendering and capture path.
+`ScriptedSessionEngine<E, Fetch>` already implements `SessionEngine<Scene>`;
+the existing boxed `DocumentSession<Scene>` is the host-facing contract.
+Keep renderer choice distinct from script-engine choice: these modes all
+consume Livery/Buckram. Exact CLI/feature spellings are an implementation
+choice; unsupported combinations must produce a clear diagnostic rather than
+silently choosing another engine.
+
+**O5a: engine selection.** Replace Ortet's concrete engine selection with
+the common session contract or a small mode dispatcher. Preserve its
+script-free route. Instantiate supported scripted modes through
+`genet-documents`; do not import Pelt, Inker or Cambium. Record the actual
+engine, target, features and source revision in each receipt.
+
+**O5b: production session integration.** Resource and scheduling adapters must
+serve the real document session, not a harness-only copy of the runtime.
+
+- Provision document/external-script loads and script fetch/worker resource
+  requests through the existing host contracts with consistent base URL,
+  response metadata and policy. General engine fixes live in `genet-scripted`,
+  `script-runtime-api` or their session adapters, not in Ortet-specific JS.
+- Drive timers, microtasks, asynchronous fetch and worker completions through
+  the session's `pump`/pending-work contract. Specify how a worker or network
+  completion wakes an otherwise idle host; it must not require user input or
+  continuous repaint. Preserve task ordering and host-clock behavior.
+- Propagate script-driven DOM/layout changes into the next presented frame.
+  Replacing or closing a document cancels or retires its outstanding work and
+  rejects late results belonging to the previous session. Keep worker
+  termination and thread cleanup at the shared runtime boundary.
+- Use bounded receipt completion and timeout/error reporting. A frame count
+  or nonblank image alone cannot prove that an asynchronous script finished.
+  Expose a verifiable completion condition and DOM/semantic readback through
+  an engine-owned inspection seam, then correlate it with the captured frame.
+
+**O5c: acceptance.** Freeze the named fixtures and regression manifest before
+implementation. Native acceptance exercises both Boa and Nova where supported:
+
+1. A loaded page executes inline and external JS, changes DOM after a
+   timer/microtask and handles native input; semantic readback and pixels
+   confirm the resulting state.
+2. A live-server fetch changes the page after the host has become idle.
+   The response wakes the host and presents without a synthetic input event.
+3. Once the Worker runtime slice is ready, a page exchanges messages with a
+   live worker, displays its result and passes the same idle-wakeup check.
+   This proves hosted integration; the Worker lane still owns clone, transfer
+   and actual buffer-detachment conformance requirements.
+4. Navigation/replacement and close with pending fetch/worker work prove
+   cancellation, cleanup and exclusion of stale DOM/frame updates. Script
+   errors and an unmet completion condition produce failing receipts.
+5. Existing static/native accessibility and wasm O0-O4 regression receipts
+   hold. Dependency-cone checks cover each new supported feature/engine
+   combination and retain the prohibition on Mere crates.
+
+The first scripted acceptance is native. Preserve the existing script-free
+wasm route and measure its cone/build; browser-hosted Boa/Nova scripting and
+worker placement need their own target receipts before being advertised.
+Canvas 2D, service workers, IndexedDB and editing use this host as their engine
+lanes become ready; O5 does not claim those APIs or add persistent storage.
+
+**Done when:** O5a-O5c have exact-source, per-engine hosted receipts, including
+the Worker integration gate once its runtime is available. Runtime-only and
+WPT-only results remain useful partial evidence until those gates pass.
+
 ## Findings
+
+- 2026-09-07: `ports/ortet/src/{shell,web}.rs` select `LiverySessionEngine`;
+  `genet-documents/src/engines/scripted.rs` already supplies
+  `ScriptedSessionEngine<E, Fetch>` and forwards session `pump`/`settled` to
+  `LiveryScriptedDocument`. At review commit `61b40915dea`, the document's
+  pump drives timers/microtasks and its pending-work check inspects timers
+  (`genet-scripted/document.rs`). Worker pump/resource changes are concurrent
+  WIP in the runtime/harness, not a production-session receipt. Re-read that
+  seam before implementing O5b.
 
 - 2026-09-03: `genet-winit-host` and `genet-render-host` already split the
   window-specific from the target-neutral present mechanics, and both
@@ -402,6 +495,11 @@ graph control.
   rather than a self-test that reimplements the old rule.
 
 ## Progress
+
+- 2026-09-07: Recorded Mark's platform-testing role ruling and planned O5
+  scripted Ortet modes through the shared session seam. Genet retains its
+  own headed proof path; Pelt provides downstream composition evidence.
+  Documentation only: O5 implementation and acceptance remain open.
 
 - 2026-09-03: plan written; O0 and O1 dispatched.
 

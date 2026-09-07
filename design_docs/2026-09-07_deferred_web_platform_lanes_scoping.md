@@ -2,7 +2,8 @@
 
 **Date:** 2026-09-07
 
-**Status:** research, reviewed 2026-09-07. Nothing here is scheduled. Each
+**Status:** research, reviewed 2026-09-07. This inventory does not schedule
+its API lanes. The shared scripted-host direction is recorded in Ortet O5. Each
 section separates implementation choices from required observable behavior
 and names the proof a promoted execution plan must carry.
 
@@ -52,12 +53,19 @@ script-runtime contracts should exercise both Boa and Nova where supported;
 the historical Boa census is not a Nova receipt. Pixel gates identify the
 backend and the test's prescribed comparison tolerance.
 
-[Ortet](2026-09-03_ortet_founding_plan.md) currently selects
-`LiverySessionEngine` on native and wasm, with no scripted route or persistent
-profile. A JS-driven headed receipt below uses a named scripted host, such
-as Mere's Pelt, or first adds a bounded scripted Ortet route under its own
-plan. Storage restart receipts also name the host's persistent provider.
-Neither prerequisite is implied by Ortet's existing O0-O4 receipts.
+[Ortet O5](2026-09-03_ortet_founding_plan.md#o5-scripted-platform-host-planned-2026-09-07)
+is the planned Genet-owned route for JS-driven headed receipts below. Mark's
+[testing-role ruling](2026-09-03_ortet_founding_plan.md#platform-testing-roles-marks-ruling-2026-09-07)
+keeps `genet-wpt` responsible for automated conformance/scoring, Ortet for
+headed engine/session proof, and Pelt for downstream Mere/Genet composition.
+Pelt is not a prerequisite for accepting Genet's own hosted behavior.
+
+Ortet currently selects `LiverySessionEngine` on native and wasm. O5 adds
+selectable script-free/Boa/Nova modes and production scheduling/resource
+integration. Until its gates pass, harness-hosted results remain partial
+evidence and the headed gate stays open. Storage restart receipts also name
+an explicit test provider and directory; O0-O4 imply neither scripting nor
+persistent storage. Later API lanes supply their own fixtures through Ortet.
 
 Genet owns web-observable semantics and raw provider contracts. Mere's hosts
 own profile selection, persistence provisioning and product policy. A test
@@ -252,7 +260,8 @@ HTML document and `contentWindow` a bare object with `document`,
 `getComputedStyle` and inner size read from the frame's computed style;
 nothing loads `src`, nothing renders the child, and `window.frames` is the
 window itself. `genet-documents` holds one retained session per document
-with no parent link. Ortet is one window, one document by design.
+with no parent link. Ortet hosts one top-level document in one window;
+that does not exclude engine-owned nested browsing contexts.
 
 **What the lane is.**
 
@@ -282,8 +291,9 @@ with no parent link. Ortet is one window, one document by design.
   Same-origin synchronous access, shared object identity and agent/event-loop
   rules constrain placement. Verify engine multi-realm support before choosing
   an arrangement. See the [HTML execution model](https://html.spec.whatwg.org/multipage/webappapis.html#realms-settings-objects-global-objects).
-- Whether Ortet's raw target stays one document, with iframes proved only
-  in genet-wpt and Mere's hosts.
+- How the child-session model is exercised through Ortet's single top-level
+  session. The iframe lane owns nested contexts; Ortet remains the headed
+  Genet proof host, with Pelt adding downstream integration evidence.
 - Session history shape. This lane and the History API share it, and
   `history.pushState` already has a stub in the bootstrap.
 
