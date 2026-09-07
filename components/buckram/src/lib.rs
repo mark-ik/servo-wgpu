@@ -49,7 +49,7 @@ pub use fragment_tree::{
 pub use fragmentation::{
     BlockBreakToken, BreakToken, ClearanceState, DeferredBreakKind, DeferredBreakToken,
     FloatExclusionState, Fragmentainer, FragmentainerId, FragmentainerKind, FragmentationContext,
-    FragmentationContextId, InlineResumeState,
+    FragmentationContextId, InlineResumeState, MulticolFill, SequentialMulticolInput,
 };
 pub use intrinsic::{
     IntrinsicQueryError, IntrinsicQueryState, IntrinsicSizeCache, IntrinsicSizeKind,
@@ -97,5 +97,5 @@ pub use table::{
 };
 pub use taffy_adapter::{
     AlgorithmAvailableSpace, AlgorithmKind, AlgorithmLayout, AlgorithmNodeId, AlgorithmSize,
-    AlgorithmStyle, AlgorithmTree, BlockAlgorithm,
+    AlgorithmStyle, AlgorithmTree, BlockAlgorithm, FragmentationDispatch, FragmentationOutput,
 };

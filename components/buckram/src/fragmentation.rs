@@ -50,6 +50,63 @@ pub enum FragmentainerKind {
     Column,
 }
 
+/// The only multicol input admitted by the first live formatter seam.
+///
+/// `Auto` is represented explicitly so balancing cannot be mistaken for this
+/// sequential lane. The formatter still owns used-size resolution and
+/// producing fragmentainers; this value carries only style-owned parameters.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MulticolFill {
+    Auto,
+    Balance,
+    BalanceAll,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SequentialMulticolInput {
+    column_count: usize,
+    column_width: Option<f32>,
+    column_gap: f32,
+    fill: MulticolFill,
+}
+
+impl SequentialMulticolInput {
+    pub fn new(
+        column_count: usize,
+        column_width: Option<f32>,
+        column_gap: f32,
+        fill: MulticolFill,
+    ) -> Option<Self> {
+        (matches!(fill, MulticolFill::Auto)
+            && column_count > 0
+            && column_width.is_none_or(|width| width.is_finite() && width > 0.0)
+            && column_gap.is_finite()
+            && column_gap >= 0.0)
+            .then_some(Self {
+                column_count,
+                column_width,
+                column_gap,
+                fill,
+            })
+    }
+
+    pub fn column_count(self) -> usize {
+        self.column_count
+    }
+
+    pub fn column_width(self) -> Option<f32> {
+        self.column_width
+    }
+
+    pub fn column_gap(self) -> f32 {
+        self.column_gap
+    }
+
+    pub fn fill(self) -> MulticolFill {
+        self.fill
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct FragmentationContext {
     pub(crate) id: FragmentationContextId,

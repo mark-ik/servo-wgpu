@@ -9,6 +9,68 @@
 
 use super::*;
 
+/// Lower only fully definite horizontal sequential column parameters.
+/// Unsupported balancing and cyclic/indefinite inputs remain absent from
+/// Buckram's input plane and therefore retain the ordinary fallback.
+pub(in crate::layout) fn lower_sequential_multicol(
+    computed: &ComputedValues,
+    block_style: BlockStyle,
+) -> Option<buckram::SequentialMulticolInput> {
+    if computed.column_fill != ColumnFill::Auto
+        || !block_style.flow.is_horizontal()
+        || block_style.position != BuckramBlockPosition::Static
+        || block_style.float != FloatSide::None
+    {
+        return None;
+    }
+    let absolute = |value: CssLengthPercentage| match value {
+        CssLengthPercentage::Zero => Some(0.0),
+        CssLengthPercentage::Length(length)
+            if length.unit == livery::values::LengthUnit::Px && length.value >= 0.0 =>
+        {
+            Some(length.value)
+        },
+        _ => None,
+    };
+    // Keep admission narrow until the run-side used-size seam resolves the
+    // actual content box. These values are validation only and never enter
+    // the style-owned input.
+    let CssSize::Value(width_value) = computed.width else {
+        return None;
+    };
+    let CssSize::Value(height_value) = computed.height else {
+        return None;
+    };
+    absolute(width_value)?;
+    absolute(height_value)?;
+    let ColumnCount::Count(column_count) = computed.column_count else {
+        return None;
+    };
+    let gap = absolute(computed.column_gap.0)?;
+    let column_width = match computed.column_width {
+        ColumnWidth::Auto => None,
+        ColumnWidth::Length(value) => Some(absolute(value)?),
+    };
+    buckram::SequentialMulticolInput::new(
+        column_count as usize,
+        column_width,
+        gap,
+        buckram::MulticolFill::Auto,
+    )
+}
+
+pub(in crate::layout) fn lower_sequential_multicol_if_allowed(
+    computed: &ComputedValues,
+    block_style: BlockStyle,
+    nested: bool,
+) -> Option<buckram::SequentialMulticolInput> {
+    if nested {
+        None
+    } else {
+        lower_sequential_multicol(computed, block_style)
+    }
+}
+
 pub(in crate::layout) struct BuildState<'a, D: LayoutDom> {
     pub(in crate::layout) dom: &'a D,
     pub(in crate::layout) styles: &'a StylePlane<D::NodeId>,
@@ -25,6 +87,22 @@ where
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
 {
+    fn has_multicol_ancestor(&self, box_id: BoxId) -> bool {
+        let mut ancestor = self.boxes[box_id].parent();
+        while let Some(box_id) = ancestor {
+            if let Some(node) = self.boxes.origin_node(box_id)
+                && self
+                    .styles
+                    .get(node)
+                    .is_some_and(|computed| matches!(computed.column_count, ColumnCount::Count(_)))
+            {
+                return true;
+            }
+            ancestor = self.boxes[box_id].parent();
+        }
+        false
+    }
+
     /// One intrinsic inline query through the same measure contract the main
     /// layout uses. Only sound once painted fragments have been collected,
     /// because it recomputes the subtree's scratch layout.
@@ -626,6 +704,13 @@ where
                             Some(box_id),
                         )
                     };
+                if let Some(input) = lower_sequential_multicol_if_allowed(
+                    &computed,
+                    block_style,
+                    self.has_multicol_ancestor(box_id),
+                ) {
+                    self.tree.set_sequential_multicol(node, input);
+                }
                 enable_flex_grid_static_position_provider(
                     &mut self.tree,
                     self.styles,

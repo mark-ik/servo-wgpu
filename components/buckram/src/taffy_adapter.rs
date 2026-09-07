@@ -22,6 +22,7 @@ use taffy::{
 
 use crate::block::FloatContextState;
 use crate::block::solve_in_flow_inline_size_for_border_box;
+use crate::fragmentation::SequentialMulticolInput;
 use crate::{
     Baselines, BlockBoxSizing, BlockContainingBlock, BlockDeferral, BlockFormattingContext,
     BlockMarginState, BlockSizeValue, BlockStyle, ClearSide, CollapsedMargin, FloatLineConstraints,
@@ -54,6 +55,27 @@ pub enum AlgorithmKind {
 pub enum BlockAlgorithm {
     Buckram,
     Taffy,
+}
+
+/// Dispatch state for a completed algorithm run. A sequential input currently
+/// records an explicit unsupported dispatch until the formatter can publish
+/// continuation geometry; it must never look like ordinary continuous flow.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FragmentationDispatch {
+    Continuous,
+    SequentialMulticolUnsupported,
+}
+
+impl Default for FragmentationDispatch {
+    fn default() -> Self {
+        Self::Continuous
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FragmentationOutput {
+    pub dispatch: FragmentationDispatch,
+    pub sequential_inputs: Vec<(AlgorithmNodeId, SequentialMulticolInput)>,
 }
 
 /// Stable identity within one scratch algorithm tree.
@@ -166,6 +188,7 @@ struct AlgorithmNode<S, Context, Source> {
     /// adapter never derives it from backend positioning.
     grid_static_position_uses_grid_area: bool,
     baselines: Baselines,
+    sequential_multicol: Option<SequentialMulticolInput>,
 }
 
 /// A caller-owned arena used only while running layout algorithms.
@@ -175,6 +198,7 @@ struct AlgorithmNode<S, Context, Source> {
 /// methods expose only Buckram identifiers and geometry.
 pub struct AlgorithmTree<S, Context, Source> {
     nodes: Vec<AlgorithmNode<S, Context, Source>>,
+    fragmentation_output: FragmentationOutput,
     /// Resolves a Taffy calc() pointer against a percentage basis. The tree
     /// owner stores calc values with stable addresses, tags them into
     /// `Dimension::calc`, and installs the matching interpreter here; without
@@ -192,6 +216,7 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
     pub fn new() -> Self {
         Self {
             nodes: Vec::new(),
+            fragmentation_output: FragmentationOutput::default(),
             calc_resolver: None,
         }
     }
@@ -291,6 +316,7 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
             grid_info: None,
             grid_static_position_uses_grid_area: false,
             baselines: Baselines::default(),
+            sequential_multicol: None,
         });
         for child in children {
             let previous = self.nodes[child.index()].parent.replace(id);
@@ -334,6 +360,33 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
 
     pub fn block_margins(&self, id: AlgorithmNodeId) -> Option<BlockMarginState> {
         self.nodes[id.index()].block_margins
+    }
+
+    /// Supply style-owned sequential multicol parameters from the CSS owner.
+    /// Used container geometry remains a run-side responsibility. This is a
+    /// dormant formatter contract until the run emits fragmentainer and
+    /// continuation records.
+    pub fn set_sequential_multicol(&mut self, id: AlgorithmNodeId, input: SequentialMulticolInput) {
+        self.nodes[id.index()].sequential_multicol = Some(input);
+        self.nodes[id.index()].cache.clear();
+    }
+
+    /// Remove a previously lowered sequential input before the next run.
+    ///
+    /// The formatter owns admission lifetime. Clearing the input also clears
+    /// the run's backend cache so a later continuous run cannot reuse the
+    /// unsupported input's measurements.
+    pub fn clear_sequential_multicol(&mut self, id: AlgorithmNodeId) {
+        self.nodes[id.index()].sequential_multicol = None;
+        self.nodes[id.index()].cache.clear();
+    }
+
+    pub fn sequential_multicol(&self, id: AlgorithmNodeId) -> Option<SequentialMulticolInput> {
+        self.nodes[id.index()].sequential_multicol
+    }
+
+    pub fn fragmentation_output(&self) -> &FragmentationOutput {
+        &self.fragmentation_output
     }
 
     pub fn block_algorithm_counts(&self) -> (usize, usize) {
@@ -888,6 +941,19 @@ impl<S, Context, Source> AlgorithmTree<S, Context, Source> {
             )
         })
     }
+
+    fn begin_fragmentation_run(&mut self) {
+        self.fragmentation_output = FragmentationOutput::default();
+        for (index, node) in self.nodes.iter().enumerate() {
+            if let Some(input) = node.sequential_multicol {
+                self.fragmentation_output.dispatch =
+                    FragmentationDispatch::SequentialMulticolUnsupported;
+                self.fragmentation_output
+                    .sequential_inputs
+                    .push((AlgorithmNodeId(index as u32), input));
+            }
+        }
+    }
 }
 
 impl<S, Context, Source> AlgorithmTree<S, Context, Source>
@@ -951,6 +1017,7 @@ where
             Option<&FloatLineConstraints>,
         ) -> AlgorithmSize<f32>,
     {
+        self.begin_fragmentation_run();
         let available = taffy::Size {
             width: to_taffy_available(available.width),
             height: to_taffy_available(available.height),

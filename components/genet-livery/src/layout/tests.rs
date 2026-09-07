@@ -24,6 +24,147 @@ fn node_by_id(
 }
 
 #[test]
+fn livery_lowers_only_definite_auto_multicol_inputs() {
+    let dom = StaticDocument::parse(
+        "<div id=columns style='width:264px;height:120px;column-count:3;column-gap:12px;column-fill:auto'></div>",
+    );
+    let node = node_by_id(&dom, dom.document(), "columns").expect("columns");
+    let styles = resolve_styles(
+        &dom,
+        &StyleSet::cambium(&[]),
+        &Device::screen(320.0, 240.0),
+        &InteractionStates::default(),
+    );
+    let input = super::build_block::lower_sequential_multicol(
+        styles.get(node).expect("computed style"),
+        BlockStyle::default(),
+    )
+    .expect("definite auto columns are lowered");
+    assert_eq!(input.column_count(), 3);
+    assert_eq!(input.column_width(), None);
+    assert_eq!(input.column_gap(), 12.0);
+
+    let balance = StaticDocument::parse(
+        "<div id=columns style='width:264px;height:120px;column-count:3;column-gap:12px;column-fill:balance'></div>",
+    );
+    let balance_node = node_by_id(&balance, balance.document(), "columns").expect("columns");
+    let balance_styles = resolve_styles(
+        &balance,
+        &StyleSet::cambium(&[]),
+        &Device::screen(320.0, 240.0),
+        &InteractionStates::default(),
+    );
+    assert!(
+        super::build_block::lower_sequential_multicol(
+            balance_styles.get(balance_node).expect("computed style"),
+            BlockStyle::default(),
+        )
+        .is_none()
+    );
+
+    let explicit_width = StaticDocument::parse(
+        "<div id=columns style='width:264px;height:120px;column-count:3;column-width:80px;column-gap:12px;column-fill:auto'></div>",
+    );
+    let explicit_node =
+        node_by_id(&explicit_width, explicit_width.document(), "columns").expect("columns");
+    let explicit_styles = resolve_styles(
+        &explicit_width,
+        &StyleSet::cambium(&[]),
+        &Device::screen(320.0, 240.0),
+        &InteractionStates::default(),
+    );
+    let explicit = super::build_block::lower_sequential_multicol(
+        explicit_styles.get(explicit_node).expect("computed style"),
+        BlockStyle::default(),
+    )
+    .expect("explicit column width is lowered as style input");
+    assert_eq!(explicit.column_width(), Some(80.0));
+
+    let padded = super::build_block::lower_sequential_multicol(
+        styles.get(node).expect("computed style"),
+        BlockStyle {
+            padding: PhysicalSides::splat(8.0),
+            border: PhysicalSides::splat(2.0),
+            ..BlockStyle::default()
+        },
+    )
+    .expect("padding and border do not become fake used geometry");
+    assert_eq!(padded, input);
+
+    let indefinite = StaticDocument::parse(
+        "<div id=columns style='width:264px;column-count:3;column-gap:12px;column-fill:auto'></div>",
+    );
+    let indefinite_node =
+        node_by_id(&indefinite, indefinite.document(), "columns").expect("columns");
+    let indefinite_styles = resolve_styles(
+        &indefinite,
+        &StyleSet::cambium(&[]),
+        &Device::screen(320.0, 240.0),
+        &InteractionStates::default(),
+    );
+    assert!(
+        super::build_block::lower_sequential_multicol(
+            indefinite_styles
+                .get(indefinite_node)
+                .expect("computed style"),
+            BlockStyle::default(),
+        )
+        .is_none()
+    );
+
+    assert!(
+        super::build_block::lower_sequential_multicol(
+            styles.get(node).expect("computed style"),
+            BlockStyle {
+                flow: FlowAxes::new(WritingMode::VerticalRl, Direction::Ltr),
+                ..BlockStyle::default()
+            },
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn nested_multicol_build_admits_only_the_outer_algorithm_node() {
+    let dom = StaticDocument::parse(
+        "<div id=outer style='width:264px;height:120px;column-count:3;column-gap:12px;column-fill:auto'><div id=inner style='width:264px;height:120px;column-count:3;column-gap:12px;column-fill:auto'></div></div>",
+    );
+    let styles = resolve_styles(
+        &dom,
+        &StyleSet::cambium(&[]),
+        &Device::screen(320.0, 240.0),
+        &InteractionStates::default(),
+    );
+    let outer = node_by_id(&dom, dom.document(), "outer").expect("outer");
+    let inner = node_by_id(&dom, dom.document(), "inner").expect("inner");
+    let boxes = GeneratedBoxTree::from_dom(&dom, &styles);
+    let outer_box = boxes.principal_box(outer).expect("outer box");
+    let inner_box = boxes.principal_box(inner).expect("inner box");
+    let image_sources = HashMap::new();
+    let mut state = BuildState {
+        dom: &dom,
+        styles: &styles,
+        boxes: &boxes,
+        tree: AlgorithmTree::new(),
+        image_sources: &image_sources,
+        text: None,
+        table_shadow: TableShadowLedger::default(),
+        pending_tables: Vec::new(),
+    };
+    let outer_node = state
+        .build_box(outer_box, None, 16.0, (Some(320.0), Some(240.0)))
+        .expect("outer build")
+        .expect("outer algorithm node");
+    let inner_node = state
+        .tree
+        .node_ids()
+        .find(|id| state.tree.source(*id) == &Some(inner_box))
+        .expect("inner algorithm node");
+    assert!(state.tree.sequential_multicol(outer_node).is_some());
+    assert!(state.tree.sequential_multicol(inner_node).is_none());
+}
+
+#[test]
 fn flex_child_align_self_projects_parent_cross_axis_and_subject_flow() {
     let dom = StaticDocument::parse("<div id=flex><div id=item></div></div>");
     let project = |parent_css: &str, child_css: &str| {

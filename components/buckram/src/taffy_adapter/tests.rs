@@ -39,6 +39,82 @@ fn automatic_minimum_mode_stays_on_buckrams_content_sizing_route() {
 }
 
 #[test]
+fn sequential_multicol_input_is_preserved_but_dispatch_stays_explicitly_unsupported() {
+    let mut tree = AlgorithmTree::<Style, (), &str>::new();
+    let child = tree.new_with_children(AlgorithmKind::Leaf, Style::default(), &[], "child");
+    let root = tree.new_with_children(
+        AlgorithmKind::Block,
+        Style {
+            display: Display::Block,
+            size: taffy::Size {
+                width: Dimension::length(264.0),
+                height: Dimension::length(120.0),
+            },
+            ..Style::default()
+        },
+        &[child],
+        "columns",
+    );
+    let input = crate::SequentialMulticolInput::new(3, Some(80.0), 12.0, crate::MulticolFill::Auto)
+        .expect("the arbitrary input is valid");
+    tree.set_sequential_multicol(root, input);
+    assert_eq!(tree.sequential_multicol(root), Some(input));
+
+    tree.compute_layout_with_measure(root, available(264.0, 120.0), zero_measure);
+    let output = tree.fragmentation_output();
+    assert_eq!(
+        output.dispatch,
+        FragmentationDispatch::SequentialMulticolUnsupported
+    );
+    assert_eq!(output.sequential_inputs, vec![(root, input)]);
+}
+
+#[test]
+fn fragmentation_output_is_run_scoped_and_continuous_runs_are_distinguishable() {
+    let mut tree = AlgorithmTree::<Style, (), &str>::new();
+    let root = tree.new_with_children(
+        AlgorithmKind::Block,
+        Style {
+            display: Display::Block,
+            size: taffy::Size {
+                width: Dimension::length(100.0),
+                height: Dimension::length(40.0),
+            },
+            ..Style::default()
+        },
+        &[],
+        "root",
+    );
+    let input = crate::SequentialMulticolInput::new(2, Some(40.0), 20.0, crate::MulticolFill::Auto)
+        .expect("the input is valid");
+    tree.set_sequential_multicol(root, input);
+    tree.compute_layout_with_measure(root, available(100.0, 40.0), zero_measure);
+    assert_eq!(
+        tree.fragmentation_output().dispatch,
+        FragmentationDispatch::SequentialMulticolUnsupported
+    );
+    tree.clear_sequential_multicol(root);
+    tree.compute_layout_with_measure(root, available(100.0, 40.0), zero_measure);
+    assert_eq!(
+        tree.fragmentation_output().dispatch,
+        FragmentationDispatch::Continuous
+    );
+    assert!(tree.fragmentation_output().sequential_inputs.is_empty());
+}
+
+#[test]
+fn sequential_multicol_input_rejects_balancing_and_nondefinite_values() {
+    assert!(
+        crate::SequentialMulticolInput::new(2, Some(100.0), 20.0, crate::MulticolFill::Balance,)
+            .is_none()
+    );
+    assert!(
+        crate::SequentialMulticolInput::new(2, Some(f32::NAN), 20.0, crate::MulticolFill::Auto,)
+            .is_none()
+    );
+}
+
+#[test]
 fn flex_dispatch_preserves_exact_placements_and_sources() {
     let mut tree = AlgorithmTree::<Style, (), &str>::new();
     let child_style = Style {
