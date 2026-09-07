@@ -209,8 +209,10 @@ impl<E: ScriptEngine> NativeFn<E> for ChildNodesItem {
     }
 }
 
-/// `__nodeName(node)`: element → uppercase tag; text → `#text`; comment →
-/// `#comment`; document → `#document`; else the kind's conventional name.
+/// `__nodeName(node)`: element → its case-preserved qualified name; text →
+/// `#text`; comment → `#comment`; document → `#document`; else the kind's
+/// conventional name. The HTML uppercasing is applied by the bootstrap, which
+/// is the only tier that knows the node's current node document.
 pub(crate) struct NodeName;
 impl<E: ScriptEngine> NativeFn<E> for NodeName {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
@@ -221,22 +223,7 @@ impl<E: ScriptEngine> NativeFn<E> for NodeName {
         let name = with_dom::<E, _>(cx, |dom| {
             let n = NodeId::from_raw(id as usize);
             match dom.kind(n) {
-                // The qualified name, upper-cased only for HTML elements (as
-                // `tagName` does) — an XML document's names keep their case.
-                NodeKind::Element => dom
-                    .element_name(n)
-                    .map(|q| {
-                        let qualified = match q.prefix.as_ref() {
-                            Some(p) => format!("{}:{}", p.as_ref(), q.local.as_ref()),
-                            None => q.local.as_ref().to_string(),
-                        };
-                        if q.ns.as_ref() == XHTML_NS {
-                            qualified.to_ascii_uppercase()
-                        } else {
-                            qualified
-                        }
-                    })
-                    .unwrap_or_default(),
+                NodeKind::Element => dom.element_name(n).map(qualified_of).unwrap_or_default(),
                 NodeKind::Text => "#text".to_string(),
                 NodeKind::Comment => "#comment".to_string(),
                 NodeKind::Document => "#document".to_string(),

@@ -62,6 +62,14 @@ use crate::HostState;
 /// The XHTML namespace — HTML elements live here; `tagName` upper-cases only in it.
 const XHTML_NS: &str = "http://www.w3.org/1999/xhtml";
 
+/// A node's qualified name (`prefix:local`, or just `local`), case preserved.
+fn qualified_of(name: &QualName) -> String {
+    match name.prefix.as_ref() {
+        Some(p) => format!("{}:{}", p.as_ref(), name.local.as_ref()),
+        None => name.local.as_ref().to_string(),
+    }
+}
+
 /// Clone `src`'s tree (elements with attributes + text) under `dst_parent` in the
 /// scripted DOM, recursively. Backs [`crate::Runtime::load_dom`] and
 /// `DOMParser.parseFromString`: a parsed document (any [`LayoutDom`]) becomes a
@@ -138,7 +146,7 @@ pub(crate) fn install_dom_surface<E: ScriptEngine>(engine: &mut E) -> Result<(),
     engine.set_function::<SetInnerHtml>("__setInnerHtml", 2)?;
     engine.set_function::<GetElementById>("__getElementById", 2)?;
     engine.set_function::<GetAttribute>("__getAttribute", 2)?;
-    engine.set_function::<TagName>("__tagName", 1)?;
+    engine.set_function::<QualifiedName>("__qualifiedName", 1)?;
     engine.set_function::<GetTextContent>("__getTextContent", 1)?;
     engine.set_function::<CookieGet>("__cookieGet", 0)?;
     engine.set_function::<CookieSet>("__cookieSet", 1)?;

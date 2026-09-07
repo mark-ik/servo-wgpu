@@ -265,7 +265,7 @@ pub(crate) fn worker_main<E: ScriptEngine>(boot: WorkerBoot) {
         closed: false,
         terminated: false,
     }));
-    let mut rt = match Runtime::<E>::new() {
+    let mut rt = match Runtime::<E>::new_worker() {
         Ok(rt) => rt,
         Err(_) => {
             let _ = tx.send(FromWorker::Error(
@@ -860,8 +860,9 @@ const WORKER_HOST_BOOTSTRAP: &str = r#"
 const WORKER_SCOPE_BOOTSTRAP: &str = r#"
 (function() {
   // A worker global has no document and no window; testharness.js selects its
-  // environment on exactly `'document' in global_scope`. `window` is a global
-  // `var` and so non-configurable: undefine it rather than pretend it is gone.
+  // environment on exactly `'document' in global_scope`. `window` is never
+  // defined in this scope (see `SELF_WORKER_BOOTSTRAP`), and `document` is a
+  // plain property here precisely so it can be deleted.
   function drop(name) {
     try { delete globalThis[name]; } catch (e) {}
     if (name in globalThis) { try { globalThis[name] = undefined; } catch (e) {} }

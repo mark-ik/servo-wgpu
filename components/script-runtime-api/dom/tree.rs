@@ -192,28 +192,23 @@ impl<E: ScriptEngine> NativeFn<E> for GetAttribute {
     }
 }
 
-/// `__tagName(element)` → the uppercased tag name (HTML), or `null` for non-elements.
-pub(crate) struct TagName;
-impl<E: ScriptEngine> NativeFn<E> for TagName {
+/// `__qualifiedName(element)` → the element's **case-preserved** qualified name
+/// (`prefix:local`), or `null` for non-elements.
+///
+/// The HTML uppercasing `tagName` / `nodeName` apply is deliberately *not* done
+/// here: it depends on the node's current node document being an HTML document,
+/// which adoption changes and which only the JS tier tracks. The bootstrap folds
+/// this value; the arena only stores it.
+pub(crate) struct QualifiedName;
+impl<E: ScriptEngine> NativeFn<E> for QualifiedName {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let el = cx.arg(0);
         let Some(id) = cx.reflector_data(&el) else {
             return Ok(cx.make_null());
         };
         let name = with_dom::<E, _>(cx, |dom| {
-            dom.element_name(NodeId::from_raw(id as usize)).map(|q| {
-                // `tagName` is the qualified name (`prefix:local`), upper-cased
-                // only for HTML-namespaced elements.
-                let qualified = match q.prefix.as_ref() {
-                    Some(p) => format!("{}:{}", p.as_ref(), q.local.as_ref()),
-                    None => q.local.as_ref().to_string(),
-                };
-                if q.ns.as_ref() == XHTML_NS {
-                    qualified.to_ascii_uppercase()
-                } else {
-                    qualified
-                }
-            })
+            dom.element_name(NodeId::from_raw(id as usize))
+                .map(qualified_of)
         })
         .flatten();
         match name {

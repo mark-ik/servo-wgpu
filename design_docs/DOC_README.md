@@ -52,8 +52,12 @@ older `docs/` corpus without changing their location or governance.
 | [XMLHttpRequest](2026-09-07_xhr_plan.md) | XHR as a state machine over the fetch seam, landed 2026-09-07: xhr 53 to 281 subtests in disk mode, 831 of 1,336 in server mode, fetch holds. Residuals: responseXML needs DOMParser; 28 errors are Worker and document.domain demand. |
 | [Cheap globals](2026-09-07_cheap_globals_plan.md) | `performance` (+ `PerformanceObserver`), `queueMicrotask`, `structuredClone`, `MessageChannel` / `MessagePort` / `BroadcastChannel` and `crypto` landed 2026-09-07: 79 forward file movements, zero pass-to-fail, +462 subtest passes over ten directories. Next proof is `crypto.subtle`, real `ArrayBuffer` detachment, and the cross-agent reuse of the clone walker by the Worker lane. |
 | [IDL interface table](2026-09-07_idl_interface_table_plan.md) | The scripted tier's HTML interface table is generated from WPT's vendored WebIDL plus its tag map, with 41 reasoned overrides and a drift test. 72 interfaces / 338 reflected attributes / 41 shape-only DOM-CSSOM interfaces. Next proof is extending the shape pass past `html`, `dom` and `cssom`, and the reflection-algorithm gaps (`ReflectRange` clamping, invalid-value defaults). |
-| [MutationObserver](2026-09-07_mutation_observer_plan.md) | The arena's mutation point now has two consumers: Livery's `DomMutation` stream and a spec-shaped observer record fanned out at the same mutators, off until something observes. Landed 2026-09-07 with four `dom/nodes/MutationObserver-*` files all-pass, +495 subtest passes and zero pass-to-fail. `Range` landed 2026-09-07 and closed that residual (`childList` 18/38 to 32/38, `characterData` 13/23 to 21/23). Next proof is `DocumentFragment` insertion (Mark's decision), then `normalize` and attribute namespaces, which the remaining observer subtests need. |
-| [Selection and Range](2026-09-07_selection_range_plan.md) | `Range` / `StaticRange` / `Selection` over the scripted arena, with the live-range steps at the bootstrap's mutation funnel and a boundary index keyed by node. Landed 2026-09-07: `selection` 0/280 to 28,582/33,621 subtests, `dom/ranges` 0 to 10 all-pass, +29,126 subtest passes and zero pass-to-fail. Next proof is the DOM node model `dom/common.js` still floors on — `CDATASection`, real `DocumentType`, `document.doctype` — which is Mark's decision. |
+| [MutationObserver](2026-09-07_mutation_observer_plan.md) | The arena's mutation point now has two consumers: Livery's `DomMutation` stream and a spec-shaped observer record fanned out at the same mutators, off until something observes. Landed 2026-09-07 with four `dom/nodes/MutationObserver-*` files all-pass, +495 subtest passes and zero pass-to-fail. `Range` landed 2026-09-07 and closed that residual (`childList` 18/38 to 32/38, `characterData` 13/23 to 21/23). The DOM node model lane then closed the rest on 2026-09-07 — fragment insertion, `normalize`, `outerHTML`, attribute namespaces and the static-to-scripted clone of comments and PIs — and the four `MutationObserver-*` files now pass. |
+| [Selection and Range](2026-09-07_selection_range_plan.md) | `Range` / `StaticRange` / `Selection` over the scripted arena, with the live-range steps at the bootstrap's mutation funnel and a boundary index keyed by node. Landed 2026-09-07: `selection` 0/280 to 28,582/33,621 subtests, `dom/ranges` 0 to 10 all-pass, +29,126 subtest passes and zero pass-to-fail. The DOM node model lane supplied all three on 2026-09-07 (plus a constructible `Document`, the second floor in the same file) and `dom/ranges` unfloored to 15 all-pass / 35,466 subtests. |
+| [DOM node model](2026-09-07_dom_node_model_plan.md) | `DocumentFragment` insertion, `CDATASection` and real `DocumentType` nodes, the `ParentNode` / `ChildNode` mixins, `normalize`, `outerHTML`, namespaced attributes as live `Attr` nodes, `DOMParser` / `XMLSerializer` and `Node.baseURI`. Landed 2026-09-07: `dom/ranges` unfloored (15 errored to 1, 24 to 35,466 subtests), `html/semantics/interfaces.html` 298 to 435 of 438, +82,944 subtest passes over nine directories with zero pass-to-fail. Next proof is a server-mode receipt for `responseXML`, and static `NodeList` indexed access, which is a `Proxy` trap per read. |
+| [Tag-name casing and the window globals](2026-09-07_tagname_window_globals_plan.md) | `tagName` / `nodeName` fold only for an HTML-namespaced element whose current node document is an HTML document, element interfaces and custom element names match case-sensitively, `document.importNode` exists, and `window` / `document` / `self` have their `[LegacyUnforgeable]` and `[Replaceable]` shapes on both the window and the worker global. Landed 2026-09-07: `Element-tagName.html` 3/6 to 6/6, `html/semantics/interfaces.html` to all-pass, +31 subtest passes with zero pass-to-fail. Residuals: `createElement`'s namespace on an XML document, and attribute-name folding, which still turns on the namespace alone. |
+| [Dedicated Worker](2026-09-07_worker_plan.md) | A second `Runtime` of the same engine on its own thread with `DedicatedWorkerGlobalScope`, `Worker` on the page, `MessagePort` across the boundary, and a JSON encoding of the clone record as the cross-agent wire. Landed 2026-09-07: `workers` 5 to 74 all-pass and 21 to 321 subtests, genet-wpt hosts `.worker.js` and `.any.worker` variants, +972 subtest passes with zero pass-to-fail. Residuals: `SharedWorker`, cross-agent `BroadcastChannel`, module workers, nested-worker relay ordering, real `ArrayBuffer` detachment, and a hosted headed receipt. |
+| [WebSocket](2026-09-07_websocket_plan.md) | The `WebSocket` host object over netfetcher's transport, with the browser policy the Fetch algorithm does not wrap it in enforced on the connection path. Landed 2026-09-07: `websockets` 0 to 1,090 of 1,877 subtests in disk mode, 254 all-pass and 1,144/1,586 in the first server-mode run; `fetch` and `xhr` byte-identical. Residuals: worker-hosted sockets (214 files), `WebSocketStream`, real backpressure. |
 | [Host contract ownership](../docs/2026-08-14_web_platform_host_contract_plan.md) | Genet owns retained session contracts; Mere owns surface orchestration and product adapters. The older S0-S5 receipts need a consumer-side status refresh before resuming those lanes. |
 
 The [Buckram master](../docs/2026-07-26_buckram_css_layout_engine_plan.md)
@@ -83,6 +87,117 @@ completed corpus census or bounded slice does not close its enclosing feature.
 ## WPT census — the web platform beyond CSS
 
 - [selection_range_plan](2026-09-07_selection_range_plan.md)
+- [tagname_window_globals_plan](2026-09-07_tagname_window_globals_plan.md)
+  (**landed 2026-09-07**: the two shape residuals the interface-table and Worker
+  lanes left named. The HTML uppercasing moved out of the arena's `__tagName` /
+  `__nodeName` and into the bootstrap, because the rule depends on the node's
+  *current* node document being an HTML document — which only the JS tier tracks,
+  and which `importNode` and `adoptNode` change — so the natives now report a
+  case-preserved qualified name and one `elementQualifiedName` folds per read.
+  With case preserved, element-interface selection reads the **local name**
+  case-sensitively (`createElementNS(html, 'DIV')` is an `HTMLUnknownElement`),
+  custom element definitions are keyed by local name so `foo-bar` cannot claim
+  `foo-BAR`, and `isValidCustomElementName` gained the first-code-point and
+  no-ASCII-uppercase rules it was missing. `document.importNode` was added on a
+  `cloneNode` refactored to take its destination document. `window` and
+  `document` became `[LegacyUnforgeable]` accessors and `self` a `[Replaceable]`
+  one, with a `Runtime::new_worker` so the worker global never defines what it
+  must not have rather than deleting it afterwards — both backends, Nova
+  included, accept a non-configurable accessor on the global.
+  `dom/nodes/Element-tagName.html` 3/6 -> 6/6,
+  `html/semantics/interfaces.html` 435/438 -> **438/438** (all-pass),
+  `Document-importNode` 0/5 -> 4/5, `custom-elements/Document-createElementNS`
+  to all-pass, `unexpected-self-properties.worker` holds at 57/57; +31 subtest
+  passes over six directories, five files `fail -> pass`, zero pass-to-fail.
+  Two baselines repinned forward. Raw maps under
+  `Code/testing/genet/wpt-ledger/2026-09-07_tagname_window_globals/`.)
+- [worker_plan](2026-09-07_worker_plan.md)
+  (**landed 2026-09-07**: the dedicated Worker. Both engines are `!Send`, so the
+  worker thread constructs its own `Runtime` and owns it; the spawn needs no
+  engine bound because `Runtime::new` records `worker_main::<E>` as a plain
+  `fn` pointer. The cross-agent wire is a **JSON encoding** of the clone record,
+  which is forced rather than chosen: `CallCx` marshals only strings, so the
+  cheap-globals fused walk was split into `__scSerialize` / `__scDeserialize`
+  over a heap of tagged nodes that preserves cycles, aliasing, holes and
+  transfers. Resource loads — the classic script, `importScripts`, `fetch` — are
+  synchronous requests back to the page, answered from a new
+  `ScriptResourceLoader` route or the page's `FetchHandler`, so no network stack
+  enters the worker thread. A transferred `MessagePort` leaves a stub behind and
+  the host routes by port id, in both directions. Two scheduling facts fell out:
+  a worker's idle report must carry the count of link messages it has consumed
+  (a bare flag quiesced the page over live work, one Boa run in three), and the
+  disk drive loop must run on wall time while a worker is live, or its first
+  virtual jump fires testharness.js's own timeout before the worker has started.
+  genet-wpt now hosts `.worker.js` and `.any.worker` variants — synthesizing the
+  `.any.worker.js` file `wpt serve` would have generated — and keeps the skip
+  reasons for shared and service workers. `workers` 5 → 74 all-pass and
+  21/574 → 321/967 subtests, `workers/constructors` 0 → 8 all-pass,
+  `workers/interfaces` 0 → 30, `xhr` 64 → 95 with errors 28 → 5,
+  `html/webappapis` 31 → 45; +972 subtest passes over five directories, 207
+  previously unenumerated variants now reporting, and zero pass-to-fail. Raw
+  maps under `Code/testing/genet/wpt-ledger/2026-09-07_worker/`.)
+- [websocket_plan](2026-09-07_websocket_plan.md)
+  (**landed 2026-09-07**: `WebSocket` and `CloseEvent` as a script-visible state
+  machine over an extended netfetcher transport. Two halves, because WebSocket is
+  not a shape of `fetch()`: the Fetch algorithm does not wrap the connection
+  path, so scheme rules, Fetch's bad-port list, HSTS, mixed-content blocking, the
+  CSP `connect-src` hook and redirect *refusal* are enforced in
+  `netfetcher::websocket::connect` against the same caller-owned `FetchContext`
+  and the same cookie jar the fetch path uses — one test per rule — and every one
+  of them reaches script only as the specification's single `error` event. The
+  transport gained requested/selected subprotocols, negotiated extensions, the
+  `Origin` header, typed `WsError`s in place of `bool`/`Option`, close
+  code/reason/cleanliness and buffered-byte accounting, with no tungstenite type
+  in its public API. Above it, a `WebSocketHandler` seam beside `FetchHandler`
+  (one new `HostState` field, six completion entry points) and an implementation
+  on genet-wpt's existing tokio worker: one task per socket, `select!`ing between
+  its command channel and its frames, delivered through the drive loop exactly as
+  a deferred fetch settles. The bootstrap does no URL parsing of its own — it
+  reuses the fetch surface's `__resolve_url` / `__url_parse` sinks, which is why
+  the constructor and URL families pass with no network at all. Three findings
+  worth carrying: `__ws` was already the *worker* scope's prefix;
+  `MessageEvent.origin` on a socket message is the **socket URL's** origin, so it
+  carries the `ws` scheme, not the page's; and a 512-**byte** probe cut inside a
+  U+FFFD had been panicking three `constructor/016.html` variants in the runner
+  itself. `websockets` 0 -> 76 all-pass and 0/1,874 -> 1,090/1,877 subtests in
+  disk mode; the first server-mode run is 254 all-pass, **zero errors**, and
+  1,144/1,586 subtests, with all 214 `no-results` files being
+  `.any.worker.html` — a dedicated Worker has no socket relay yet. `fetch` and
+  `xhr` maps are byte-identical, and there is no pass-to-fail movement anywhere.
+  Raw maps under `Code/testing/genet/wpt-ledger/2026-09-07_websocket/`.)
+- [reflector_identity_scoping](2026-09-07_reflector_identity_scoping.md)
+  (**research 2026-09-07**: why a node's JS wrapper, and every expando it
+  carries (listeners, handlers, custom-element state, iframe documents, WebGL
+  contexts), can vanish while the node lives: the wrapper is rooted only by
+  script, so a collection re-mints a blank one. Reproduced on both engines;
+  the headed host collects every frame. Fix options, blast radius and the
+  decision on pinning against the gc-arena soak target are Mark's.)
+
+- [dom_node_model_plan](2026-09-07_dom_node_model_plan.md)
+  (**landed 2026-09-07**: the core DOM residuals the MutationObserver and
+  Selection/Range plans left to Mark. Inserting a `DocumentFragment` moves its
+  children, as one coalescing group, so the spec's two `childList` records fall
+  out of the machinery the observer lane already built. `CDATASection` joins
+  `NodeKind` and `DocumentType` becomes a real arena node — name in `text`,
+  external identifiers in reserved `attrs` keys, read back through a new
+  defaulted `LayoutDom::doctype_data` — with `document.doctype`,
+  `createDocumentType`, `createCDATASection` and `nodeType` 4 / 10. The
+  `ParentNode` / `ChildNode` mixins run the spec's node-or-string conversion,
+  which is one insert now that fragments move. `normalize` (walked live, because
+  the merge removes siblings), `outerHTML` both ways, and attributes with real
+  namespaces surfaced as cached live `Attr` views through a `NamedNodeMap` —
+  which also makes `MutationRecord.attributeNamespace` non-null. `clone_into`
+  now carries every node kind, so a parsed page's comments, PIs and doctype
+  reach the live document. `DOMParser.parseFromString` builds a new `Document`
+  in the same arena through html5ever or xml5ever, `XMLSerializer` walks it
+  back, and XHR's `responseXML` is wired to both. `Node.baseURI` closes a
+  four-subtest false pass: `document.URL` landed two days after the baseline was
+  pinned, so `undefined === undefined` had been scoring. `dom/ranges` 10 → 15
+  all-pass and 24 → 35,466 subtests, `dom` 173 → 209 all-pass,
+  `html/semantics/interfaces.html` 298 → 435 of 438, `selection` 12 → 31
+  all-pass; +82,944 subtest passes over nine directories, zero pass-to-fail, and
+  both `error` regressions are throughput walls on files that never passed. Raw
+  maps under `Code/testing/genet/wpt-ledger/2026-09-07_dom_node_model/`.)
   (**landed 2026-09-07**: `Range`, `StaticRange`, `AbstractRange`, `Selection`
   and `getSelection` over the scripted arena. The DOM's live-range steps run at
   the bootstrap's own twelve-call-site mutation funnel rather than off the
@@ -322,10 +437,20 @@ same session; links out of it are rewritten for its new depth.
   slows a directory down is reporting a complexity defect, not noise.
 - **A directory's census can be floored by one missing name.** Two directories
   in this session reported almost nothing because their shared setup file threw
+- **A subtest that compares two absent things passes.** `Node-baseURI.html`
+  scored 4 of 9 for two weeks on `undefined === undefined`; defining
+  `document.URL` correctly turned those four into honest failures and the
+  checked baseline read it as a regression. When a directory goes *down*, look
+  for a newly-defined name on one side of an equality before looking for a bug,
+  and treat a pin taken over an unimplemented feature as a record of the pin,
+  not of the score.
   on a node type neither lane was about, aborting every file before its first
   subtest. Probe the shared `common.js` of a directory that will not move before
   concluding anything about the feature under test. Supplying the missing name
-  took `selection` from 384 reported subtests to 33,621.
+  took `selection` from 384 reported subtests to 33,621. The same file floored
+  `dom/ranges` **twice**: `CDATASection` and, behind it, a constructible
+  `Document`. Re-probe after each unfloor rather than assume one name was the
+  only one.
 - **A global native cannot be interposed on from the bootstrap.** Boa's host
   globals are writable and Nova's are not (`defineProperty` throws there too),
   so wrapping `globalThis.__someNative` works on one backend and silently does
@@ -334,6 +459,14 @@ same session; links out of it are rewritten for its new depth.
   both backends. See the MutationObserver plan's Findings.
 - **Verify paired forks from a standalone consumer.** Cargo root patches are
   not inherited by downstream workspaces. A coupled dependency must travel with
+- **A virtual clock and a second agent are incompatible.** The disk drive loop
+  jumps to the next timer's due time and never sleeps, which is right while one
+  agent owns all the work. The moment a worker thread is live, that jump fires
+  testharness.js's own 10s timeout before the worker has fetched its script, and
+  every worker test reports `Test timed out`. Run on wall time while another
+  agent can still speak, and make "can still speak" a *counted* report — an idle
+  flag that does not say "idle as of which message" will cross a message in
+  flight and quiesce the page over live work. See the Worker plan's Findings.
   its caller; prove that resolution before refreshing product revisions.
 - **Parallel work needs commit fences as well as file fences.** Pin one base,
   give each worker a disposable detached worktree and disjoint write paths,
@@ -343,7 +476,8 @@ same session; links out of it are rewritten for its new depth.
 ## Status
 
 Founded 2026-08-24; current work map reconciled 2026-09-07, including the IDL
-interface-table, cheap-globals, MutationObserver and Selection/Range lanes. The index covers
+interface-table, cheap-globals, MutationObserver, Selection/Range and DOM node
+model lanes. The index covers
 the flat plans sectioned above and two archived plans; the count in this line
 was stale before 2026-09-07 and is now stated by the sections themselves.
 All three former component area roots now live in Mere. The older `docs/`

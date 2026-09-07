@@ -88,6 +88,31 @@
   // native call per element wrap.
   var XHTML_NS = "http://www.w3.org/1999/xhtml";
 
+  // ASCII-only case folding. The DOM's "ASCII lowercase/uppercase" leave every
+  // non-ASCII code point alone, which is exactly what separates a valid custom
+  // element name (a-with-ring + "-bar") from what `toLowerCase` would make of it.
+  function asciiLower(s) {
+    return String(s).replace(/[A-Z]/g, function(c) { return String.fromCharCode(c.charCodeAt(0) + 32); });
+  }
+  function asciiUpper(s) {
+    return String(s).replace(/[a-z]/g, function(c) { return String.fromCharCode(c.charCodeAt(0) - 32); });
+  }
+  // A document is an HTML document unless it was minted as an XML one
+  // (`new Document()`, `createDocument`, an XML `DOMParser` parse).
+  function isHtmlDocument(doc) {
+    return !doc || doc.__isHtml !== false;
+  }
+  // `tagName` / `nodeName` for an element: the qualified name, ASCII-uppercased
+  // only for an HTML-namespaced element whose *current* node document is an HTML
+  // document. Adoption therefore changes the answer, which is why this is folded
+  // per read rather than stored.
+  function elementQualifiedName(el) {
+    var q = __qualifiedName(el.__ref);
+    if (q === null || q === undefined) return q;
+    if (__namespaceURI(el.__ref) !== XHTML_NS) return q;
+    return isHtmlDocument(ownerDocumentOf(el)) ? asciiUpper(q) : q;
+  }
+
   function wrapNode(ref) {
     if (ref === undefined || ref === null) return null;
     if (wrappers.has(ref)) return wrappers.get(ref);
@@ -96,13 +121,15 @@
     var customDef = null;
     if (nt === 1) {
       if (__namespaceURI(ref) === XHTML_NS) {
-        var tag = __tagName(ref);
-        customDef = customElementDefinitionForRef(ref, tag);
+        // The element interface is chosen from the **local name**, case-sensitively
+        // and once, at wrap time: `createElementNS(html, 'DIV')` is not a `div`.
+        var local = __localName(ref);
+        customDef = customElementDefinitionForRef(ref, local);
         // An HTML-namespaced name the table does not list is HTMLUnknownElement,
         // unless it is a valid custom element name, which is HTMLElement.
         proto = (customDef && customDef.ctor.prototype) ||
-                (tag && elementSubclassProto[tag]) ||
-                unknownElementProto(tag);
+                (local && elementSubclassProto[local]) ||
+                unknownElementProto(local);
       } else {
         proto = Element.prototype;
       }
@@ -125,15 +152,18 @@
   }
 
   // Per-tag prototype table populated below as HTML* subclasses come online.
-  // Each entry's key is the uppercased tag name `__tagName` returns.
-  var elementSubclassProto = {};
-  function unknownElementProto(tag) {
+  // Each entry's key is the table's own (lowercase) local name, matched
+  // case-sensitively. A null prototype, so a local name like `constructor`
+  // cannot reach `Object.prototype`.
+  var elementSubclassProto = Object.create(null);
+  function unknownElementProto(local) {
     var HTMLEl = globalThis.HTMLElement;
     var base = HTMLEl ? HTMLEl.prototype : Element.prototype;
     var Unknown = globalThis.HTMLUnknownElement;
-    if (!Unknown || !tag) return base;
-    // `__tagName` uppercases, so validity is checked on the folded name.
-    return isValidCustomElementName(String(tag).toLowerCase()) ? base : Unknown.prototype;
+    if (!Unknown || !local) return base;
+    // Custom element names are case-sensitive, so `foo-BAR` is not one and
+    // neither is a name that does not start with an ASCII lowercase letter.
+    return isValidCustomElementName(local) ? base : Unknown.prototype;
   }
   var htmlInterfaceConstructors = {};
   var htmlInterfaceDefinitions = Object.create(null);
@@ -315,7 +345,11 @@
     get: function() { var self = this; return makeCollection(function() { return rawChildNodes(self); }, false); }
   });
   Object.defineProperty(Node.prototype, 'nodeName', {
-    configurable: true, get: function() { return __nodeName(this.__ref); }
+    configurable: true,
+    get: function() {
+      // An element's node name is its `tagName`, folded by the same rule.
+      return this.nodeType === 1 ? elementQualifiedName(this) : __nodeName(this.__ref);
+    }
   });
   Object.defineProperty(Node.prototype, 'nodeValue', {
     configurable: true, get: function() { return __nodeValue(this.__ref); }
@@ -433,40 +467,47 @@
       node = node.nextSibling;
     }
   };
-  Node.prototype.cloneNode = function(deep) {
-    // Shallow copy of this node by type, then (deep) recurse over children. Pure JS
-    // over the existing create* / setAttribute primitives.
+  // Shallow copy of `node` by type into `copyDocument`, then (deep) recurse over
+  // children. Pure JS over the existing create* / setAttribute primitives. The
+  // destination document is a parameter because `importNode` clones into another
+  // document, which is what makes an imported element's `tagName` re-fold.
+  function cloneNodeInto(node, copyDocument, deep) {
     var copy;
-    var copyDocument = this.nodeType === 9 ? document : ownerDocumentOf(this);
-    switch (this.nodeType) {
-      case 1: // Element: clone with namespace + every attribute.
-        copy = this.namespaceURI
-          ? copyDocument.createElementNS(this.namespaceURI, this.prefix ? this.prefix + ':' + this.localName : this.localName)
-          : copyDocument.createElement(this.localName);
-        var recs = this.__ref !== undefined ? attributeRecords(this) : [];
+    switch (node.nodeType) {
+      case 1: // Element: clone with namespace + every attribute, case preserved.
+        copy = copyDocument.createElementNS(node.namespaceURI,
+          node.prefix ? node.prefix + ':' + node.localName : node.localName);
+        var recs = node.__ref !== undefined ? attributeRecords(node) : [];
         for (var i = 0; i < recs.length; i++) {
           copy.setAttributeNS(recs[i].ns, recs[i].qname,
-                              __getAttributeNS(this.__ref, recs[i].ns || '', recs[i].local));
+                              __getAttributeNS(node.__ref, recs[i].ns || '', recs[i].local));
         }
         break;
-      case 3: copy = copyDocument.createTextNode(this.data); break;
-      case 4: copy = wrapNode(__createCDATASection(this.data)); break;
+      case 3: copy = copyDocument.createTextNode(node.data); break;
+      case 4: copy = wrapNode(__createCDATASection(node.data)); break;
       case 7:
-        copy = copyDocument.createProcessingInstruction(this.target, this.data);
+        copy = copyDocument.createProcessingInstruction(node.target, node.data);
         break;
-      case 8: copy = copyDocument.createComment(this.data); break;
+      case 8: copy = copyDocument.createComment(node.data); break;
       case 10:
-        copy = wrapNode(__createDoctype(this.name, this.publicId, this.systemId));
+        copy = wrapNode(__createDoctype(node.name, node.publicId, node.systemId));
         break;
       case 11: copy = copyDocument.createDocumentFragment(); break;
       case 9: copy = document.implementation.createHTMLDocument(); break;
       default: copy = copyDocument.createTextNode('');
     }
+    // The create* paths above already record the owner; the two raw-native cases
+    // (CDATA section, doctype) do not, and would otherwise fall back to the
+    // primary document.
+    if (copy && copy.nodeType !== 9) ownerDocuments.set(copy, copyDocument);
     if (deep) {
-      var kids = this.childNodes;
-      for (var k = 0; k < kids.length; k++) { copy.appendChild(kids[k].cloneNode(true)); }
+      var kids = node.childNodes;
+      for (var k = 0; k < kids.length; k++) { copy.appendChild(cloneNodeInto(kids[k], copyDocument, true)); }
     }
     return copy;
+  }
+  Node.prototype.cloneNode = function(deep) {
+    return cloneNodeInto(this, this.nodeType === 9 ? document : ownerDocumentOf(this), !!deep);
   };
   Node.prototype.removeChild = function(child) {
     if (!child || child.parentNode !== this) {
@@ -954,7 +995,7 @@
   };
   Element.prototype.matches = function(sel) { return __matches(this.__ref, String(sel)) === 'true'; };
   Object.defineProperty(Element.prototype, 'tagName', {
-    configurable: true, get: function() { return __tagName(this.__ref); }
+    configurable: true, get: function() { return elementQualifiedName(this); }
   });
   Object.defineProperty(Element.prototype, 'id', {
     configurable: true,
@@ -1953,8 +1994,11 @@
   installMixin(Element.prototype, parentNodeMixin);
   installMixin(DocumentFragment.prototype, parentNodeMixin);
 
-  function customElementKey(tag, isValue) {
-    return String(tag).toUpperCase() + '\n' + String(isValue);
+  // Keyed by the **local name**, case-sensitively: a valid custom element name
+  // contains no ASCII uppercase, so folding the key would let `foo-BAR` match a
+  // `foo-bar` definition.
+  function customElementKey(local, isValue) {
+    return String(local) + '\n' + String(isValue);
   }
 
   function customElementSyntaxError(name) {
@@ -1965,7 +2009,11 @@
     name = String(name);
     if (reservedCustomElementNames[name]) return false;
     if (name.indexOf('-') === -1) return false;
-    if (name !== name.toLowerCase()) return false;
+    // PotentialCustomElementName is `[a-z] PCENChar* '-' PCENChar*`: the first
+    // code point must be ASCII lowercase, and no ASCII uppercase may appear.
+    var first = name.charCodeAt(0);
+    if (!(first >= 97 && first <= 122)) return false;
+    if (/[A-Z]/.test(name)) return false;
     try {
       validateName(name);
     } catch (_) {
@@ -2005,21 +2053,21 @@
     catch (_) { return false; }
   }
 
-  function customElementDefinitionForRef(ref, tag) {
+  function customElementDefinitionForRef(ref, local) {
     var isValue = __getAttribute(ref, 'is');
     if (isValue !== null) {
-      return customizedBuiltInDefinitions[customElementKey(tag, isValue)] || null;
+      return customizedBuiltInDefinitions[customElementKey(local, isValue)] || null;
     }
-    return autonomousCustomElementDefinitions[String(tag).toUpperCase()] || null;
+    return autonomousCustomElementDefinitions[String(local)] || null;
   }
 
   function customElementDefinitionForElement(el) {
     if (!el || el.nodeType !== 1 || el.namespaceURI !== XHTML_NS) return null;
     var isValue = el.getAttribute('is');
     if (isValue !== null) {
-      return customizedBuiltInDefinitions[customElementKey(el.tagName, isValue)] || null;
+      return customizedBuiltInDefinitions[customElementKey(el.localName, isValue)] || null;
     }
-    return autonomousCustomElementDefinitions[el.tagName] || null;
+    return autonomousCustomElementDefinitions[el.localName] || null;
   }
 
   function scheduleCustomElementReactions() {
@@ -2214,8 +2262,9 @@
   });
   Document.prototype.createElement = function(tag, options) {
     tag = String(tag); validateName(tag);
-    // HTML document: the local name is lowercased.
-    tag = tag.toLowerCase();
+    // Only an HTML document folds the name, and only over ASCII: an XML document
+    // keeps the case it was given.
+    if (isHtmlDocument(this)) tag = asciiLower(tag);
     var el = wrapNode(__createElement(tag));
     ownerDocuments.set(el, this);
     var isValue = customElementIsOption(options);
@@ -2258,7 +2307,7 @@
   // XML only: the DOM throws NotSupportedError for an HTML document, and
   // InvalidCharacterError when the data would close the section.
   Document.prototype.createCDATASection = function(data) {
-    if (this.__isHtml !== false) {
+    if (isHtmlDocument(this)) {
       throw new DOMException("createCDATASection is not available on an HTML document.", "NotSupportedError");
     }
     data = String(data);
@@ -2271,7 +2320,7 @@
   };
   Document.prototype.createAttribute = function(local) {
     local = String(local); validateName(local);
-    if (this.__isHtml !== false) local = local.toLowerCase();
+    if (isHtmlDocument(this)) local = asciiLower(local);
     return makeAttr(null, null, null, local, this);
   };
   Document.prototype.createAttributeNS = function(ns, qname) {
@@ -2295,6 +2344,17 @@
     return range;
   };
   Document.prototype.getSelection = function() { return getSelection(); };
+  // `importNode` is a clone whose node document is *this* one, so an element that
+  // came from an XML document uppercases its `tagName` the moment it lands here.
+  Document.prototype.importNode = function(node, deep) {
+    if (!node || node.nodeType === undefined) {
+      throw new TypeError('importNode requires a node');
+    }
+    if (node.nodeType === 9) {
+      throw new DOMException("Cannot import a document node.", "NotSupportedError");
+    }
+    return cloneNodeInto(node, this, !!deep);
+  };
   Document.prototype.adoptNode = function(node) {
     if (!node) return node;
     if (node.nodeType === 9) {
@@ -2487,6 +2547,7 @@
         },
         createHTMLDocument: function(title) {
           var doc = wrapNode(__createDocument());
+          doc.__isHtml = true;
           var html = doc.createElement('html'); doc.appendChild(html);
           var head = doc.createElement('head'); html.appendChild(head);
           if (title !== undefined) { var t = doc.createElement('title'); t.textContent = String(title); head.appendChild(t); }
@@ -2679,7 +2740,7 @@
 
       var tags = def.tags || [];
       for (var j = 0; j < tags.length; j++) {
-        elementSubclassProto[String(tags[j]).toUpperCase()] = Ctor.prototype;
+        elementSubclassProto[String(tags[j])] = Ctor.prototype;
       }
       var named = def.namedConstructors || [];
       for (var n = 0; n < named.length; n++) {
@@ -4638,7 +4699,19 @@
   document.__ref = docRef;
   document.nodeType = 9;
   wrappers.set(docRef, document);
-  globalThis.document = document;
+  // On a Window, `document` is `[LegacyUnforgeable]`: a getter with no setter,
+  // non-configurable and non-deletable. A worker global keeps it a plain property,
+  // which is what lets the worker scope delete it — testharness.js selects its
+  // environment on `'document' in global_scope`, a presence test.
+  if (globalThis.window === globalThis) {
+    Object.defineProperty(globalThis, 'document', {
+      enumerable: true,
+      configurable: false,
+      get: function() { return document; }
+    });
+  } else {
+    globalThis.document = document;
+  }
 
   // A snapshot-cloned runtime keeps this JS heap but swaps the Rust host, so
   // the retained `document` still points at the donor document's root -- any
@@ -4979,7 +5052,7 @@
         if (options && options.extends !== undefined) {
           localName = String(options.extends).toLowerCase();
           validateName(localName);
-          if (localName.indexOf('-') !== -1 || !elementSubclassProto[localName.toUpperCase()]) {
+          if (localName.indexOf('-') !== -1 || !elementSubclassProto[localName]) {
             throw new (globalThis.DOMException || TypeError)('unknown built-in extension target', 'NotSupportedError');
           }
           isCustomizedBuiltIn = true;
@@ -5000,7 +5073,7 @@
       if (isCustomizedBuiltIn) {
         customizedBuiltInDefinitions[customElementKey(localName, name)] = def;
       } else {
-        autonomousCustomElementDefinitions[localName.toUpperCase()] = def;
+        autonomousCustomElementDefinitions[localName] = def;
       }
       customElementDefinitionsByCtor.set(ctor, def);
       if (pending[name]) { pending[name].resolve(ctor); delete pending[name]; }

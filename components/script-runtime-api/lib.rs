@@ -273,9 +273,30 @@ impl SchedulerTraceEvent {
     }
 }
 
+/// Which global a runtime installs. The two scopes differ in the shape of
+/// `self` and in whether `window` exists at all: on a `Window` both `window`
+/// and `document` are `[LegacyUnforgeable]` (non-configurable accessors) and
+/// `self` is `[Replaceable]`, while a `DedicatedWorkerGlobalScope` has an
+/// ordinary read-only `self` and no `window`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum GlobalScopeKind {
+    Window,
+    Worker,
+}
+
 impl<E: ScriptEngine> Runtime<E> {
-    /// Construct an engine and install the host surface on it.
+    /// Construct an engine and install the `Window` host surface on it.
     pub fn new() -> Result<Self, E::Error> {
+        Self::with_scope(GlobalScopeKind::Window)
+    }
+
+    /// The same surface with a worker global: no `window`, and a read-only
+    /// `self`. Used by [`worker::worker_main`] on the worker thread.
+    pub(crate) fn new_worker() -> Result<Self, E::Error> {
+        Self::with_scope(GlobalScopeKind::Worker)
+    }
+
+    fn with_scope(scope: GlobalScopeKind) -> Result<Self, E::Error> {
         let mut engine = E::new()?;
         let host: SharedHost = Rc::new(RefCell::new(HostState::default()));
         // The default viewport: the same 800x600 the media-query evaluator
@@ -283,7 +304,7 @@ impl<E: ScriptEngine> Runtime<E> {
         // has `innerWidth`/`innerHeight` agree with `matchMedia`.
         host.borrow_mut().viewport_size = (800.0, 600.0);
         engine.set_host_data(host.clone());
-        install_host_surface(&mut engine)?;
+        install_host_surface(&mut engine, scope)?;
         host.borrow_mut().worker_spawn = Some(worker::worker_main::<E> as fn(_));
         Ok(Self {
             engine,
@@ -1119,13 +1140,61 @@ impl<E: ScriptEngineSnapshot> Runtime<E> {
     }
 }
 
+/// A `Window`'s `self` and `window`.
+///
+/// `window` is `[LegacyUnforgeable]`: a getter with no setter, **non-configurable**
+/// and non-deletable. `self` is `[Replaceable]`: an accessor whose setter redefines
+/// it as an ordinary writable data property, so `self = 1` sticks. Neither is a
+/// global `var` (which would be non-configurable *and* a data property) and neither
+/// is a plain assignment (which would be writable, configurable and deletable).
+const SELF_WINDOW_BOOTSTRAP: &str = r#"
+(function() {
+  var g = globalThis;
+  Object.defineProperty(g, 'self', {
+    enumerable: true,
+    configurable: true,
+    get: function() { return g; },
+    set: function(v) {
+      Object.defineProperty(g, 'self', {
+        value: v, writable: true, enumerable: true, configurable: true
+      });
+    }
+  });
+  Object.defineProperty(g, 'window', {
+    enumerable: true,
+    configurable: false,
+    get: function() { return g; }
+  });
+})();
+"#;
+
+/// A worker global's `self`: an ordinary read-only attribute — an accessor with a
+/// getter, no setter and `configurable: true` — and no `window` at all.
+const SELF_WORKER_BOOTSTRAP: &str = r#"
+(function() {
+  var g = globalThis;
+  Object.defineProperty(g, 'self', {
+    enumerable: true,
+    configurable: true,
+    get: function() { return g; }
+  });
+})();
+"#;
+
 /// Install the global host objects from VM primitives.
-fn install_host_surface<E: ScriptEngine>(engine: &mut E) -> Result<(), E::Error> {
-    // `self` and `window` alias the global. `globalThis` is provided by the engine
-    // (ES2020), so both backends bootstrap the aliases the same way.
-    // Plain properties, not `var` bindings: a global `var` is non-configurable,
-    // and a worker global must be able to delete `window`.
-    engine.eval("globalThis.self = globalThis; globalThis.window = globalThis;")?;
+fn install_host_surface<E: ScriptEngine>(
+    engine: &mut E,
+    scope: GlobalScopeKind,
+) -> Result<(), E::Error> {
+    // `self` and `window` alias the global; `globalThis` is provided by the engine
+    // (ES2020), so both backends bootstrap them the same way. Their *shapes* are
+    // the standard's, not aliases: see `SELF_WINDOW_BOOTSTRAP`. The DOM bootstrap
+    // reads `globalThis.window === globalThis` to decide whether `document` is
+    // unforgeable too, so this runs before it.
+    engine.eval(match scope {
+        GlobalScopeKind::Window => SELF_WINDOW_BOOTSTRAP,
+        GlobalScopeKind::Worker => SELF_WORKER_BOOTSTRAP,
+    })?;
 
     // console.log / console.error: native sinks, exposed as methods on a `console`
     // object. (A future slice formats multiple arguments; this records the first.)
@@ -1173,6 +1242,12 @@ fn install_host_surface<E: ScriptEngine>(engine: &mut E) -> Result<(), E::Error>
     dom::install_dom_surface(engine)?;
     // The `fetch()` / `Response` / `Headers` surface over the host fetch seam.
     fetch::install_fetch_surface(engine)?;
+
+    // `WebSocket` + `CloseEvent` over their own host seam. After the fetch
+    // surface, which installs the `__resolve_url` / `__url_parse` / `__url_with`
+    // sinks the constructor validates its URL on, and the `Blob` a binary
+    // message is delivered as.
+    websocket::install_websocket_surface(engine)?;
     // `WebGLRenderingContext` (Triangle-class subset) over the host webgl seam.
     // Until step 2 wires `HTMLCanvasElement.getContext('webgl')`, JS reaches it
     // through the `__createWebGLContext()` helper.
@@ -1242,12 +1317,6 @@ const EVENT_LOOP_BOOTSTRAP: &str = r#"
     };
   }
   if (typeof globalThis.unescape !== 'function') {
-
-    // `WebSocket` + `CloseEvent` over their own host seam. After the fetch
-    // surface, which installs the `__resolve_url` / `__url_parse` / `__url_with`
-    // sinks the constructor validates its URL on, and the `Blob` a binary
-    // message is delivered as.
-    websocket::install_websocket_surface(engine)?;
     globalThis.unescape = function(s) {
       s = String(s); var out = '';
       for (var i = 0; i < s.length; i++) {

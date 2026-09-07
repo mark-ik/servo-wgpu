@@ -4,7 +4,7 @@
   "manifest_sha256": "d5ec5be9bf1a75ed00d7e7ab28afe8a694a55e11682ba74305874d70b18dd422",
   "policy": "exact",
   "renderer": "livery",
-  "runner_sha256": "c554f89a5ab1e7582dcb4d7c97a656750b49ca466a3ea67b7a9885666f06aab0",
+  "runner_sha256": "af36c1c80c77b48334a0c0c6cc754f31c84fef70ec7139e81b74739241714d43",
   "subset": "dom/nodes",
   "tests": {
     "dom/nodes/CharacterData-appendChild.html": {
@@ -7648,7 +7648,7 @@
         },
         {
           "name": "createElement(\"marK\") in HTML document",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "createElement(\"marK\") in XML document",
@@ -7660,7 +7660,7 @@
         },
         {
           "name": "createElement(\"İnput\") in HTML document",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "createElement(\"İnput\") in XML document",
@@ -7899,7 +7899,7 @@
           "status": "fail"
         }
       ],
-      "subtests_passed": 39,
+      "subtests_passed": 41,
       "subtests_total": 147
     },
     "dom/nodes/Document-createElementNS.html": {
@@ -10251,7 +10251,7 @@
         },
         {
           "name": "Lower-case HTML element with a prefix",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "Lower-case non-HTML element without a prefix",
@@ -10263,7 +10263,7 @@
         },
         {
           "name": "Upper-case HTML element without a prefix",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "Upper-case HTML element with a prefix",
@@ -10290,7 +10290,7 @@
           "status": "pass"
         }
       ],
-      "subtests_passed": 79,
+      "subtests_passed": 81,
       "subtests_total": 596
     },
     "dom/nodes/Document-createEvent-touchevent.window.html": {
@@ -11714,7 +11714,7 @@
         },
         {
           "name": "Element in HTML namespace, no prefix, non-ascii characters in name",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "Element in non-HTML namespace, non-ascii characters in name",
@@ -11737,7 +11737,7 @@
           "status": "fail"
         }
       ],
-      "subtests_passed": 3,
+      "subtests_passed": 4,
       "subtests_total": 18
     },
     "dom/nodes/Document-getElementsByTagNameNS.html": {
@@ -11823,26 +11823,26 @@
       "subtests": [
         {
           "name": "No 'deep' argument.",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "Undefined 'deep' argument.",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "True 'deep' argument.",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "False 'deep' argument.",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "Import an Attr node with namespace/prefix correctly.",
           "status": "fail"
         }
       ],
-      "subtests_passed": 0,
+      "subtests_passed": 4,
       "subtests_total": 5
     },
     "dom/nodes/DocumentFragment-constructor.html": {
@@ -18041,7 +18041,7 @@
         },
         {
           "name": "Element in HTML namespace, no prefix, non-ascii characters in name",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "Element in non-HTML namespace, non-ascii characters in name",
@@ -18068,7 +18068,7 @@
           "status": "pass"
         }
       ],
-      "subtests_passed": 4,
+      "subtests_passed": 5,
       "subtests_total": 19
     },
     "dom/nodes/Element-getElementsByTagNameNS.html": {
@@ -18456,7 +18456,7 @@
       "subtests_total": 1
     },
     "dom/nodes/Element-tagName.html": {
-      "status": "fail",
+      "status": "pass",
       "subtests": [
         {
           "name": "tagName should upper-case for HTML elements in HTML documents.",
@@ -18472,18 +18472,18 @@
         },
         {
           "name": "tagName should be updated when changing ownerDocument",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "tagName should be updated when changing ownerDocument (createDocument without prefix)",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "tagName should be updated when changing ownerDocument (createDocument with prefix)",
-          "status": "fail"
+          "status": "pass"
         }
       ],
-      "subtests_passed": 3,
+      "subtests_passed": 6,
       "subtests_total": 6
     },
     "dom/nodes/Element-webkitMatchesSelector.html": {
@@ -19849,7 +19849,7 @@
         },
         {
           "name": "createElementNS HTML",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "createElementNS non-HTML",
@@ -19888,7 +19888,7 @@
           "status": "pass"
         }
       ],
-      "subtests_passed": 132,
+      "subtests_passed": 133,
       "subtests_total": 135
     },
     "dom/nodes/Node-compareDocumentPosition.html": {
@@ -33437,7 +33437,7 @@
         },
         {
           "name": "xmlElement.tagName",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "xmlElement.previousElementSibling",
@@ -33453,7 +33453,7 @@
         },
         {
           "name": "xmlElement.nodeName",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "xmlElement.nodeValue",
@@ -33537,7 +33537,7 @@
         },
         {
           "name": "detachedXmlElement.tagName",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "detachedXmlElement.previousElementSibling",
@@ -33553,7 +33553,7 @@
         },
         {
           "name": "detachedXmlElement.nodeName",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "detachedXmlElement.nodeValue",
@@ -35348,7 +35348,7 @@
           "status": "pass"
         }
       ],
-      "subtests_passed": 678,
+      "subtests_passed": 682,
       "subtests_total": 726
     },
     "dom/nodes/Node-removeChild.html": {
@@ -36993,7 +36993,7 @@
         },
         {
           "name": "createElement Ä",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "setAttribute Ä",
@@ -38052,7 +38052,7 @@
           "status": "pass"
         }
       ],
-      "subtests_passed": 254,
+      "subtests_passed": 255,
       "subtests_total": 285
     },
     "dom/nodes/crashtests/attribute-index-when-no-attributes.html": {
