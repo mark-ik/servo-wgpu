@@ -1,0 +1,96 @@
+<!-- Copyright 2026 Mark Alan Boykin
+     This Source Code Form is subject to the terms of the Mozilla Public
+     License, v. 2.0. If a copy of the MPL was not distributed with this
+     file, You can obtain one at https://mozilla.org/MPL/2.0/.
+     SPDX-License-Identifier: MPL-2.0 -->
+<!doctype html>
+<meta charset="utf-8">
+<title>Ortet HTTP resource receipt</title>
+<style>
+  body { margin: 0; background: #e7edf3; }
+  canvas { display: block; width: 640px; height: 400px; }
+  #budget { display: none; }
+</style>
+<canvas id="ortet" tabindex="0" aria-label="Ortet HTTP resource receipt"></canvas>
+<canvas id="budget" width="1" height="1"></canvas>
+<pre id="receipt">ORTET_CANVAS_RECEIPT pending</pre>
+<script type="module">
+  const output = document.querySelector("#receipt");
+  try {
+    const { default: init, BrowserResourceLimits, start, start_with_limits } = await import("/ortet.js");
+    await Promise.race([
+      init(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("wasm initialization timed out")), 10000)),
+    ]);
+    const canvas = document.querySelector("#ortet");
+    const address = `${location.origin}/start`;
+    await Promise.race([
+      start(canvas, address),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Ortet start timed out")), 15000)),
+    ]);
+
+    let budgetError = "missing";
+    try {
+      await start_with_limits(
+        document.querySelector("#budget"),
+        address,
+        new BrowserResourceLimits(64, 64, 1),
+      );
+      budgetError = "accepted";
+    } catch (error) {
+      budgetError = String(error).replace(/\s+/g, " ").slice(0, 120);
+    }
+
+    for (let frame = 0; frame < 5; frame++) await new Promise(requestAnimationFrame);
+    const png = canvas.toDataURL("image/png");
+    const image = new Image();
+    image.src = png;
+    await image.decode();
+    const copy = new OffscreenCanvas(canvas.width, canvas.height);
+    const context = copy.getContext("2d", { willReadFrequently: true });
+    context.drawImage(image, 0, 0);
+    const pixels = context.getImageData(0, 0, copy.width, copy.height).data;
+    let nonWhite = 0;
+    let opaqueNonWhite = 0;
+    let pageTone = 0;
+    let cardTone = 0;
+    let cardBorder = 0;
+    let glyphTone = 0;
+    let imageTone = 0;
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < pixels.length; index += 4) {
+      const red = pixels[index];
+      const green = pixels[index + 1];
+      const blue = pixels[index + 2];
+      const alpha = pixels[index + 3];
+      if (red !== 255 || green !== 255 || blue !== 255 || alpha !== 255) nonWhite++;
+      if ((red !== 255 || green !== 255 || blue !== 255) && alpha === 255) opaqueNonWhite++;
+      if (Math.abs(red - 249) <= 4 && Math.abs(green - 244) <= 4 && Math.abs(blue - 232) <= 4 && alpha === 255) pageTone++;
+      if (Math.abs(red - 216) <= 4 && Math.abs(green - 230) <= 4 && Math.abs(blue - 220) <= 4 && alpha === 255) cardTone++;
+      if (Math.abs(red - 91) <= 4 && Math.abs(green - 59) <= 4 && Math.abs(blue - 120) <= 4 && alpha === 255) cardBorder++;
+      if (Math.abs(red - 23) <= 8 && Math.abs(green - 50) <= 8 && Math.abs(blue - 77) <= 8 && alpha === 255) glyphTone++;
+      if (red > 190 && green < 120 && blue < 120 && alpha === 255) imageTone++;
+      for (let channel = 0; channel < 4; channel++) hash = Math.imul(hash ^ pixels[index + channel], 0x01000193);
+    }
+    const stats = await fetch("/__stats").then(response => response.json());
+    const paths = stats.requests.map(entry => entry.path);
+    const has = path => paths.includes(path);
+    const checks = {
+      redirect: has("/start"),
+      html: has("/site/page/index.html"),
+      css: has("/site/page/styles/base.css"),
+      nested_import: has("/site/page/styles/theme/colors.css") && has("/site/page/styles/shared/accent.css"),
+      image: has("/site/page/images/proof.png"),
+      font: has("/site/page/fonts/Ahem.ttf"),
+      denied: stats.requests.some(entry => entry.path === "/site/page/images/denied.png" && entry.status === 403),
+      budget_rejected: budgetError.includes("byte limit exceeded"),
+    };
+    if (cardTone < 100 || cardBorder < 100 || glyphTone < 100 || imageTone < 100 || !Object.values(checks).every(Boolean)) {
+      throw new Error(`checks=${JSON.stringify(checks)} paint card=${cardTone} border=${cardBorder} glyph=${glyphTone} image=${imageTone}`);
+    }
+    output.dataset.png = png;
+    output.textContent = `ORTET_CANVAS_RECEIPT width=${copy.width} height=${copy.height} non_white=${nonWhite} opaque_non_white=${opaqueNonWhite} page_tone=${pageTone} card_tone=${cardTone} card_border=${cardBorder} glyph_tone=${glyphTone} image_tone=${imageTone} redirect=${checks.redirect} html=${checks.html} css=${checks.css} nested_import=${checks.nested_import} image=${checks.image} font=${checks.font} denied=${checks.denied} budget_rejected=${checks.budget_rejected} total=${copy.width * copy.height} rgba_fnv32=0x${(hash >>> 0).toString(16)}`;
+  } catch (error) {
+    output.textContent = `ORTET_CANVAS_RECEIPT error=${error}`;
+  }
+</script>
