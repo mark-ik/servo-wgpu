@@ -62,6 +62,16 @@ when the crate has one worth publishing (naming ledger rule).
 
 ## Phases
 
+### Receipt boundary clarification (2026-09-07)
+
+O0-O4 prove the raw `LiverySessionEngine` route. They do not establish page
+JavaScript execution or a persistent storage provider. The
+[deferred web-platform scoping](2026-09-07_deferred_web_platform_lanes_scoping.md#shared-acceptance-and-host-prerequisites)
+uses a named scripted host for Worker, Canvas 2D and other JS-driven receipts.
+Using Ortet for those receipts first requires a separately scoped scripted
+route; restart/storage tests also require an explicit provider. This note
+does not add either capability to Ortet's completed phases.
+
 ### O0. Found the crate
 
 - `ports/ortet/Cargo.toml` (workspace-inherited version, license, edition;

@@ -4,6 +4,16 @@
 **Status:** T0 through T4 complete 2026-07-27. The shared primitive, platform
 translation, shaped-layout seam, and first real app routes are live. T5 forms
 and T6 contenteditable remain downstream consumers; they do not gate knot.
+
+**Ownership/receipt clarification, 2026-09-07:** the Cambium components named
+below now live in Mere. These T0-T4 receipts cover the primitive and named
+first consumers, not complete Genet form-control or contenteditable behavior.
+The [deferred editing scoping](../design_docs/2026-09-07_deferred_web_platform_lanes_scoping.md#editing-and-contenteditable)
+connects T5/T6 to the landed
+[Selection/Range model](../design_docs/2026-09-07_selection_range_plan.md)
+and its residuals. Genet's DOM editing owns observable mutations and consumes
+engine-side input/geometry seams; visual selection remains a projection.
+
 **Companions:** the
 [pelt and knot direction](2026-07-24_pelt_knot_direction.md) (the ruling this
 plan owns), mere's `2026-07-25_knot_port_plan.md` (K7 is the third consumer),

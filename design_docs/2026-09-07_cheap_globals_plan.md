@@ -120,13 +120,17 @@ implements it. Boa does not expose it and Nova exposes it but throws "not
 implemented", so both fall back to a copy plus an own `byteLength: 0` data
 property shadowing the prototype getter. That makes the sender's handle *read*
 detached without releasing storage. A view over a "detached" buffer still works,
-so the emulation is observable-only. Real detachment needs the VM primitive; it
-is the one place this lane is not honest.
+so the emulation does not implement detachment. Real detachment needs the VM
+primitive; passing handle-level assertions does not prove transferred ownership.
 
-A transferred `MessagePort` keeps its identity: inside one agent, "disentangle
-then entangle" is the sender's handle going away, not a new object. The sender's
-handle is marked transferred for the current task and restored on the next, so a
-`postMessage` on it during the same turn throws `InvalidStateError`.
+The current `MessagePort` transfer implementation returns the same object,
+marks it transferred for the current task, then clears that mark on the next
+timer task. **Review correction, 2026-09-07:** this is an implementation
+shortcut, not the specified transfer model, even within one agent. Re-enabling
+the sender's object does not establish transferred ownership. A conforming
+transfer needs a receiving port object and correct endpoint/queue custody
+while the source remains detached. See the
+[HTML port transfer model](https://html.spec.whatwg.org/multipage/web-messaging.html#message-ports).
 
 ### `MessageEvent.data` and the IDL default (2026-09-07)
 
@@ -218,7 +222,8 @@ Subtest passes **+462**, over **+6,800** newly observed subtests.
 
 ## Residuals
 
-Named, not hidden, and each is a boundary rather than a bug:
+Named omissions and observable conformance defects; the bounded landing
+receipt does not close these:
 
 1. **`crypto.subtle` is absent.** 72 WebCryptoAPI files still error. The whole
    algorithm catalogue is a separate lane; `crypto` existing is what this one
@@ -254,6 +259,12 @@ Named, not hidden, and each is a boundary rather than a bug:
    channels in this runtime only; `postMessage` has no frames or workers to
    reach. Those move with the Worker and iframe lanes, which reuse this
    lane's clone walker and transferable registry.
+9. **MessagePort transfer temporarily disables and then re-enables the same
+   object.** This does not prove sender detachment, a distinct receiving
+   object or queued-message custody. Correct it before relying on transfer
+   across agents. The [Worker scoping](2026-09-07_deferred_web_platform_lanes_scoping.md#dedicated-worker)
+   requires those assertions plus a transportable serialization record and
+   actual ArrayBuffer detachment; reusing the walker alone is insufficient.
 
 ## Gates
 

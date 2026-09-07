@@ -234,9 +234,15 @@ These are first errors only. A file that dies on `crypto` may also need
 > `crypto` (86), `performance` (22), `BroadcastChannel` (14), `MessageChannel`
 > (8), `PerformanceObserver` (4), `queueMicrotask` (3) and `Image` / `Option` /
 > `Audio` are now present, as is `structuredClone`. `XMLHttpRequest` (83) was
-> closed by the XHR plan. The remainder — `Worker`, `SharedWorker`,
-> `getSelection`, `AudioContext`, `IDBKeyRange`, `MutationObserver`,
-> `WebSocket`, `DOMMatrix`, the observers and `trustedTypes` — is untouched.
+> closed by the XHR plan. [MutationObserver](2026-09-07_mutation_observer_plan.md)
+> and [Selection/Range](2026-09-07_selection_range_plan.md) subsequently added
+> `MutationObserver` and `getSelection`, with bounded receipts and named
+> residuals. Remaining names include `Worker`, `SharedWorker`, `AudioContext`,
+> `IDBKeyRange`, `WebSocket`, `DOMMatrix`, `IntersectionObserver`,
+> `ResizeObserver` and `trustedTypes`. See the
+> [deferred-lane scoping](2026-09-07_deferred_web_platform_lanes_scoping.md)
+> for the execution/storage/tree contracts behind those lanes. These updates
+> do not rewrite the historical counts or establish full interface conformance.
 
 ## Harness caveats found by the run
 

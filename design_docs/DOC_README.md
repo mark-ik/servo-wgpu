@@ -74,10 +74,11 @@ completed corpus census or bounded slice does not close its enclosing feature.
 - [deferred_web_platform_lanes_scoping](2026-09-07_deferred_web_platform_lanes_scoping.md)
   (**research 2026-09-07**: Shadow DOM, Canvas 2D, service workers, iframes
   and nested browsing contexts, dedicated Worker, WebSocket, IndexedDB and
-  storage, Web Animations, and editing. Per lane: what exists in the tree,
-  the work in landing order, the decisions that are Mark's, and
-  done-conditions against the census. Nothing scheduled; promote a section to
-  a dated plan when it is.)
+  storage, Web Animations, and editing. Reviewed against the landed globals,
+  observer and selection lanes: required semantics, remaining design choices,
+  shared scripted/persistent host prerequisites, and exact-slice acceptance
+  requirements. Census counts stay historical. Nothing scheduled; promote a
+  section to a dated plan before implementation.)
 
 ## WPT census — the web platform beyond CSS
 
@@ -289,6 +290,11 @@ same session; links out of it are rewritten for its new depth.
 - **Freeze dependency resolution with a measured runner.** `Cargo.lock` is
   intentionally ignored here. Retain the generated lockfile, its digest,
   target/features and local-override facts with the source and binary receipt.
+- **Scope behavior separately from implementation choices.** Tree/realm,
+  event, transfer and storage semantics constrain backend and host placement.
+  A supported slice names required assertions and residuals; aggregate WPT
+  gains alone do not close it. A hosted proof names its actual session engine
+  and providers, including any scripted or persistent-host prerequisite.
 - **A lane's baseline map must come from the lane's own runner build.**
   `Cargo.lock` is ignored and rewritten by builds, so two runners built at
   different times can embed different dependency revisions even from the

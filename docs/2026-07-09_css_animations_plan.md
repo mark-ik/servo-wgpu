@@ -1,8 +1,11 @@
 # CSS animations plan
 
 **Date:** 2026-07-09
-**Status:** **A1 was already done; A2 landed 2026-07-09; A3 (events + WPT slice)
-is the remaining work.** Spun out of the CSS transitions plan
+**Status:** historical implementation receipt. A1 was already done; A2 and
+A3 lifecycle/events landed 2026-07-09, with the 2026-07-10 harness follow-up
+recorded below. The original `genet-layout` route and its bounded WPT evidence
+must not be read as current Livery or Web Animations API closure.
+Spun out of the CSS transitions plan
 (`2026-07-05_css_transitions_plan.md`), whose "Deferred (not v1)" section named
 `@keyframes` as the next phase once transitions proved the tick.
 
@@ -208,6 +211,13 @@ owns — the style tier, the lifecycle, the events, reduced motion — is done a
 guarded by unit + end-to-end tests on both engines.
 
 ## Deferred (not this plan)
+
+**Current scoping, reviewed 2026-09-07:** the
+[deferred web-platform document](../design_docs/2026-09-07_deferred_web_platform_lanes_scoping.md#web-animations)
+owns the Web Animations/timeline follow-on. It requires a current Livery
+schedule/sample/event reconciliation and new exact-slice receipts. The older
+WPT/layout-session limitations above describe their dated runner, not a fresh
+measurement of today's harness.
 
 - **Web Animations API** (`element.animate`, `getAnimations`,
   `Animation.playbackRate`). The `DocumentAnimationSet` placement does not
