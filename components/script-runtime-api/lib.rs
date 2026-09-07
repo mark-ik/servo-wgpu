@@ -318,6 +318,12 @@ impl<E: ScriptEngine> Runtime<E> {
         // Step 3: "While the event loop's microtask queue is not empty:"
         // Backend boundary: the VM owns the queue, budget behavior, and kept-object cleanup.
         self.trace_scheduler("pump_microtasks", "start", None);
+        // MutationObserver: hand the arena's pending record to the registry
+        // before the queue is pumped, so "notify mutation observers" is a
+        // microtask of *this* checkpoint. Costs nothing until something observes.
+        if self.host.borrow().dom.is_observing() {
+            let _ = self.engine.eval("__moPump()");
+        }
         self.engine.pump_microtasks();
         self.flush_host_trace_events();
         self.trace_scheduler("pump_microtasks", "end", None);

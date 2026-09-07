@@ -52,6 +52,7 @@ older `docs/` corpus without changing their location or governance.
 | [XMLHttpRequest](2026-09-07_xhr_plan.md) | XHR as a state machine over the fetch seam, landed 2026-09-07: xhr 53 to 281 subtests in disk mode, 831 of 1,336 in server mode, fetch holds. Residuals: responseXML needs DOMParser; 28 errors are Worker and document.domain demand. |
 | [Cheap globals](2026-09-07_cheap_globals_plan.md) | `performance` (+ `PerformanceObserver`), `queueMicrotask`, `structuredClone`, `MessageChannel` / `MessagePort` / `BroadcastChannel` and `crypto` landed 2026-09-07: 79 forward file movements, zero pass-to-fail, +462 subtest passes over ten directories. Next proof is `crypto.subtle`, real `ArrayBuffer` detachment, and the cross-agent reuse of the clone walker by the Worker lane. |
 | [IDL interface table](2026-09-07_idl_interface_table_plan.md) | The scripted tier's HTML interface table is generated from WPT's vendored WebIDL plus its tag map, with 41 reasoned overrides and a drift test. 72 interfaces / 338 reflected attributes / 41 shape-only DOM-CSSOM interfaces. Next proof is extending the shape pass past `html`, `dom` and `cssom`, and the reflection-algorithm gaps (`ReflectRange` clamping, invalid-value defaults). |
+| [MutationObserver](2026-09-07_mutation_observer_plan.md) | The arena's mutation point now has two consumers: Livery's `DomMutation` stream and a spec-shaped observer record fanned out at the same mutators, off until something observes. Landed 2026-09-07 with four `dom/nodes/MutationObserver-*` files all-pass, +495 subtest passes and zero pass-to-fail. Next proof is `DocumentFragment` insertion (Mark's decision), then `Range`, `normalize` and attribute namespaces, which the remaining observer subtests need. |
 | [Host contract ownership](../docs/2026-08-14_web_platform_host_contract_plan.md) | Genet owns retained session contracts; Mere owns surface orchestration and product adapters. The older S0-S5 receipts need a consumer-side status refresh before resuming those lanes. |
 
 The [Buckram master](../docs/2026-07-26_buckram_css_layout_engine_plan.md)
@@ -79,6 +80,26 @@ completed corpus census or bounded slice does not close its enclosing feature.
 
 ## WPT census — the web platform beyond CSS
 
+- [mutation_observer_plan](2026-09-07_mutation_observer_plan.md)
+  (**landed 2026-09-07**: `MutationObserver` as a second consumer of
+  `genet-scripted-dom`'s mutation point. The arena fans out at the mutator into
+  a spec-shaped `ObservedMutation` — siblings around a removal, old values,
+  `innerHTML` / `textContent` as added and removed node lists, and the target's
+  ancestor chain captured at mutation time — rather than widening or tapping
+  the `DomMutation` stream Livery drains, which carries none of those and is
+  fenced off from this lane. The record is off until something observes. The
+  registry, `MutationObserverInit` validation, the interested-observer walk,
+  transient registered observers and the notify microtask live in the JS
+  bootstrap over three native sinks (`__moObserving`, `__moTake`, `__moGroup`);
+  records are queued at mutation time through the bootstrap's twelve mutating
+  call sites, because Nova's global natives cannot be interposed on.
+  `MutationObserver` and `MutationRecord` left the generator's
+  `SHAPE_ONLY_DENY` list, so the table declares them and the shape pass defers
+  to the implementation. `sanity` 0/13 → 13/13, `takeRecords` 0/3 → 3/3,
+  `disconnect` 0/2 → 2/2, `callback-arguments` 0/1 → 1/1, `attributes` 0/42 →
+  35/42, `childList` 0/38 → 18/38; +495 subtest passes over `dom`,
+  `custom-elements` and `html/dom` with zero pass-to-fail. Raw maps under
+  `Code/testing/genet/wpt-ledger/2026-09-07_mutation_observer/`.)
 - [idl_interface_table_plan](2026-09-07_idl_interface_table_plan.md)
   (**landed 2026-09-07**: the scripted tier's hand-maintained HTML interface
   table is replaced by one generated offline from WPT's vendored WebIDL
@@ -255,7 +276,17 @@ same session; links out of it are rewritten for its new depth.
   tree for that reason. Another lane's `post` maps are therefore not a
   controlled baseline. Build the unmodified tree in your own target
   directory, run `pre`, then run `post`, and record both runner digests.
-  See the cheap-globals plan's Findings.
+  Build `pre` **before** the first edit, or from `HEAD` sources restored for the
+  build: a baseline build started in the background while the tree is being
+  edited compiles whatever the crate looks like when the compiler reaches it,
+  and the resulting binary is not a baseline. See the cheap-globals plan's
+  Findings and the MutationObserver plan's Progress.
+- **A global native cannot be interposed on from the bootstrap.** Boa's host
+  globals are writable and Nova's are not (`defineProperty` throws there too),
+  so wrapping `globalThis.__someNative` works on one backend and silently does
+  nothing on the other. Wrap at the bootstrap's own call sites instead — they
+  are few, because the bootstrap already funnels — and prove the behavior on
+  both backends. See the MutationObserver plan's Findings.
 - **Verify paired forks from a standalone consumer.** Cargo root patches are
   not inherited by downstream workspaces. A coupled dependency must travel with
   its caller; prove that resolution before refreshing product revisions.
@@ -267,7 +298,7 @@ same session; links out of it are rewritten for its new depth.
 ## Status
 
 Founded 2026-08-24; current work map reconciled 2026-09-07, including the IDL
-interface-table and cheap-globals lanes. The index covers
+interface-table, cheap-globals and MutationObserver lanes. The index covers
 the flat plans sectioned above and two archived plans; the count in this line
 was stale before 2026-09-07 and is now stated by the sections themselves.
 All three former component area roots now live in Mere. The older `docs/`

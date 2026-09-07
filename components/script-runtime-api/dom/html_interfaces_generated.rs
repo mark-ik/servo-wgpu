@@ -3509,6 +3509,8 @@ pub(crate) const HTML_INTERFACES: &[HtmlInterface] = &[
 pub(crate) const SHAPE_INTERFACES: &[ShapeInterface] = &[
     ShapeInterface { name: "NodeList", parent: "", exposed: &["Window"], constructible: false },
     ShapeInterface { name: "HTMLCollection", parent: "", exposed: &["Window"], constructible: false },
+    ShapeInterface { name: "MutationObserver", parent: "", exposed: &["Window"], constructible: true },
+    ShapeInterface { name: "MutationRecord", parent: "", exposed: &["Window"], constructible: false },
     ShapeInterface { name: "Node", parent: "EventTarget", exposed: &["Window"], constructible: false },
     ShapeInterface { name: "Document", parent: "Node", exposed: &["Window"], constructible: true },
     ShapeInterface { name: "XMLDocument", parent: "Document", exposed: &["Window"], constructible: false },

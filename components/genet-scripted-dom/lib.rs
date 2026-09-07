@@ -156,6 +156,16 @@ pub struct ScriptedDom {
     /// observer can pair this base with [`Self::pending_mutations`] to read new
     /// facts without stealing them from layout and detect a range it missed.
     mutation_base: u64,
+    /// The `MutationObserver` view of the same mutation points. Only recorded
+    /// while [`set_observing`](Self::set_observing) is on, so a document nobody
+    /// observes pays nothing and behaves exactly as before.
+    observed: Vec<ObservedMutation>,
+    observing: bool,
+    /// Index into `observed` where the current coalescing group began. A DOM
+    /// operation that is one record to script but several arena mutations
+    /// (`replaceChild`) opens a group so the childList records for one target
+    /// merge into one.
+    observed_group: Option<usize>,
     /// Process-unique document tag (G0 fence). Only present where the fence is
     /// active; elsewhere ids are untagged and this field would be dead weight.
     #[cfg(all(debug_assertions, target_pointer_width = "64"))]
@@ -166,6 +176,39 @@ impl Default for ScriptedDom {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// A spec-shaped mutation fact for the second consumer of the arena's mutation
+/// point: `MutationObserver`. [`DomMutation`] is deliberately lossy — it carries
+/// what invalidation needs — so the observer view is a parallel typed record
+/// written by the same statements, not a re-derivation. `ancestors` is the
+/// target's **inclusive** ancestor chain (target first) captured at mutation
+/// time, which is what "interested observers" needs and what the live tree can
+/// no longer answer once a later mutation moves the target.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ObservedMutation {
+    /// A `childList` record: children of `target` were added and/or removed.
+    ChildList {
+        target: NodeId,
+        added: Vec<NodeId>,
+        removed: Vec<NodeId>,
+        previous_sibling: Option<NodeId>,
+        next_sibling: Option<NodeId>,
+        ancestors: Vec<NodeId>,
+    },
+    /// An `attributes` record. `old_value` is `None` for a newly added attribute.
+    Attributes {
+        target: NodeId,
+        name: QualName,
+        old_value: Option<String>,
+        ancestors: Vec<NodeId>,
+    },
+    /// A `characterData` record for a text or comment node.
+    CharacterData {
+        target: NodeId,
+        old_value: Option<String>,
+        ancestors: Vec<NodeId>,
+    },
 }
 
 /// A set of node ids to treat as **extra mark roots** for
@@ -242,6 +285,9 @@ impl ScriptedDom {
             root: NodeId(0),
             mutations: Vec::new(),
             mutation_base: 0,
+            observed: Vec::new(),
+            observing: false,
+            observed_group: None,
             #[cfg(all(debug_assertions, target_pointer_width = "64"))]
             doc_tag: fence::next_doc_tag(),
         };
@@ -317,6 +363,151 @@ impl ScriptedDom {
         (self.mutation_base, &self.mutations)
     }
 
+    /// Turn the `MutationObserver` record on or off. Off (the default) is
+    /// zero-cost: no record is built and no node is kept alive for one. Turning
+    /// it off drops whatever has not been taken.
+    pub fn set_observing(&mut self, on: bool) {
+        self.observing = on;
+        if !on {
+            self.observed.clear();
+        }
+    }
+
+    /// Whether the observer record is being written.
+    pub fn is_observing(&self) -> bool {
+        self.observing
+    }
+
+    /// Take the pending observer records. Unlike [`pending_mutations`](Self::pending_mutations)
+    /// this is a drain: the observer registry is the only consumer of this view,
+    /// and Livery's [`DomMutation`] stream is untouched by it.
+    pub fn take_observed(&mut self) -> Vec<ObservedMutation> {
+        self.observed_group = None;
+        std::mem::take(&mut self.observed)
+    }
+
+    /// Open or close a coalescing group. Inside one, childList records naming
+    /// the same target merge — the added and removed lists concatenate, the
+    /// group keeps the first record's previous sibling and the last one's next
+    /// sibling. That is what makes `replaceChild` one record rather than the
+    /// insert and the remove it is built from.
+    pub fn set_observer_group(&mut self, on: bool) {
+        self.observed_group = if on && self.observing {
+            Some(self.observed.len())
+        } else {
+            None
+        };
+    }
+
+    /// The target's inclusive ancestor chain, target first.
+    fn ancestor_chain(&self, node: NodeId) -> Vec<NodeId> {
+        let mut chain = vec![node];
+        let mut cursor = node;
+        while let Some(parent) = self.node(cursor).parent {
+            chain.push(parent);
+            cursor = parent;
+        }
+        chain
+    }
+
+    /// The implicit removal of a node from its former parent when it is
+    /// inserted elsewhere. It is a record of its own even inside a group: the
+    /// spec queues it before the group's own record, not merged into it.
+    fn record_implicit_removal(
+        &mut self,
+        target: NodeId,
+        node: NodeId,
+        previous_sibling: Option<NodeId>,
+        next_sibling: Option<NodeId>,
+    ) {
+        let group = self.observed_group.take();
+        self.record_child_list(
+            target,
+            Vec::new(),
+            vec![node],
+            previous_sibling,
+            next_sibling,
+        );
+        self.observed_group = group;
+    }
+
+    fn record_child_list(
+        &mut self,
+        target: NodeId,
+        added: Vec<NodeId>,
+        removed: Vec<NodeId>,
+        previous_sibling: Option<NodeId>,
+        next_sibling: Option<NodeId>,
+    ) {
+        if !self.observing || (added.is_empty() && removed.is_empty()) {
+            return;
+        }
+        if let Some(start) = self.observed_group {
+            let merged = self.observed[start..]
+                .iter_mut()
+                .find_map(|record| match record {
+                    ObservedMutation::ChildList {
+                        target: existing,
+                        added: into_added,
+                        removed: into_removed,
+                        next_sibling: into_next,
+                        ..
+                    } if *existing == target => Some((into_added, into_removed, into_next)),
+                    _ => None,
+                });
+            if let Some((into_added, into_removed, into_next)) = merged {
+                into_added.extend(added);
+                into_removed.extend(removed);
+                *into_next = next_sibling;
+                return;
+            }
+        }
+        let ancestors = self.ancestor_chain(target);
+        self.observed.push(ObservedMutation::ChildList {
+            target,
+            added,
+            removed,
+            previous_sibling,
+            next_sibling,
+            ancestors,
+        });
+    }
+
+    fn record_attribute(&mut self, target: NodeId, name: QualName, old_value: Option<String>) {
+        if !self.observing {
+            return;
+        }
+        let ancestors = self.ancestor_chain(target);
+        self.observed.push(ObservedMutation::Attributes {
+            target,
+            name,
+            old_value,
+            ancestors,
+        });
+    }
+
+    fn record_character_data(&mut self, target: NodeId, old_value: Option<String>) {
+        if !self.observing {
+            return;
+        }
+        let ancestors = self.ancestor_chain(target);
+        self.observed.push(ObservedMutation::CharacterData {
+            target,
+            old_value,
+            ancestors,
+        });
+    }
+
+    /// Free `node`'s subtree unless an observer is watching. A record naming a
+    /// removed node must be able to hand that node to script, so while observing
+    /// the subtree is only orphaned; [`collect`](Self::collect) reclaims it once
+    /// nothing reaches it.
+    fn release_subtree(&mut self, node: NodeId) {
+        if !self.observing {
+            self.drop_subtree(node);
+        }
+    }
+
     /// DOM `removeChild`: orphan `child` from its parent but keep it (and its
     /// subtree) alive and re-insertable, recording a [`DomMutation::Removed`].
     /// Unlike [`LayoutDomMut::remove`](layout_dom_api::LayoutDomMut::remove), which
@@ -324,12 +515,15 @@ impl ScriptedDom {
     /// re-insert it, so the scripted DOM orphans rather than frees.
     pub fn remove_child(&mut self, child: NodeId) {
         let former_parent = self.node(child).parent;
+        let previous = self.sibling(child, -1);
+        let next = self.sibling(child, 1);
         self.detach(child);
         if let Some(former_parent) = former_parent {
             self.mutations.push(DomMutation::Removed {
                 node: child,
                 former_parent,
             });
+            self.record_child_list(former_parent, Vec::new(), vec![child], previous, next);
         }
     }
 
@@ -340,23 +534,29 @@ impl ScriptedDom {
     /// tree as script.
     pub fn set_text_content(&mut self, node: NodeId, data: &str) {
         if matches!(self.node(node).kind, NodeKind::Text | NodeKind::Comment) {
+            let old = self.node(node).text.clone();
             self.node_mut(node).text = Some(data.to_owned());
             self.mutations
                 .push(DomMutation::CharacterDataChanged { node });
+            self.record_character_data(node, old);
             return;
         }
 
         let existing = std::mem::take(&mut self.node_mut(node).children);
+        let removed = existing.clone();
         for child in existing {
             self.node_mut(child).parent = None;
-            self.drop_subtree(child);
+            self.release_subtree(child);
         }
         self.node_mut(node).text = None;
+        let mut added = Vec::new();
         if !data.is_empty() {
             let text = self.create_text(data);
             self.attach_silent(node, text);
+            added.push(text);
         }
         self.mutations.push(DomMutation::SubtreeReplaced { node });
+        self.record_child_list(node, added, removed, None, None);
     }
 
     /// Create a detached `Document` node (a second document, for
@@ -740,10 +940,13 @@ impl LayoutDomMut for ScriptedDom {
         // and the former parent's consumers must hear the removal. The detach
         // used to be silent here. (moveBefore plan S1.)
         if let Some(former_parent) = self.node(child).parent {
+            let previous = self.sibling(child, -1);
+            let next = self.sibling(child, 1);
             self.mutations.push(DomMutation::Removed {
                 node: child,
                 former_parent,
             });
+            self.record_implicit_removal(former_parent, child, previous, next);
         }
         self.detach(child);
         self.node_mut(child).parent = Some(parent);
@@ -752,6 +955,8 @@ impl LayoutDomMut for ScriptedDom {
             node: child,
             parent,
         });
+        let previous = self.sibling(child, -1);
+        self.record_child_list(parent, vec![child], Vec::new(), previous, None);
     }
 
     fn insert_before(&mut self, parent: NodeId, child: NodeId, reference: Option<NodeId>) {
@@ -759,16 +964,22 @@ impl LayoutDomMut for ScriptedDom {
         // observable. State preservation is `move_before`'s contract, not this
         // one's. (moveBefore plan S1.)
         if let Some(former_parent) = self.node(child).parent {
+            let previous = self.sibling(child, -1);
+            let next = self.sibling(child, 1);
             self.mutations.push(DomMutation::Removed {
                 node: child,
                 former_parent,
             });
+            self.record_implicit_removal(former_parent, child, previous, next);
         }
         self.attach_at(parent, child, reference);
         self.mutations.push(DomMutation::Inserted {
             node: child,
             parent,
         });
+        let previous = self.sibling(child, -1);
+        let next = self.sibling(child, 1);
+        self.record_child_list(parent, vec![child], Vec::new(), previous, next);
     }
 
     fn move_before(&mut self, parent: NodeId, child: NodeId, reference: Option<NodeId>) {
@@ -785,7 +996,15 @@ impl LayoutDomMut for ScriptedDom {
         if from_parent == Some(parent) && self.sibling(child, 1) == reference {
             return;
         }
+        let was_previous = self.sibling(child, -1);
+        let was_next = self.sibling(child, 1);
         self.attach_at(parent, child, reference);
+        if let Some(from_parent) = from_parent {
+            self.record_child_list(from_parent, Vec::new(), vec![child], was_previous, was_next);
+        }
+        let previous = self.sibling(child, -1);
+        let next = self.sibling(child, 1);
+        self.record_child_list(parent, vec![child], Vec::new(), previous, next);
         match from_parent {
             Some(from_parent) => self.mutations.push(DomMutation::Moved {
                 node: child,
@@ -804,14 +1023,17 @@ impl LayoutDomMut for ScriptedDom {
 
     fn remove(&mut self, node: NodeId) {
         let former_parent = self.node(node).parent;
+        let previous = self.sibling(node, -1);
+        let next = self.sibling(node, 1);
         self.detach(node);
         if let Some(former_parent) = former_parent {
             self.mutations.push(DomMutation::Removed {
                 node,
                 former_parent,
             });
+            self.record_child_list(former_parent, Vec::new(), vec![node], previous, next);
         }
-        self.drop_subtree(node);
+        self.release_subtree(node);
     }
 
     fn set_attribute(&mut self, node: NodeId, name: QualName, value: &str) {
@@ -831,9 +1053,10 @@ impl LayoutDomMut for ScriptedDom {
         }
         self.mutations.push(DomMutation::AttributeChanged {
             node,
-            name,
-            old_value,
+            name: name.clone(),
+            old_value: old_value.clone(),
         });
+        self.record_attribute(node, name, old_value);
     }
 
     fn remove_attribute(&mut self, node: NodeId, name: QualName) {
@@ -850,24 +1073,28 @@ impl LayoutDomMut for ScriptedDom {
         if let Some(old) = removed {
             self.mutations.push(DomMutation::AttributeChanged {
                 node,
-                name,
-                old_value: Some(old),
+                name: name.clone(),
+                old_value: Some(old.clone()),
             });
+            self.record_attribute(node, name, Some(old));
         }
     }
 
     fn set_text(&mut self, node: NodeId, data: &str) {
+        let old = self.node(node).text.clone();
         self.node_mut(node).text = Some(data.to_owned());
         self.mutations
             .push(DomMutation::CharacterDataChanged { node });
+        self.record_character_data(node, old);
     }
 
     fn set_inner_html(&mut self, node: NodeId, html: &str) {
         // Drop the current children silently — the single SubtreeReplaced covers it.
         let existing = std::mem::take(&mut self.node_mut(node).children);
+        let removed = existing.clone();
         for child in existing {
             self.node_mut(child).parent = None;
-            self.drop_subtree(child);
+            self.release_subtree(child);
         }
         // Parse via the static parser (a LayoutDom) and copy the explicitly
         // wrapped <body> children in. The wrapper keeps metadata elements such
@@ -875,14 +1102,17 @@ impl LayoutDomMut for ScriptedDom {
         // document would move leading metadata into the synthesized <head>.
         let source = format!("<!doctype html><html><body>{html}</body></html>");
         let fragment = StaticDocument::parse(&source);
+        let mut added = Vec::new();
         if let Some(body) = Self::fragment_body(&fragment) {
             let body_children: Vec<StaticNodeId> = fragment.dom_children(body).collect();
             for child in body_children {
                 let copied = self.copy_fragment_node(&fragment, child);
                 self.attach_silent(node, copied);
+                added.push(copied);
             }
         }
         self.mutations.push(DomMutation::SubtreeReplaced { node });
+        self.record_child_list(node, added, removed, None, None);
     }
 
     fn drain_mutations(&mut self, out: &mut Vec<DomMutation<NodeId>>) {
@@ -951,6 +1181,117 @@ mod tests {
         let (next_base, pending) = dom.pending_mutations();
         assert_eq!(next_base, base + 1);
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn observed_record_is_off_until_asked_and_then_spec_shaped() {
+        let mut dom = ScriptedDom::new();
+        let root = dom.document();
+        let host = dom.create_element(qual("div"));
+        dom.append_child(root, host);
+        // Off by default: the second view records nothing.
+        assert!(dom.take_observed().is_empty());
+
+        dom.set_observing(true);
+        let a = dom.create_element(qual("a"));
+        let b = dom.create_element(qual("b"));
+        dom.append_child(host, a);
+        dom.append_child(host, b);
+        dom.set_attribute(a, qual("id"), "one");
+        dom.set_attribute(a, qual("id"), "two");
+        dom.remove_child(a);
+
+        let observed = dom.take_observed();
+        assert_eq!(observed.len(), 5);
+        assert_eq!(
+            observed[0],
+            ObservedMutation::ChildList {
+                target: host,
+                added: vec![a],
+                removed: vec![],
+                previous_sibling: None,
+                next_sibling: None,
+                ancestors: vec![host, root],
+            }
+        );
+        // The second append sees `a` as its previous sibling.
+        match &observed[1] {
+            ObservedMutation::ChildList {
+                previous_sibling, ..
+            } => assert_eq!(*previous_sibling, Some(a)),
+            other => panic!("expected childList, got {other:?}"),
+        }
+        assert_eq!(
+            observed[2],
+            ObservedMutation::Attributes {
+                target: a,
+                name: qual("id"),
+                old_value: None,
+                ancestors: vec![a, host, root],
+            }
+        );
+        match &observed[3] {
+            ObservedMutation::Attributes { old_value, .. } => {
+                assert_eq!(old_value.as_deref(), Some("one"))
+            },
+            other => panic!("expected attributes, got {other:?}"),
+        }
+        assert_eq!(
+            observed[4],
+            ObservedMutation::ChildList {
+                target: host,
+                added: vec![],
+                removed: vec![a],
+                previous_sibling: None,
+                next_sibling: Some(b),
+                ancestors: vec![host, root],
+            }
+        );
+        // Taking is a drain, and Livery's own stream still carries every fact.
+        assert!(dom.take_observed().is_empty());
+        let mut layout = Vec::new();
+        dom.drain_mutations(&mut layout);
+        assert_eq!(layout.len(), 6);
+    }
+
+    #[test]
+    fn observed_inner_html_and_text_content_carry_both_sides() {
+        let mut dom = ScriptedDom::new();
+        let root = dom.document();
+        let host = dom.create_element(qual("div"));
+        dom.append_child(root, host);
+        dom.set_observing(true);
+        dom.set_inner_html(host, "<p>x</p>");
+        let observed = dom.take_observed();
+        let ObservedMutation::ChildList { added, removed, .. } = &observed[0] else {
+            panic!("expected childList");
+        };
+        assert_eq!(added.len(), 1);
+        assert!(removed.is_empty());
+        let paragraph = added[0];
+
+        dom.set_text_content(host, "plain");
+        let observed = dom.take_observed();
+        let ObservedMutation::ChildList { added, removed, .. } = &observed[0] else {
+            panic!("expected childList");
+        };
+        assert_eq!(removed, &vec![paragraph]);
+        assert_eq!(added.len(), 1);
+        // While observing, a replaced subtree is orphaned rather than freed, so
+        // the record can still hand the removed node to script.
+        assert!(dom.is_live(paragraph));
+
+        let text = added[0];
+        dom.set_text(text, "next");
+        let observed = dom.take_observed();
+        assert_eq!(
+            observed[0],
+            ObservedMutation::CharacterData {
+                target: text,
+                old_value: Some("plain".to_owned()),
+                ancestors: vec![text, host, root],
+            }
+        );
     }
 
     #[test]

@@ -179,6 +179,9 @@ pub(crate) fn install_dom_surface<E: ScriptEngine>(engine: &mut E) -> Result<(),
     engine.set_function::<DeleteRule>("__deleteRule", 2)?;
     engine.set_function::<MatchMedia>("__matchMedia", 1)?;
     engine.set_function::<EvaluateXPath>("__xpathEvaluate", 2)?;
+    engine.set_function::<mutation_observer::SetObserving>("__moObserving", 1)?;
+    engine.set_function::<mutation_observer::TakeRecords>("__moTake", 0)?;
+    engine.set_function::<mutation_observer::SetGroup>("__moGroup", 1)?;
     let html_interfaces = html_interfaces::bootstrap_script();
     engine.eval(&html_interfaces)?;
     engine.eval(DOM_BOOTSTRAP)?;
@@ -1077,6 +1080,7 @@ fn find_by_id(dom: &ScriptedDom, root: NodeId, target: &str) -> Option<NodeId> {
 
 mod html_interfaces;
 mod html_interfaces_generated;
+mod mutation_observer;
 mod query_traverse;
 mod tree;
 mod xpath_eval;

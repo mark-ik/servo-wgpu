@@ -249,14 +249,14 @@
     ensureInsertable(this, child);
     var move = prepareNodeMove(this, child);
     if (move.oldDoc !== move.newDoc) disconnectMovedRoots(move);
-    __appendChild(this.__ref, child.__ref);
+    moAppendChild(this.__ref, child.__ref);
     finalizeNodeMove(move);
     return child;
   };
   Object.defineProperty(Node.prototype, 'textContent', {
     configurable: true,
     get: function() { return __getTextContent(this.__ref); },
-    set: function(v) { __setTextContent(this.__ref, String(v)); }
+    set: function(v) { moSetTextContent(this.__ref, String(v)); }
   });
   Object.defineProperty(Node.prototype, 'parentNode', {
     configurable: true,
@@ -400,7 +400,7 @@
     if (!child || child.parentNode !== this) {
       throw new DOMException("The node to be removed is not a child of this node.", "NotFoundError");
     }
-    __removeChild(this.__ref, child.__ref);
+    moRemoveChild(this.__ref, child.__ref);
     disconnectCustomElementTree(child);
     return child;
   };
@@ -411,7 +411,7 @@
     }
     var move = prepareNodeMove(this, node);
     if (move.oldDoc !== move.newDoc) disconnectMovedRoots(move);
-    __insertBefore(this.__ref, node.__ref, ref ? ref.__ref : undefined);
+    moInsertBefore(this.__ref, node.__ref, ref ? ref.__ref : undefined);
     finalizeNodeMove(move);
     return node;
   };
@@ -446,7 +446,7 @@
     if (thisTop !== treeTopOf(node)) {
       throw new DOMException("moveBefore does not adopt: both nodes must share a root.", "HierarchyRequestError");
     }
-    __moveBefore(this.__ref, node.__ref, ref ? ref.__ref : undefined);
+    moMoveBefore(this.__ref, node.__ref, ref ? ref.__ref : undefined);
     // Custom elements: the spec fires connectedMoveCallback when defined, else
     // the disconnected + connected fallback pair. genet's registry does not
     // capture connectedMoveCallback yet (plan S4), so a connected-tree move
@@ -458,11 +458,26 @@
     return node;
   };
   Node.prototype.replaceChild = function(newChild, oldChild) {
+    if (!newChild || !newChild.__ref) {
+      throw new TypeError("replaceChild: the replacement is not a Node.");
+    }
     if (!oldChild || oldChild.parentNode !== this) {
       throw new DOMException("The node to be replaced is not a child of this node.", "NotFoundError");
     }
-    this.insertBefore(newChild, oldChild);
-    __removeChild(this.__ref, oldChild.__ref);
+    ensureInsertable(this, newChild);
+    // DOM `replace`: the reference is resolved first, the replaced child is
+    // removed and the new one inserted under one mutation record, and the new
+    // node's own removal from wherever it was is a record of its own before it.
+    var reference = oldChild.nextSibling;
+    if (reference === newChild) reference = newChild.nextSibling;
+    if (newChild.parentNode) newChild.parentNode.removeChild(newChild);
+    moBeginGroup();
+    try {
+      if (oldChild.parentNode === this) moRemoveChild(this.__ref, oldChild.__ref);
+      this.insertBefore(newChild, reference);
+    } finally {
+      moEndGroup();
+    }
     disconnectCustomElementTree(oldChild);
     return oldChild;
   };
@@ -636,7 +651,7 @@
   Object.defineProperty(CharacterData.prototype, 'data', {
     configurable: true,
     get: function() { var v = __getTextContent(this.__ref); return v === null ? '' : v; },
-    set: function(v) { __setTextContent(this.__ref, v === null ? '' : String(v)); }
+    set: function(v) { moSetTextContent(this.__ref, v === null ? '' : String(v)); }
   });
   Object.defineProperty(CharacterData.prototype, 'length', {
     configurable: true, get: function() { return this.data.length; }
@@ -724,7 +739,7 @@
     if (this.namespaceURI === 'http://www.w3.org/1999/xhtml') name = name.toLowerCase();
     var oldValue = __getAttribute(this.__ref, name);
     var newValue = String(value);
-    __setAttribute(this.__ref, name, newValue);
+    moSetAttribute(this.__ref, name, newValue);
     if (name === 'style') inlineStyleStates.delete(this);
     customElementAttributeChanged(this, name, oldValue, newValue);
   };
@@ -735,7 +750,7 @@
     set: function(value) {
       var oldChildren = this.childNodes;
       for (var i = 0; i < oldChildren.length; i++) disconnectCustomElementTree(oldChildren[i]);
-      __setInnerHtml(this.__ref, String(value));
+      moSetInnerHtml(this.__ref, String(value));
       var newChildren = this.childNodes;
       for (var j = 0; j < newChildren.length; j++) {
         upgradeCustomElementTree(newChildren[j]);
@@ -755,7 +770,7 @@
     // separately; getAttribute(qname) round-trips, which is what the tests read).
     var oldValue = __getAttribute(this.__ref, qname);
     var newValue = String(value);
-    __setAttribute(this.__ref, qname, newValue);
+    moSetAttribute(this.__ref, qname, newValue);
     if (qname === 'style') inlineStyleStates.delete(this);
     customElementAttributeChanged(this, qname, oldValue, newValue);
   };
@@ -765,7 +780,7 @@
     name = String(name);
     if (this.namespaceURI === 'http://www.w3.org/1999/xhtml') name = name.toLowerCase();
     var oldValue = __getAttribute(this.__ref, name);
-    __removeAttribute(this.__ref, name);
+    moRemoveAttribute(this.__ref, name);
     if (name === 'style') inlineStyleStates.delete(this);
     customElementAttributeChanged(this, name, oldValue, null);
   };
@@ -1783,7 +1798,7 @@
     move.newDoc = this;
     if (move.oldParent) {
       disconnectMovedRoots(move);
-      __removeChild(move.oldParent.__ref, node.__ref);
+      moRemoveChild(move.oldParent.__ref, node.__ref);
     }
     if (move.oldDoc !== move.newDoc) {
       setOwnerDocumentSnapshot(move.snapshot, move.newDoc);
@@ -2190,6 +2205,386 @@
   }
   // (Text / Comment / CharacterData exposed above, with their prototype chain.)
 
+
+  // ── MutationObserver ───────────────────────────────────────────────────────
+  //
+  // The second consumer of the arena's mutation point. The registry, the option
+  // validation, the interested-observer walk and the "notify mutation
+  // observers" microtask live here; the arena records only what JS cannot
+  // re-derive after the fact — the siblings either side of a removal, an
+  // attribute's or a character-data node's old value, and the target's ancestor
+  // chain at mutation time — and `__moTake` drains that record. Livery's
+  // `DomMutation` stream is never touched by any of this.
+  var moRegisteredIds = Object.create(null);   // raw node id -> registration count
+  var moRegistrationCount = 0;
+  var moActive = false;
+  var moNotifySet = [];
+  var moNotifyQueued = false;
+
+  function moSyncActive() {
+    var want = moRegistrationCount > 0;
+    if (want === moActive) return;
+    moActive = want;
+    __moObserving(want ? '1' : '0');
+  }
+
+  function moKey(node) { return __nodeRawId(node.__ref); }
+
+  function moAddRegistration(node, reg) {
+    if (!node.__moRegs) node.__moRegs = [];
+    node.__moRegs.push(reg);
+    var key = moKey(node);
+    moRegisteredIds[key] = (moRegisteredIds[key] || 0) + 1;
+    moRegistrationCount++;
+    moSyncActive();
+    if (reg.observer.__nodes.indexOf(node) < 0) reg.observer.__nodes.push(node);
+  }
+
+  // Drop this node's registrations matching `pred`, keeping the id census and
+  // the active switch in step.
+  function moRemoveRegs(node, pred) {
+    var regs = node.__moRegs;
+    if (!regs || !regs.length) return;
+    var kept = [];
+    for (var i = 0; i < regs.length; i++) {
+      if (pred(regs[i])) {
+        var key = moKey(node);
+        moRegisteredIds[key]--;
+        if (!moRegisteredIds[key]) delete moRegisteredIds[key];
+        moRegistrationCount--;
+      } else {
+        kept.push(regs[i]);
+      }
+    }
+    node.__moRegs = kept;
+    moSyncActive();
+  }
+
+  function moUnescape(v) {
+    if (!v || v.indexOf('\\') < 0) return v;
+    var out = '';
+    for (var i = 0; i < v.length; i++) {
+      var c = v.charAt(i);
+      if (c !== '\\') { out += c; continue; }
+      var n = v.charAt(++i);
+      out += n === 'n' ? '\n' : n === 'r' ? '\r' : n === 't' ? '\t' : n === '\\' ? '\\' : n;
+    }
+    return out;
+  }
+
+  function moNodeById(id) { return id ? wrapNode(__reflectNode(id)) : null; }
+  function moNodesById(csv) {
+    var out = [];
+    if (!csv) return out;
+    var parts = csv.split(',');
+    for (var i = 0; i < parts.length; i++) {
+      var n = moNodeById(parts[i]);
+      if (n) out.push(n);
+    }
+    return out;
+  }
+
+  function MutationRecord() { throw new TypeError('Illegal constructor'); }
+  MutationRecord.prototype = Object.create(Object.prototype);
+  Object.defineProperty(MutationRecord.prototype, 'constructor', {
+    configurable: true, writable: true, value: MutationRecord
+  });
+  globalThis.MutationRecord = MutationRecord;
+
+  function moMakeRecord(type, target, fields) {
+    var r = Object.create(MutationRecord.prototype);
+    var added = fields.added || [];
+    var removed = fields.removed || [];
+    r.type = type;
+    r.target = target;
+    r.addedNodes = makeCollection(function() { return added; }, false);
+    r.removedNodes = makeCollection(function() { return removed; }, false);
+    r.previousSibling = fields.previousSibling || null;
+    r.nextSibling = fields.nextSibling || null;
+    r.attributeName = fields.attributeName === undefined ? null : fields.attributeName;
+    r.attributeNamespace = fields.attributeNamespace === undefined ? null : fields.attributeNamespace;
+    r.oldValue = fields.oldValue === undefined ? null : fields.oldValue;
+    return r;
+  }
+
+  // DOM "queue a mutation record", walking the target's inclusive ancestors as
+  // they stood when the mutation happened.
+  function moQueueRecord(type, targetId, chainCsv, fields, oldValue) {
+    var chain = chainCsv ? chainCsv.split(',') : [];
+    var interested = [];
+    for (var i = 0; i < chain.length; i++) {
+      var id = chain[i];
+      if (!moRegisteredIds[id]) continue;
+      var node = moNodeById(id);
+      if (!node || !node.__moRegs) continue;
+      var regs = node.__moRegs.slice();
+      for (var j = 0; j < regs.length; j++) {
+        var o = regs[j].options;
+        if (id !== targetId && !o.subtree) continue;
+        if (type === 'attributes' && !o.attributes) continue;
+        if (type === 'attributes' && o.attributeFilter &&
+            (fields.attributeNamespace !== null ||
+             o.attributeFilter.indexOf(fields.attributeName) < 0)) continue;
+        if (type === 'characterData' && !o.characterData) continue;
+        if (type === 'childList' && !o.childList) continue;
+        var wants = (type === 'attributes' && o.attributeOldValue) ||
+                    (type === 'characterData' && o.characterDataOldValue);
+        var slot = null;
+        for (var k = 0; k < interested.length; k++) {
+          if (interested[k][0] === regs[j].observer) { slot = interested[k]; break; }
+        }
+        if (!slot) { slot = [regs[j].observer, false]; interested.push(slot); }
+        if (wants) slot[1] = true;
+      }
+    }
+    if (!interested.length) return;
+    var target = moNodeById(targetId);
+    if (!target) return;
+    for (var m = 0; m < interested.length; m++) {
+      fields.oldValue = interested[m][1] ? oldValue : null;
+      moEnqueue(interested[m][0], moMakeRecord(type, target, fields));
+    }
+  }
+
+  // A removed subtree keeps its ancestors' subtree observers until the next
+  // delivery ("transient registered observer").
+  function moAddTransient(removed, chainCsv) {
+    if (!removed.length) return;
+    var chain = chainCsv ? chainCsv.split(',') : [];
+    var sources = [];
+    for (var i = 0; i < chain.length; i++) {
+      if (!moRegisteredIds[chain[i]]) continue;
+      var n = moNodeById(chain[i]);
+      if (!n || !n.__moRegs) continue;
+      for (var j = 0; j < n.__moRegs.length; j++) {
+        if (n.__moRegs[j].options.subtree) sources.push(n.__moRegs[j]);
+      }
+    }
+    if (!sources.length) return;
+    for (var r = 0; r < removed.length; r++) {
+      var node = removed[r];
+      for (var s = 0; s < sources.length; s++) {
+        var dup = false;
+        var have = node.__moRegs || [];
+        for (var h = 0; h < have.length; h++) {
+          if (have[h].source === sources[s]) { dup = true; break; }
+        }
+        if (dup) continue;
+        moAddRegistration(node, {
+          observer: sources[s].observer,
+          options: sources[s].options,
+          transient: true,
+          source: sources[s]
+        });
+      }
+    }
+  }
+
+  // Drain the arena's record and attribute it to the observers registered now.
+  // Called at the head of each microtask checkpoint and at every entry point
+  // that can change the registry (`observe`, `takeRecords`, `disconnect`), so
+  // "now" is always the registry as it stood when the mutation happened.
+  function moFlush() {
+    if (!moActive) return;
+    var blob = __moTake();
+    if (!blob) return;
+    var lines = blob.split('\n');
+    for (var i = 0; i < lines.length; i++) {
+      var f = lines[i].split('\t');
+      if (f[0] === 'C') {
+        var removed = moNodesById(f[5]);
+        moQueueRecord('childList', f[1], f[6], {
+          added: moNodesById(f[4]),
+          removed: removed,
+          previousSibling: moNodeById(f[2]),
+          nextSibling: moNodeById(f[3])
+        }, null);
+        moAddTransient(removed, f[6]);
+      } else if (f[0] === 'A') {
+        moQueueRecord('attributes', f[1], f[6], {
+          attributeName: moUnescape(f[2]),
+          attributeNamespace: f[3] ? moUnescape(f[3]) : null
+        }, f[4] === '1' ? moUnescape(f[5]) : null);
+      } else if (f[0] === 'D') {
+        moQueueRecord('characterData', f[1], f[4], {},
+          f[2] === '1' ? moUnescape(f[3]) : null);
+      }
+    }
+  }
+
+  function moEnqueue(observer, record) {
+    observer.__queue.push(record);
+    if (moNotifySet.indexOf(observer) < 0) moNotifySet.push(observer);
+    if (moNotifyQueued) return;
+    moNotifyQueued = true;
+    Promise.resolve().then(moNotify);
+  }
+
+  // HTML "notify mutation observers": one compound microtask, observers in the
+  // order their first record was queued.
+  function moNotify() {
+    moNotifyQueued = false;
+    moFlush();
+    var list = moNotifySet;
+    moNotifySet = [];
+    for (var i = 0; i < list.length; i++) {
+      var ob = list[i];
+      var records = ob.__queue;
+      ob.__queue = [];
+      moDropTransients(ob, null);
+      if (!records.length) continue;
+      try {
+        ob.__cb.call(ob, records, ob);
+      } catch (e) {
+        if (typeof globalThis.reportError === 'function') globalThis.reportError(e);
+      }
+    }
+    // A callback that mutated the DOM queues its own delivery, still inside
+    // this checkpoint's microtask drain.
+    moFlush();
+  }
+
+  // Drop this observer's transient registrations — all of them, or only those
+  // sourced from one registration when `source` is given.
+  function moDropTransients(observer, source) {
+    var nodes = observer.__nodes.slice();
+    for (var i = 0; i < nodes.length; i++) {
+      moRemoveRegs(nodes[i], function(reg) {
+        return reg.transient && reg.observer === observer &&
+               (source === null || reg.source === source);
+      });
+    }
+    moPruneNodes(observer);
+  }
+
+  function moPruneNodes(observer) {
+    var kept = [];
+    for (var i = 0; i < observer.__nodes.length; i++) {
+      var node = observer.__nodes[i];
+      var regs = node.__moRegs || [];
+      for (var j = 0; j < regs.length; j++) {
+        if (regs[j].observer === observer) { kept.push(node); break; }
+      }
+    }
+    observer.__nodes = kept;
+  }
+
+  function MutationObserver(callback) {
+    if (!(this instanceof MutationObserver)) {
+      throw new TypeError("Constructor MutationObserver requires 'new'");
+    }
+    if (typeof callback !== 'function') {
+      throw new TypeError('MutationObserver: callback is not a function');
+    }
+    this.__cb = callback;
+    this.__queue = [];
+    this.__nodes = [];
+  }
+
+  MutationObserver.prototype.observe = function(target, options) {
+    if (!target || !target.__ref) {
+      throw new TypeError('MutationObserver.observe: target is not a Node');
+    }
+    var src = options === undefined || options === null ? {} : options;
+    var o = {
+      childList: !!src.childList,
+      subtree: !!src.subtree,
+      attributes: src.attributes,
+      characterData: src.characterData,
+      attributeOldValue: !!src.attributeOldValue,
+      characterDataOldValue: !!src.characterDataOldValue,
+      attributeFilter: src.attributeFilter
+    };
+    // Spec defaulting: an attribute/character-data qualifier implies its flag
+    // unless the caller stated the flag itself.
+    if (('attributeOldValue' in src || 'attributeFilter' in src) && !('attributes' in src)) {
+      o.attributes = true;
+    }
+    if ('characterDataOldValue' in src && !('characterData' in src)) o.characterData = true;
+    o.attributes = !!o.attributes;
+    o.characterData = !!o.characterData;
+    if (o.attributeFilter === undefined || o.attributeFilter === null) {
+      o.attributeFilter = null;
+    } else {
+      var filter = [];
+      for (var i = 0; i < o.attributeFilter.length; i++) filter.push(String(o.attributeFilter[i]));
+      o.attributeFilter = filter;
+    }
+    if (o.attributeOldValue && !o.attributes) {
+      throw new TypeError('MutationObserver.observe: attributeOldValue without attributes');
+    }
+    if (o.attributeFilter && !o.attributes) {
+      throw new TypeError('MutationObserver.observe: attributeFilter without attributes');
+    }
+    if (o.characterDataOldValue && !o.characterData) {
+      throw new TypeError('MutationObserver.observe: characterDataOldValue without characterData');
+    }
+    if (!o.childList && !o.attributes && !o.characterData) {
+      throw new TypeError('MutationObserver.observe: childList, attributes or characterData is required');
+    }
+    // Mutations from before this registration are not ours.
+    moFlush();
+    var regs = target.__moRegs || [];
+    var existing = null;
+    for (var r = 0; r < regs.length; r++) {
+      if (regs[r].observer === this && !regs[r].transient) { existing = regs[r]; break; }
+    }
+    if (existing) {
+      moDropTransients(this, existing);
+      existing.options = o;
+      if (this.__nodes.indexOf(target) < 0) this.__nodes.push(target);
+    } else {
+      moAddRegistration(target, { observer: this, options: o, transient: false, source: null });
+    }
+  };
+
+  MutationObserver.prototype.disconnect = function() {
+    moFlush();
+    var self = this;
+    var nodes = this.__nodes.slice();
+    for (var i = 0; i < nodes.length; i++) {
+      moRemoveRegs(nodes[i], function(reg) { return reg.observer === self; });
+    }
+    this.__nodes = [];
+    this.__queue = [];
+  };
+
+  MutationObserver.prototype.takeRecords = function() {
+    moFlush();
+    var records = this.__queue;
+    this.__queue = [];
+    return records;
+  };
+
+  setClassString(MutationObserver.prototype, 'MutationObserver');
+  setClassString(MutationRecord.prototype, 'MutationRecord');
+  globalThis.MutationObserver = MutationObserver;
+
+  // Every DOM mutation the bootstrap performs goes through one of these, so
+  // this is where the arena's record is attributed: at mutation time, which is
+  // when the spec queues a mutation record and schedules the notify microtask.
+  // Neither backend allows interposing on the natives themselves (Nova's
+  // globals are non-writable), so the funnel is these twelve call sites.
+  var moGroupDepth = 0;
+  function moAfterMutation() { if (moActive && !moGroupDepth) moFlush(); }
+  function moBeginGroup() { if (moGroupDepth++ === 0) __moGroup('1'); }
+  function moEndGroup() {
+    if (--moGroupDepth === 0) { __moGroup('0'); moAfterMutation(); }
+  }
+  function moAppendChild(p, c) { __appendChild(p, c); moAfterMutation(); }
+  function moInsertBefore(p, n, r) { __insertBefore(p, n, r); moAfterMutation(); }
+  function moMoveBefore(p, n, r) { __moveBefore(p, n, r); moAfterMutation(); }
+  function moRemoveChild(p, c) { __removeChild(p, c); moAfterMutation(); }
+  function moSetAttribute(e, n, v) { __setAttribute(e, n, v); moAfterMutation(); }
+  function moRemoveAttribute(e, n) { __removeAttribute(e, n); moAfterMutation(); }
+  function moSetTextContent(n, t) { __setTextContent(n, t); moAfterMutation(); }
+  function moSetInnerHtml(n, h) { __setInnerHtml(n, h); moAfterMutation(); }
+
+  // The runtime calls this at the head of every microtask checkpoint while any
+  // observer is registered, which is what turns the arena's pending record into
+  // queued records and schedules the notify microtask the checkpoint then runs.
+  globalThis.__moPump = function() { moFlush(); };
+
   installHtmlInterfaceTable();
   installShapeInterfaces();
   installTraversal();
@@ -2298,16 +2693,46 @@
   });
   DOMTokenList.prototype.item = function(i) { var t = this._toks(); i = i >>> 0; return i < t.length ? t[i] : null; };
   DOMTokenList.prototype.contains = function(tok) { return this._toks().indexOf(String(tok)) !== -1; };
-  DOMTokenList.prototype.add = function() { var t = this._toks(); for (var i = 0; i < arguments.length; i++) { if (t.indexOf(String(arguments[i])) === -1) t.push(String(arguments[i])); } this._write(t); };
-  DOMTokenList.prototype.remove = function() { var t = this._toks(); for (var i = 0; i < arguments.length; i++) { var x = t.indexOf(String(arguments[i])); if (x !== -1) t.splice(x, 1); } this._write(t); };
+  // Every token is validated before anything is written, so a bad token in a
+  // multi-token call leaves the attribute — and the mutation record — untouched.
+  var TOKEN_WHITESPACE = String.fromCharCode(32, 9, 10, 12, 13);
+  function tokenHasWhitespace(tok) {
+    for (var i = 0; i < tok.length; i++) {
+      if (TOKEN_WHITESPACE.indexOf(tok.charAt(i)) !== -1) return true;
+    }
+    return false;
+  }
+  function tokenListValidate(args) {
+    var out = [];
+    for (var i = 0; i < args.length; i++) {
+      var tok = String(args[i]);
+      if (tok === '') throw new DOMException('The token provided must not be empty.', 'SyntaxError');
+      if (tokenHasWhitespace(tok)) {
+        throw new DOMException("The token '" + tok + "' contains whitespace.", 'InvalidCharacterError');
+      }
+      out.push(tok);
+    }
+    return out;
+  }
+  DOMTokenList.prototype.add = function() {
+    var toks = tokenListValidate(arguments); var t = this._toks();
+    for (var i = 0; i < toks.length; i++) { if (t.indexOf(toks[i]) === -1) t.push(toks[i]); }
+    this._write(t);
+  };
+  DOMTokenList.prototype.remove = function() {
+    var toks = tokenListValidate(arguments); var t = this._toks();
+    for (var i = 0; i < toks.length; i++) { var x = t.indexOf(toks[i]); if (x !== -1) t.splice(x, 1); }
+    this._write(t);
+  };
   DOMTokenList.prototype.toggle = function(tok, force) {
-    tok = String(tok); var t = this._toks(); var has = t.indexOf(tok) !== -1;
+    tok = tokenListValidate([tok])[0]; var t = this._toks(); var has = t.indexOf(tok) !== -1;
     if (force === true || (force === undefined && !has)) { if (!has) { t.push(tok); this._write(t); } return true; }
     if (has) { t.splice(t.indexOf(tok), 1); this._write(t); }
     return false;
   };
   DOMTokenList.prototype.replace = function(oldT, newT) {
-    oldT = String(oldT); newT = String(newT); var t = this._toks(); var i = t.indexOf(oldT);
+    var toks = tokenListValidate([oldT, newT]);
+    oldT = toks[0]; newT = toks[1]; var t = this._toks(); var i = t.indexOf(oldT);
     if (i === -1) return false;
     if (t.indexOf(newT) !== -1 && newT !== oldT) { t.splice(i, 1); } else { t[i] = newT; }
     this._write(t); return true;
