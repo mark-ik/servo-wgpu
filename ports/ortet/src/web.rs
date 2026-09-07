@@ -10,7 +10,8 @@
 //! `RenderCore`, and connects DOM input to the same retained Livery session
 //! path that the native host uses. It intentionally has no winit, AccessKit,
 //! Cambium, or Mere dependency: browser ownership stops at the canvas and DOM
-//! events.
+//! events. Fetches in an older navigation are ignored when a newer generation
+//! wins; aborting their browser requests is a separate follow-up.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -19,32 +20,77 @@ use document_session_api::session_engine::{
     DocumentSession, SessionButtonState, SessionEffect, SessionEngine, SessionInput, SessionKey,
     SessionModifiers, SessionPointerButton, SessionScrollKey, SessionSpawnRequest,
 };
-use genet_documents::{LiverySessionEngine, LocalFetcher};
+use genet_document_resources::ResourceLimits;
+use genet_documents::{LiveryResourcePreparation, LiverySessionEngine, LocalFetcher};
 use genet_host_api::navigation::resolve_href;
+use genet_host_api::{ResourceFetchPolicy, ResourceResponse};
 use genet_render_host::{RenderCore, WindowSurface};
 use netrender::{ColorLoad, ExternalTexturePlacement, NetrenderOptions, Scene};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
-use web_sys::{Event, EventTarget, HtmlCanvasElement, KeyboardEvent, PointerEvent, WheelEvent};
+use wasm_bindgen_futures::{JsFuture, spawn_local};
+use web_sys::{
+    Event, EventTarget, HtmlCanvasElement, KeyboardEvent, PointerEvent, Response, WheelEvent,
+};
 
-/// Mount Ortet on `canvas` and open `address` through its local `data:` fetch
-/// seam. A browser transport is deliberately not smuggled through the
-/// synchronous engine fetch trait; callers can pass a `data:text/html,...`
-/// document, which is also the headed receipt fixture. `file:` is not a web
-/// capability and http(s) remains an explicit future browser-fetch adapter.
+/// Browser-host bounds for one navigation.  The defaults retain the shared
+/// host response cap and make the aggregate/resource caps explicit here.
+#[wasm_bindgen]
+#[derive(Clone, Copy)]
+pub struct BrowserResourceLimits {
+    max_response_bytes: u32,
+    max_total_bytes: u32,
+    max_resources: u32,
+}
+
+impl Default for BrowserResourceLimits {
+    fn default() -> Self {
+        let policy = ResourceFetchPolicy::default();
+        Self {
+            max_response_bytes: policy.max_response_bytes.min(u32::MAX as usize) as u32,
+            max_total_bytes: policy
+                .max_response_bytes
+                .saturating_mul(4)
+                .min(u32::MAX as usize) as u32,
+            max_resources: 64,
+        }
+    }
+}
+
+#[wasm_bindgen]
+impl BrowserResourceLimits {
+    #[wasm_bindgen(constructor)]
+    pub fn new(max_response_bytes: u32, max_total_bytes: u32, max_resources: u32) -> Self {
+        Self {
+            max_response_bytes,
+            max_total_bytes,
+            max_resources,
+        }
+    }
+}
+
+/// Mount Ortet on `canvas` and open `address`. Browser fetch and asynchronous
+/// scheduling remain in this host; the document engine receives only immutable
+/// response snapshots through its existing synchronous resource seam.
 #[wasm_bindgen]
 pub async fn start(canvas: HtmlCanvasElement, address: String) -> Result<(), JsValue> {
+    start_with_limits(canvas, address, BrowserResourceLimits::default()).await
+}
+
+/// Mount Ortet with host-selected acquisition bounds.
+#[wasm_bindgen]
+pub async fn start_with_limits(
+    canvas: HtmlCanvasElement,
+    address: String,
+    limits: BrowserResourceLimits,
+) -> Result<(), JsValue> {
     let (layout_width, layout_height, scale, physical_width, physical_height) =
         canvas_size(&canvas)?;
     canvas.set_width(physical_width);
     canvas.set_height(physical_height);
     canvas.set_tab_index(0);
-    let engine = LiverySessionEngine::new(LocalFetcher);
-    let request = SessionSpawnRequest::new(&address).with_viewport(layout_width, layout_height);
-    let session = engine
-        .spawn(&request)
-        .map_err(|error| JsValue::from_str(&format!("could not open {address}: {error}")))?;
+    let loaded = load_session(&address, layout_width, layout_height, limits).await?;
     let options = NetrenderOptions {
         tile_cache_size: Some(64),
         enable_vello: true,
@@ -65,9 +111,8 @@ pub async fn start(canvas: HtmlCanvasElement, address: String) -> Result<(), JsV
         canvas: canvas.clone(),
         core,
         surface,
-        engine,
-        address,
-        session,
+        address: loaded.navigation_address,
+        session: loaded.session,
         layout_width,
         layout_height,
         scale,
@@ -76,6 +121,9 @@ pub async fn start(canvas: HtmlCanvasElement, address: String) -> Result<(), JsV
         cursor: (0.0, 0.0),
         modifiers: SessionModifiers::default(),
         pointer_capture_id: None,
+        browser_limits: limits,
+        navigation_generation: 0,
+        pending_navigation: None,
     }));
     host.borrow_mut().render();
     install_dom_events(&host)?;
@@ -86,7 +134,6 @@ struct WebOrtet {
     canvas: HtmlCanvasElement,
     core: RenderCore,
     surface: WindowSurface,
-    engine: LiverySessionEngine<LocalFetcher>,
     address: String,
     session: Box<dyn DocumentSession<Scene>>,
     layout_width: u32,
@@ -97,6 +144,14 @@ struct WebOrtet {
     cursor: (f32, f32),
     modifiers: SessionModifiers,
     pointer_capture_id: Option<i32>,
+    browser_limits: BrowserResourceLimits,
+    navigation_generation: u64,
+    pending_navigation: Option<String>,
+}
+
+struct LoadedSession {
+    session: Box<dyn DocumentSession<Scene>>,
+    navigation_address: String,
 }
 
 impl WebOrtet {
@@ -155,7 +210,9 @@ impl WebOrtet {
         let result = self.session.input(input);
         let capture = result.capture;
         match result.effect {
-            SessionEffect::Navigate(target) => self.navigate(&target),
+            SessionEffect::Navigate(target) => {
+                self.pending_navigation = Some(resolve_href(&self.address, &target));
+            },
             SessionEffect::Submit(submission) => {
                 web_sys::console::warn_1(
                     &format!(
@@ -190,25 +247,6 @@ impl WebOrtet {
         }
     }
 
-    fn navigate(&mut self, target: &str) {
-        let address = resolve_href(&self.address, target);
-        if address == self.address {
-            return;
-        }
-        let request =
-            SessionSpawnRequest::new(&address).with_viewport(self.layout_width, self.layout_height);
-        match self.engine.spawn(&request) {
-            Ok(session) => {
-                self.session = session;
-                self.address = address;
-                self.render();
-            },
-            Err(error) => web_sys::console::warn_1(
-                &format!("[ortet] could not open {address}: {error}").into(),
-            ),
-        }
-    }
-
     fn pointer_position(&self, event: &PointerEvent) -> (f32, f32) {
         let rect = self.canvas.get_bounding_client_rect();
         let width = rect.width().max(1.0);
@@ -222,6 +260,203 @@ impl WebOrtet {
     }
 }
 
+fn launch_pending_navigation(host: &Rc<RefCell<WebOrtet>>) {
+    let Some((generation, address, width, height, limits)) = (|| {
+        let mut host = host.borrow_mut();
+        let address = host.pending_navigation.take()?;
+        if address == host.address {
+            return None;
+        }
+        host.navigation_generation = host.navigation_generation.wrapping_add(1);
+        Some((
+            host.navigation_generation,
+            address,
+            host.layout_width,
+            host.layout_height,
+            host.browser_limits,
+        ))
+    })() else {
+        return;
+    };
+    let host = host.clone();
+    spawn_local(async move {
+        match load_session(&address, width, height, limits).await {
+            Ok(loaded) => {
+                let mut host = host.borrow_mut();
+                if host.navigation_generation != generation {
+                    return;
+                }
+                host.session = loaded.session;
+                host.address = loaded.navigation_address;
+                host.render();
+            },
+            Err(error) => {
+                if host.borrow().navigation_generation == generation {
+                    web_sys::console::warn_1(
+                        &format!("[ortet] could not open {address}: {error:?}").into(),
+                    );
+                }
+            },
+        }
+    });
+}
+
+async fn load_session(
+    address: &str,
+    width: u32,
+    height: u32,
+    limits: BrowserResourceLimits,
+) -> Result<LoadedSession, JsValue> {
+    let request = SessionSpawnRequest::new(address).with_viewport(width, height);
+    let engine = LiverySessionEngine::new(LocalFetcher);
+    if !is_remote_http(address) {
+        let session = engine
+            .spawn(&request)
+            .map_err(|error| JsValue::from_str(&format!("could not open {address}: {error}")))?;
+        return Ok(LoadedSession {
+            session,
+            navigation_address: address.to_owned(),
+        });
+    }
+    let mut total_bytes = 0usize;
+    if limits.max_resources == 0 {
+        return Err(JsValue::from_str("browser resource count limit exceeded"));
+    }
+    let source_response = fetch_browser_response(address, &limits, &mut total_bytes).await?;
+    let navigation_address = redirected_navigation_address(address, &source_response.final_url);
+    let mut staged =
+        LiveryResourcePreparation::new(&request, source_response, ResourceLimits::default());
+    let mut resources = 1usize;
+    loop {
+        let pending = staged.pending_requests();
+        if pending.is_empty() {
+            break;
+        }
+        for request in pending {
+            resources = resources.saturating_add(1);
+            if resources > limits.max_resources as usize {
+                return Err(JsValue::from_str("browser resource count limit exceeded"));
+            }
+            match fetch_browser_response(&request.url, &limits, &mut total_bytes).await {
+                Ok(response) => staged
+                    .provide_response(request, response)
+                    .map_err(|error| JsValue::from_str(&format!("invalid provision: {error:?}")))?,
+                Err(_) => {
+                    staged.provide_unavailable(request).map_err(|error| {
+                        JsValue::from_str(&format!("invalid provision: {error:?}"))
+                    })?;
+                },
+            }
+        }
+    }
+    let session = engine
+        .spawn_prepared(&request, staged)
+        .map_err(|error| JsValue::from_str(&format!("could not open {address}: {error}")))?;
+    Ok(LoadedSession {
+        session,
+        navigation_address,
+    })
+}
+
+async fn fetch_browser_response(
+    url: &str,
+    limits: &BrowserResourceLimits,
+    total_bytes: &mut usize,
+) -> Result<ResourceResponse, JsValue> {
+    let window =
+        web_sys::window().ok_or_else(|| JsValue::from_str("browser window is unavailable"))?;
+    let response = JsFuture::from(window.fetch_with_str(url))
+        .await?
+        .dyn_into::<Response>()?;
+    if !response.ok() {
+        return Err(JsValue::from_str(&format!(
+            "HTTP status {}",
+            response.status()
+        )));
+    }
+    if response
+        .headers()
+        .get("content-length")?
+        .and_then(|length| length.parse::<usize>().ok())
+        .is_some_and(|length| length > limits.max_response_bytes as usize)
+    {
+        return Err(JsValue::from_str("browser response byte limit exceeded"));
+    }
+    let final_url = if response.url().is_empty() {
+        url.to_owned()
+    } else {
+        response.url()
+    };
+    let content_type = response.headers().get("content-type")?;
+    let body = response
+        .body()
+        .ok_or_else(|| JsValue::from_str("browser response body is unavailable"))?;
+    let reader = body
+        .get_reader()
+        .dyn_into::<web_sys::ReadableStreamDefaultReader>()?;
+    let mut bytes = Vec::new();
+    loop {
+        let read = JsFuture::from(reader.read()).await?;
+        if js_sys::Reflect::get(&read, &JsValue::from_str("done"))?
+            .as_bool()
+            .unwrap_or(false)
+        {
+            break;
+        }
+        let chunk =
+            js_sys::Uint8Array::new(&js_sys::Reflect::get(&read, &JsValue::from_str("value"))?);
+        let length = chunk.length() as usize;
+        if bytes.len().saturating_add(length) > limits.max_response_bytes as usize
+            || total_bytes.saturating_add(length) > limits.max_total_bytes as usize
+        {
+            let _ = reader.cancel();
+            return Err(JsValue::from_str("browser response byte limit exceeded"));
+        }
+        bytes.extend_from_slice(&chunk.to_vec());
+        *total_bytes += length;
+    }
+    Ok(ResourceResponse {
+        final_url,
+        content_type,
+        bytes,
+    })
+}
+
+fn is_remote_http(address: &str) -> bool {
+    address.split_once(':').is_some_and(|(scheme, _)| {
+        scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
+    })
+}
+
+/// Keep an explicitly requested fragment while replacing the transport base
+/// with the redirect-final document identity.
+fn redirected_navigation_address(requested: &str, final_url: &str) -> String {
+    let final_base = final_url
+        .split_once('#')
+        .map_or(final_url, |(base, _)| base);
+    requested.split_once('#').map_or_else(
+        || final_base.to_owned(),
+        |(_, fragment)| format!("{final_base}#{fragment}"),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_remote_http, redirected_navigation_address};
+
+    #[test]
+    fn redirected_navigation_uses_final_base_and_requested_fragment() {
+        assert_eq!(
+            redirected_navigation_address(
+                "HTTPS://example.test/start#proof",
+                "https://cdn.example.test/final/index.html",
+            ),
+            "https://cdn.example.test/final/index.html#proof"
+        );
+        assert!(is_remote_http("HTTPS://example.test/start"));
+    }
+}
+
 fn install_dom_events(host: &Rc<RefCell<WebOrtet>>) -> Result<(), JsValue> {
     let canvas = host.borrow().canvas.clone();
     let target: &EventTarget = canvas.unchecked_ref();
@@ -232,12 +467,15 @@ fn install_dom_events(host: &Rc<RefCell<WebOrtet>>) -> Result<(), JsValue> {
             let Some(event) = event.dyn_ref::<PointerEvent>() else {
                 return;
             };
-            let mut host = host.borrow_mut();
-            host.cursor = host.pointer_position(event);
-            let (x, y) = host.cursor;
-            host.modifiers = modifiers_from_pointer(event);
-            let modifiers = host.modifiers;
-            host.dispatch_input(SessionInput::PointerMoved { x, y, modifiers });
+            {
+                let mut state = host.borrow_mut();
+                state.cursor = state.pointer_position(event);
+                let (x, y) = state.cursor;
+                state.modifiers = modifiers_from_pointer(event);
+                let modifiers = state.modifiers;
+                state.dispatch_input(SessionInput::PointerMoved { x, y, modifiers });
+            }
+            launch_pending_navigation(&host);
         }
     })?;
     listen(target, "pointerdown", {
@@ -247,21 +485,24 @@ fn install_dom_events(host: &Rc<RefCell<WebOrtet>>) -> Result<(), JsValue> {
                 return;
             };
             let _ = host.borrow().canvas.focus();
-            let mut host = host.borrow_mut();
-            host.cursor = host.pointer_position(event);
-            let (x, y) = host.cursor;
-            host.modifiers = modifiers_from_pointer(event);
-            let modifiers = host.modifiers;
-            if host.dispatch_input(SessionInput::PointerButton {
-                x,
-                y,
-                button: pointer_button(event.button()),
-                state: SessionButtonState::Pressed,
-                modifiers,
-            }) == Some(true)
             {
-                host.capture_pointer(event.pointer_id());
+                let mut state = host.borrow_mut();
+                state.cursor = state.pointer_position(event);
+                let (x, y) = state.cursor;
+                state.modifiers = modifiers_from_pointer(event);
+                let modifiers = state.modifiers;
+                if state.dispatch_input(SessionInput::PointerButton {
+                    x,
+                    y,
+                    button: pointer_button(event.button()),
+                    state: SessionButtonState::Pressed,
+                    modifiers,
+                }) == Some(true)
+                {
+                    state.capture_pointer(event.pointer_id());
+                }
             }
+            launch_pending_navigation(&host);
         }
     })?;
     listen(target, "pointerup", {
@@ -270,19 +511,22 @@ fn install_dom_events(host: &Rc<RefCell<WebOrtet>>) -> Result<(), JsValue> {
             let Some(event) = event.dyn_ref::<PointerEvent>() else {
                 return;
             };
-            let mut host = host.borrow_mut();
-            host.cursor = host.pointer_position(event);
-            let (x, y) = host.cursor;
-            host.modifiers = modifiers_from_pointer(event);
-            let modifiers = host.modifiers;
-            host.dispatch_input(SessionInput::PointerButton {
-                x,
-                y,
-                button: pointer_button(event.button()),
-                state: SessionButtonState::Released,
-                modifiers,
-            });
-            host.release_pointer(event.pointer_id());
+            {
+                let mut state = host.borrow_mut();
+                state.cursor = state.pointer_position(event);
+                let (x, y) = state.cursor;
+                state.modifiers = modifiers_from_pointer(event);
+                let modifiers = state.modifiers;
+                state.dispatch_input(SessionInput::PointerButton {
+                    x,
+                    y,
+                    button: pointer_button(event.button()),
+                    state: SessionButtonState::Released,
+                    modifiers,
+                });
+                state.release_pointer(event.pointer_id());
+            }
+            launch_pending_navigation(&host);
         }
     })?;
     listen(target, "pointercancel", {
@@ -322,23 +566,26 @@ fn install_dom_events(host: &Rc<RefCell<WebOrtet>>) -> Result<(), JsValue> {
             let Some(event) = event.dyn_ref::<KeyboardEvent>() else {
                 return;
             };
-            let mut host = host.borrow_mut();
-            host.modifiers = modifiers_from_key(event);
-            let modifiers = host.modifiers;
-            let key = session_key(event.key());
-            let scroll = scroll_key(&key, modifiers.shift);
-            host.dispatch_input(SessionInput::Key {
-                key,
-                state: SessionButtonState::Pressed,
-                modifiers,
-                repeat: event.repeat(),
-            });
-            if let Some(scroll) = scroll
-                && host.session.scroll_for_key(scroll)
             {
-                event.prevent_default();
-                host.render();
+                let mut state = host.borrow_mut();
+                state.modifiers = modifiers_from_key(event);
+                let modifiers = state.modifiers;
+                let key = session_key(event.key());
+                let scroll = scroll_key(&key, modifiers.shift);
+                state.dispatch_input(SessionInput::Key {
+                    key,
+                    state: SessionButtonState::Pressed,
+                    modifiers,
+                    repeat: event.repeat(),
+                });
+                if let Some(scroll) = scroll
+                    && state.session.scroll_for_key(scroll)
+                {
+                    event.prevent_default();
+                    state.render();
+                }
             }
+            launch_pending_navigation(&host);
         }
     })?;
     listen(target, "keyup", {
@@ -347,15 +594,18 @@ fn install_dom_events(host: &Rc<RefCell<WebOrtet>>) -> Result<(), JsValue> {
             let Some(event) = event.dyn_ref::<KeyboardEvent>() else {
                 return;
             };
-            let mut host = host.borrow_mut();
-            host.modifiers = modifiers_from_key(event);
-            let modifiers = host.modifiers;
-            host.dispatch_input(SessionInput::Key {
-                key: session_key(event.key()),
-                state: SessionButtonState::Released,
-                modifiers,
-                repeat: false,
-            });
+            {
+                let mut state = host.borrow_mut();
+                state.modifiers = modifiers_from_key(event);
+                let modifiers = state.modifiers;
+                state.dispatch_input(SessionInput::Key {
+                    key: session_key(event.key()),
+                    state: SessionButtonState::Released,
+                    modifiers,
+                    repeat: false,
+                });
+            }
+            launch_pending_navigation(&host);
         }
     })?;
     listen(target, "focus", {

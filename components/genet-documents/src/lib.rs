@@ -30,7 +30,7 @@ pub use genet_scripted::{
 pub mod engines;
 
 #[cfg(feature = "livery")]
-pub use engines::{LiveryDocumentSession, LiverySessionEngine};
+pub use engines::{LiveryDocumentSession, LiveryResourcePreparation, LiverySessionEngine};
 #[cfg(feature = "scripted")]
 pub use engines::{ScriptedDocumentSession, ScriptedSessionEngine};
 pub use fetch::{LocalFetcher, LocalFetcherWith, ResourceFetchPolicy};

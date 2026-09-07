@@ -23,7 +23,8 @@ use document_session_api::{
     DocumentA11yProjection, DocumentCapabilities, DocumentCapabilityStatus,
 };
 use genet_document_resources::{
-    ResolvedDocumentResources, ResolvedStylesheet, ResourceDelta, ResourceKind, ResourceLimits,
+    PendingResourceRequest, ResolvedDocumentResources, ResolvedStylesheet, ResourceDelta,
+    ResourceKind, ResourceLimits, ResourceProvisionError, StagedResourceResolution,
     StylesheetOwner,
 };
 use genet_host_api::ResourceFetcher;
@@ -40,6 +41,71 @@ pub struct LiverySessionEngine<Fetch> {
     fetcher: Fetch,
     author_css: Vec<String>,
     resource_limits: ResourceLimits,
+}
+
+/// One browser-host preparation for a Livery session.  It owns the exact DOM
+/// which will become the session, so URL discovery and layout cannot diverge
+/// through separate HTML parsers.
+#[cfg(feature = "livery")]
+pub struct LiveryResourcePreparation {
+    requested_address: String,
+    source_response: ResourceResponse,
+    staged: StagedResourceResolution<genet_scripted_dom::ScriptedDom>,
+}
+
+#[cfg(feature = "livery")]
+impl LiveryResourcePreparation {
+    pub fn new(
+        request: &SessionSpawnRequest,
+        source_response: ResourceResponse,
+        limits: ResourceLimits,
+    ) -> Self {
+        let base_resource = source_response
+            .final_url
+            .split_once('#')
+            .map_or(source_response.final_url.as_str(), |(resource, _)| resource)
+            .to_owned();
+        let source = String::from_utf8_lossy(&source_response.bytes).into_owned();
+        let dom = genet_scripted_dom::ScriptedDom::from_serialized_document(&source);
+        Self {
+            requested_address: request.address.clone(),
+            source_response,
+            staged: StagedResourceResolution::new(dom, Some(&base_resource), limits),
+        }
+    }
+
+    pub fn pending_requests(&self) -> Vec<PendingResourceRequest> {
+        self.staged.pending_requests()
+    }
+
+    pub fn provide_response(
+        &mut self,
+        request: PendingResourceRequest,
+        response: ResourceResponse,
+    ) -> Result<(), ResourceProvisionError> {
+        self.staged.provide_response(request, response)
+    }
+
+    pub fn provide_unavailable(
+        &mut self,
+        request: PendingResourceRequest,
+    ) -> Result<(), ResourceProvisionError> {
+        self.staged.provide_unavailable(request)
+    }
+
+    fn finish(
+        self,
+    ) -> Result<
+        (
+            genet_scripted_dom::ScriptedDom,
+            ResourceResponse,
+            ResolvedDocumentResources,
+        ),
+        Vec<PendingResourceRequest>,
+    > {
+        let resources = self.staged.finish()?;
+        Ok((self.staged.into_document(), self.source_response, resources))
+    }
 }
 
 #[cfg(feature = "livery")]
@@ -131,6 +197,57 @@ impl<Fetch: ResourceFetcher + Send + Sync> LiverySessionEngine<Fetch> {
             &self.fetcher,
             self.resource_limits,
         );
+        self.spawn_livery_document_with_resources(
+            request,
+            dom,
+            source_response,
+            navigation,
+            resources,
+        )
+    }
+}
+
+#[cfg(feature = "livery")]
+impl<Fetch> LiverySessionEngine<Fetch> {
+    /// Complete a browser-host preparation.  The opaque preparation owns both
+    /// the source snapshot and the DOM which produced its ledger, making a
+    /// source/ledger mismatch unrepresentable at this boundary.
+    pub fn spawn_prepared(
+        &self,
+        request: &SessionSpawnRequest,
+        preparation: LiveryResourcePreparation,
+    ) -> Result<Box<dyn DocumentSession<Scene>>, SessionError> {
+        if preparation.requested_address != request.address {
+            return Err(SessionError::SpawnFailed(
+                "prepared Livery resources belong to a different navigation".to_owned(),
+            ));
+        }
+        let (dom, source_response, resources) = preparation.finish().map_err(|pending| {
+            SessionError::SpawnFailed(format!(
+                "prepared Livery resources still pending: {pending:?}"
+            ))
+        })?;
+        let navigation = genet_livery::NavigationFragment::parse(&redirected_navigation_address(
+            &request.address,
+            &source_response.final_url,
+        ));
+        self.spawn_livery_document_with_resources(
+            request,
+            dom,
+            source_response,
+            navigation,
+            resources,
+        )
+    }
+
+    fn spawn_livery_document_with_resources(
+        &self,
+        request: &SessionSpawnRequest,
+        dom: genet_scripted_dom::ScriptedDom,
+        source_response: ResourceResponse,
+        navigation: genet_livery::NavigationFragment,
+        resources: ResolvedDocumentResources,
+    ) -> Result<Box<dyn DocumentSession<Scene>>, SessionError> {
         let mut sheets = self
             .author_css
             .iter()
@@ -195,6 +312,17 @@ impl<Fetch: ResourceFetcher + Send + Sync> LiverySessionEngine<Fetch> {
             a11y_cache: RefCell::new(None),
         }))
     }
+}
+
+#[cfg(feature = "livery")]
+fn redirected_navigation_address(requested: &str, final_url: &str) -> String {
+    let final_base = final_url
+        .split_once('#')
+        .map_or(final_url, |(base, _)| base);
+    requested.split_once('#').map_or_else(
+        || final_base.to_owned(),
+        |(_, fragment)| format!("{final_base}#{fragment}"),
+    )
 }
 
 /// Retained Livery document session. The document owns the resolved style and
@@ -266,6 +394,12 @@ struct EditableDrag {
 impl LiveryDocumentSession {
     pub fn document(&self) -> &genet_livery::LiveryDocument<genet_scripted_dom::ScriptedDom> {
         &self.doc
+    }
+
+    /// Redirect-final document identity, retaining an explicitly requested
+    /// fragment when this session was prepared by an asynchronous host.
+    pub fn address(&self) -> &str {
+        &self.address
     }
 
     /// Replace one native text control from its document-local accessibility

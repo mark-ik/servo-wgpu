@@ -29,6 +29,7 @@ genet-host-api = { workspace = true }
 # The Livery lane as a session engine. Ortet needs the engine half only; no
 # reader lane, no smolweb, no controller.
 genet-documents = { workspace = true, features = ["livery"] }
+genet-document-resources = { workspace = true }
 # The target-neutral present core. Native and web hosts own their distinct
 # target/input adapters below.
 genet-render-host = { workspace = true }
@@ -50,9 +51,11 @@ png = "0.18"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "=0.2.127"
 wasm-bindgen-futures = "=0.4.77"
+js-sys = "=0.3.104"
 wgpu = { workspace = true, features = ["webgpu"] }
 web-sys = { version = "=0.3.104", features = [
-    "Document", "DomRect", "Element", "Event", "EventTarget",
+    "Document", "DomRect", "Element", "Event", "EventTarget", "Headers", "Response",
+    "ReadableStream", "ReadableStreamDefaultReader",
     "FocusEvent", "HtmlCanvasElement", "HtmlElement", "KeyboardEvent", "MouseEvent",
     "PointerEvent", "WheelEvent", "Window", "console",
 ] }

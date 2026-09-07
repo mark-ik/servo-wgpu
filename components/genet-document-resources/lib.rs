@@ -13,7 +13,7 @@
 
 #![deny(unsafe_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub use genet_host_api::{ResourceFetcher, ResourceResponse};
 use layout_dom_api::{LayoutDom, LocalName, Namespace};
@@ -95,7 +95,14 @@ pub enum ResourceKind {
 pub struct ResolvedResource {
     pub kind: ResourceKind,
     pub authored_url: String,
+    /// Canonical URL requested from the host after resolving the author's
+    /// spelling against its owning document or stylesheet.
     pub resolved_url: String,
+    /// Identity after the host's redirect policy.  It can differ from
+    /// `resolved_url` for browser-fetched images and fonts.
+    pub final_url: String,
+    /// Response media type retained from the host when available.
+    pub content_type: Option<String>,
     pub bytes: Vec<u8>,
 }
 
@@ -242,6 +249,162 @@ pub struct ResolvedDocumentResources {
     pub stylesheets: Vec<ResolvedStylesheet>,
     pub resources: Vec<ResolvedResource>,
     pub diagnostics: Vec<ResourceDiagnostic>,
+}
+
+/// A canonical request the host still has to satisfy before an asynchronous
+/// client can finish a resource ledger.  The URL is already resolved against
+/// the document or stylesheet identity that introduced it.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct PendingResourceRequest {
+    pub url: String,
+}
+
+/// A host attempted to provision a URL which is not pending in this stage.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResourceProvisionError {
+    pub request: PendingResourceRequest,
+}
+
+/// Immutable response records collected by a host before it crosses the
+/// synchronous [`ResourceFetcher`] boundary.  It deliberately holds bytes and
+/// metadata only, never a transport client or cache handle.
+#[derive(Clone, Debug, Default)]
+pub struct ResourceResponseSnapshot {
+    responses: HashMap<String, ResourceResponse>,
+}
+
+impl ResourceResponseSnapshot {
+    pub fn insert(&mut self, requested_url: impl Into<String>, response: ResourceResponse) {
+        self.responses.insert(requested_url.into(), response);
+    }
+}
+
+impl ResourceFetcher for ResourceResponseSnapshot {
+    fn fetch(&self, url: &str) -> Option<Vec<u8>> {
+        self.responses
+            .get(url)
+            .map(|response| response.bytes.clone())
+    }
+
+    fn fetch_response(&self, url: &str) -> Option<ResourceResponse> {
+        self.responses.get(url).cloned()
+    }
+}
+
+/// A staged, host-driven resource resolution.
+///
+/// The document component continues to own URL discovery and CSS ordering.
+/// An asynchronous host calls [`Self::pending_requests`], fetches those URLs
+/// under its own policy, provides immutable [`ResourceResponse`] snapshots,
+/// and repeats until the resolver has no work left.  A failed request is
+/// explicitly recorded with [`Self::provide_unavailable`] so diagnostics in
+/// the final ledger retain the failed dependency.
+pub struct StagedResourceResolution<D: LayoutDom> {
+    dom: D,
+    document_url: Option<String>,
+    limits: ResourceLimits,
+    responses: ResourceResponseSnapshot,
+    unavailable: HashSet<String>,
+}
+
+impl<D: LayoutDom> StagedResourceResolution<D> {
+    pub fn new(dom: D, document_url: Option<&str>, limits: ResourceLimits) -> Self {
+        Self {
+            dom,
+            document_url: document_url.map(str::to_owned),
+            limits,
+            responses: ResourceResponseSnapshot::default(),
+            unavailable: HashSet::new(),
+        }
+    }
+
+    /// Return every currently discoverable request once, in discovery order.
+    /// Additional calls after a stylesheet response is provided expose its
+    /// imports and stylesheet-relative dependencies.
+    pub fn pending_requests(&self) -> Vec<PendingResourceRequest> {
+        let mut pending = Vec::new();
+        let mut seen = HashSet::new();
+        let mut fetch = |url: &str| match self.responses.fetch_response(url) {
+            Some(response) => Some(response),
+            None if self.unavailable.contains(url) => None,
+            None => {
+                if seen.insert(url.to_owned()) {
+                    pending.push(PendingResourceRequest {
+                        url: url.to_owned(),
+                    });
+                }
+                None
+            },
+        };
+        let _ = resolve_responses_with_limits(
+            &self.dom,
+            self.document_url.as_deref(),
+            &mut fetch,
+            self.limits,
+        );
+        pending
+    }
+
+    /// Store the full immutable response snapshot for a canonical pending URL.
+    pub fn provide_response(
+        &mut self,
+        request: PendingResourceRequest,
+        response: ResourceResponse,
+    ) -> Result<(), ResourceProvisionError> {
+        self.ensure_pending(&request)?;
+        self.unavailable.remove(&request.url);
+        self.responses.insert(request.url, response);
+        Ok(())
+    }
+
+    /// Record an attempted request which the host could not provide.
+    pub fn provide_unavailable(
+        &mut self,
+        request: PendingResourceRequest,
+    ) -> Result<(), ResourceProvisionError> {
+        self.ensure_pending(&request)?;
+        self.unavailable.insert(request.url);
+        Ok(())
+    }
+
+    /// Finish only when the host has accounted for all currently reachable
+    /// dependencies.  The returned ledger is the same immutable resource set
+    /// used by synchronous `ResourceFetcher` hosts.
+    pub fn finish(&self) -> Result<ResolvedDocumentResources, Vec<PendingResourceRequest>> {
+        let pending = self.pending_requests();
+        if pending.is_empty() {
+            Ok(self.resolve())
+        } else {
+            Err(pending)
+        }
+    }
+
+    fn resolve(&self) -> ResolvedDocumentResources {
+        let mut fetch = |url: &str| self.responses.fetch_response(url);
+        resolve_responses_with_limits(
+            &self.dom,
+            self.document_url.as_deref(),
+            &mut fetch,
+            self.limits,
+        )
+    }
+
+    fn ensure_pending(
+        &self,
+        request: &PendingResourceRequest,
+    ) -> Result<(), ResourceProvisionError> {
+        self.pending_requests()
+            .contains(request)
+            .then_some(())
+            .ok_or_else(|| ResourceProvisionError {
+                request: request.clone(),
+            })
+    }
+
+    /// Recover the caller's document after finishing its resource ledger.
+    pub fn into_document(self) -> D {
+        self.dom
+    }
 }
 
 impl ResolvedDocumentResources {
@@ -1037,6 +1200,8 @@ fn collect_resource(
             kind,
             authored_url: authored_url.to_owned(),
             resolved_url,
+            final_url: response.final_url.clone(),
+            content_type: response.content_type.clone(),
             bytes: response.bytes.clone(),
         }),
         None if explicitly_unsupported_scheme(&resolved_url) => {
@@ -1311,6 +1476,8 @@ mod tests {
                 kind: ResourceKind::Font,
                 authored_url: "data:font/ttf;base64,AAEC".to_owned(),
                 resolved_url: "data:font/ttf;base64,AAEC".to_owned(),
+                final_url: "data:font/ttf;base64,AAEC".to_owned(),
+                content_type: None,
                 bytes: vec![0, 1, 2],
             }]
         );
@@ -1538,6 +1705,140 @@ mod tests {
                 "https://cdn.example.test/a/../font.woff2"
             ),
             "https://cdn.example.test/font.woff2"
+        );
+    }
+
+    #[test]
+    fn staged_resolution_discovers_redirect_relative_css_imports_images_and_fonts() {
+        let document = StaticDocument::parse(
+            r#"<link rel="stylesheet" href="styles/root.css"><img src="html.png">"#,
+        );
+        let mut staged = StagedResourceResolution::new(
+            document,
+            Some("https://example.test/start/index.html"),
+            ResourceLimits::default(),
+        );
+        let initial = staged.pending_requests();
+        assert_eq!(
+            initial,
+            vec![
+                PendingResourceRequest {
+                    url: "https://example.test/start/styles/root.css".to_owned(),
+                },
+                PendingResourceRequest {
+                    url: "https://example.test/start/html.png".to_owned(),
+                },
+            ]
+        );
+        staged.provide_response(
+            initial[0].clone(),
+            ResourceResponse::new(
+                "https://cdn.example.test/final/css/root.css",
+                br#"@import url("nested.css"); .card { background-image: url(hero.png), url(missing.png) }"#.to_vec(),
+            )
+            .with_content_type("text/css"),
+        )
+        .expect("root stylesheet was pending");
+        staged
+            .provide_response(
+                initial[1].clone(),
+                ResourceResponse::new(initial[1].url.clone(), vec![1, 2, 3]),
+            )
+            .expect("HTML image was pending");
+        let next = staged.pending_requests();
+        assert_eq!(
+            next,
+            vec![
+                PendingResourceRequest {
+                    url: "https://cdn.example.test/final/css/nested.css".to_owned(),
+                },
+                PendingResourceRequest {
+                    url: "https://cdn.example.test/final/css/hero.png".to_owned(),
+                },
+                PendingResourceRequest {
+                    url: "https://cdn.example.test/final/css/missing.png".to_owned(),
+                },
+            ]
+        );
+        staged
+            .provide_response(
+                next[0].clone(),
+                ResourceResponse::new(
+                    next[0].url.clone(),
+                    br#"@font-face { font-family: proof; src: url(../fonts/proof.woff2) }"#
+                        .to_vec(),
+                )
+                .with_content_type("text/css"),
+            )
+            .expect("import was pending");
+        staged
+            .provide_response(
+                next[1].clone(),
+                ResourceResponse::new("https://assets.example.test/hero.png", vec![4, 5, 6])
+                    .with_content_type("image/png"),
+            )
+            .expect("CSS image was pending");
+        staged
+            .provide_unavailable(next[2].clone())
+            .expect("missing image was pending");
+        let final_request = staged.pending_requests();
+        assert_eq!(
+            final_request,
+            vec![PendingResourceRequest {
+                url: "https://cdn.example.test/final/fonts/proof.woff2".to_owned(),
+            }]
+        );
+        staged
+            .provide_response(
+                final_request[0].clone(),
+                ResourceResponse::new(
+                    "https://assets.example.test/fonts/proof.woff2",
+                    vec![7, 8, 9],
+                )
+                .with_content_type("font/woff2"),
+            )
+            .expect("font was pending");
+        let resources = staged
+            .finish()
+            .expect("all discovered requests accounted for");
+        assert_eq!(resources.stylesheets.len(), 2);
+        assert!(resources.resources.iter().any(|resource| {
+            resource.kind == ResourceKind::Image
+                && resource.resolved_url == "https://example.test/start/html.png"
+        }));
+        assert!(resources.resources.iter().any(|resource| {
+            resource.kind == ResourceKind::Image
+                && resource.resolved_url == "https://cdn.example.test/final/css/hero.png"
+                && resource.final_url == "https://assets.example.test/hero.png"
+                && resource.content_type.as_deref() == Some("image/png")
+        }));
+        assert!(resources.resources.iter().any(|resource| {
+            resource.kind == ResourceKind::Font
+                && resource.resolved_url == "https://cdn.example.test/final/fonts/proof.woff2"
+                && resource.final_url == "https://assets.example.test/fonts/proof.woff2"
+                && resource.content_type.as_deref() == Some("font/woff2")
+        }));
+        assert!(matches!(
+            resources.diagnostics.as_slice(),
+            [ResourceDiagnostic::ResourceUnavailable { kind: ResourceKind::Image, resolved_url, .. }]
+                if resolved_url == "https://cdn.example.test/final/css/missing.png"
+        ));
+    }
+
+    #[test]
+    fn staged_resolution_rejects_unrequested_provisioning() {
+        let document = StaticDocument::parse("<p>no external resources</p>");
+        let mut staged = StagedResourceResolution::new(
+            document,
+            Some("https://example.test/index.html"),
+            ResourceLimits::default(),
+        );
+        let request = PendingResourceRequest {
+            url: "https://example.test/injected.png".to_owned(),
+        };
+        assert_eq!(
+            staged.provide_unavailable(request.clone()),
+            Err(ResourceProvisionError { request })
         );
     }
 }

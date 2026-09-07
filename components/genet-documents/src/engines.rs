@@ -48,6 +48,6 @@ pub(crate) use clip::{
 #[cfg(all(test, feature = "livery"))]
 pub(crate) use livery::EditableKind;
 #[cfg(feature = "livery")]
-pub use livery::{LiveryDocumentSession, LiverySessionEngine};
+pub use livery::{LiveryDocumentSession, LiveryResourcePreparation, LiverySessionEngine};
 #[cfg(feature = "scripted")]
 pub use scripted::{ScriptedDocumentSession, ScriptedSessionEngine};

@@ -1789,3 +1789,57 @@ fn livery_session_resolves_links_against_a_redirected_document_identity() {
         Some("https://cdn.example.test/final/site.css")
     );
 }
+
+#[cfg(feature = "livery")]
+#[test]
+fn prepared_livery_resources_cannot_cross_navigation_boundaries() {
+    let engine = LiverySessionEngine::new(NoFetch);
+    let first = SessionSpawnRequest::new("https://example.test/first");
+    let preparation = LiveryResourcePreparation::new(
+        &first,
+        ResourceResponse::new(
+            "https://cdn.example.test/final/first.html",
+            b"<p>first</p>".to_vec(),
+        )
+        .with_content_type("text/html"),
+        ResourceLimits::default(),
+    );
+    let second = SessionSpawnRequest::new("https://example.test/second");
+    let error = match engine.spawn_prepared(&second, preparation) {
+        Err(error) => error,
+        Ok(_) => panic!("a preparation is pinned to its navigation request"),
+    };
+    assert!(error.to_string().contains("different navigation"));
+}
+
+#[cfg(feature = "livery")]
+#[test]
+fn prepared_livery_session_uses_redirect_final_identity_and_requested_fragment() {
+    let engine = LiverySessionEngine::new(NoFetch);
+    let request = SessionSpawnRequest::new("https://example.test/start#proof");
+    let preparation = LiveryResourcePreparation::new(
+        &request,
+        ResourceResponse::new(
+            "https://cdn.example.test/final/index.html",
+            b"<h1 id=proof>proof</h1>".to_vec(),
+        )
+        .with_content_type("text/html"),
+        ResourceLimits::default(),
+    );
+    let mut session = engine
+        .spawn_prepared(&request, preparation)
+        .expect("prepared session spawns");
+    let clip = session.clip().expect("prepared session supplies a clip");
+    assert_eq!(
+        clip.artifacts[0].canonical_uri,
+        "https://cdn.example.test/final/index.html"
+    );
+    let concrete = session
+        .as_any()
+        .downcast_mut::<LiveryDocumentSession>()
+        .expect("prepared session retains the Livery identity");
+    assert_eq!(
+        concrete.address(),
+        "https://cdn.example.test/final/index.html#proof"
+    );
+}
