@@ -282,3 +282,162 @@ Each of the second and third groups is a candidate lane in the sense of the
 Buckram and Livery lane program: a named directory, an exact baseline map,
 and a reconciliation that assigns every residual. This document is the
 baseline those lanes diff against.
+
+## Reftest lane over html, svg, mathml and editing (2026-09-07)
+
+**Status:** complete. Measurement only; no renderer or runtime source changed.
+
+The four non-testharness families this census could only mark `Skip`
+(`html`, `svg`, `mathml`, `editing`) run under `genet-wpt reftest`, not
+`testharness`, and need a GPU. This lane measures them with the same
+directory list the census used for `html` (split by subdirectory), plus
+`svg`, `mathml` and `editing` whole. Raw results are under
+`Code/testing/genet/wpt-ledger/2026-09-07_reftest_platform/`, per the ledger
+README.
+
+### Provenance
+
+| Item | Value |
+|---|---|
+| genet commit | `5af76a0cb8c`, clean worktree at `C:/t/genet-5af76a0` |
+| WPT tree | `tests/wpt/tests` at that commit |
+| `MANIFEST.json` SHA-256 prefix | `d5ec5be9bf1a75ed` (same WPT tree as the 2026-09-06 census) |
+| Runner | `genet-wpt` release, built `CARGO_TARGET_DIR=C:/t/lane8b-target cargo build --release -p genet-wpt`, SHA-256 `107d7782ac5becb46b1fb18382214f8cf9652d8c108b5513c5cfa230396d5fa6` |
+| Lane | `reftest`, engine Boa, renderer Livery |
+| Directories | 42 (41 `html` subdirectories plus `svg`, `mathml`, `editing`; same `html` split as the census's `run_disk.sh`) |
+| Raw results | `Code/testing/genet/wpt-ledger/2026-09-07_reftest_platform/reftest/` |
+
+### Method
+
+One `genet-wpt reftest <dir> --engine boa --renderer livery --tests-root
+C:/t/genet-5af76a0/tests/wpt/tests --write-expectations <file>` invocation
+per directory, sequential (reftests are GPU-bound, one process at a time), a
+150-second stall watchdog (`watchdog.sh`) armed for the whole run and a
+per-directory fallback (`run_perfile.sh`, `merge.py`) that reruns a killed
+directory file by file under a 90-second external timeout, merging the
+per-file records back into that directory's expectation JSON. Before the
+full run, `html/obsolete` (26 files) was run alone as a GPU-boot smoke test
+and produced a real pixel comparison (1 pass, 1 local-bucket fail), then its
+output was discarded and the directory rerun as part of the sequential pass
+below.
+
+A `pass` with no reason is an ordinary pixel pass. The runner labels a pass
+`reference-unverified` only for tests in the checked inventory
+(`ports/genet-wpt/expectations/reftest/reference_verification.json`), which
+covers the CSS fragmentation scopes and twenty CSS guards and nothing under
+these directories, so the `Ref-unverified` column below is zero by
+construction and the `Verified` column means "not in that inventory", not
+"reference independently verified". A reference-verification pass over these
+families is open work before their passes earn conformance credit.
+
+### Result
+
+All 42 directories ran to completion in the first sequential pass — the
+watchdog recorded no stall (`stalls.log` is empty after the run) and no
+directory needed the per-file fallback. Wall time for the full sequential
+pass was under six minutes (`run_reftest.log` timestamps), against an hour
+external timeout per directory.
+
+| Directory | Files | Pass | Verified | Ref-unverified | Fail | Skip | Error |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| editing | 843 | 0 | 0 | 0 | 0 | 843 | 0 |
+| html_anonymous-iframe | 35 | 0 | 0 | 0 | 0 | 35 | 0 |
+| html_browsers | 782 | 1 | 1 | 0 | 0 | 781 | 0 |
+| html_canvas | 2673 | 1 | 1 | 0 | 3 | 2669 | 0 |
+| html_capability-delegation | 6 | 0 | 0 | 0 | 0 | 6 | 0 |
+| html_cross-origin-embedder-policy | 94 | 0 | 0 | 0 | 0 | 94 | 0 |
+| html_cross-origin-opener-policy | 160 | 0 | 0 | 0 | 0 | 160 | 0 |
+| html_document-isolation-policy | 38 | 0 | 0 | 0 | 0 | 38 | 0 |
+| html_dom | 385 | 32 | 32 | 0 | 35 | 318 | 0 |
+| html_editing | 424 | 6 | 6 | 0 | 4 | 414 | 0 |
+| html_embedded-content | 1 | 0 | 0 | 0 | 0 | 1 | 0 |
+| html_infrastructure | 144 | 1 | 1 | 0 | 0 | 143 | 0 |
+| html_interaction | 180 | 0 | 0 | 0 | 0 | 180 | 0 |
+| html_links | 16 | 0 | 0 | 0 | 0 | 16 | 0 |
+| html_meta | 1 | 0 | 0 | 0 | 0 | 1 | 0 |
+| html_obsolete | 26 | 1 | 1 | 0 | 1 | 24 | 0 |
+| html_rendering | 462 | 138 | 138 | 0 | 95 | 229 | 0 |
+| html_scripting | 2 | 0 | 0 | 0 | 0 | 2 | 0 |
+| html_select | 2 | 1 | 1 | 0 | 0 | 1 | 0 |
+| html_semantics_disabled-elements | 7 | 0 | 0 | 0 | 0 | 7 | 0 |
+| html_semantics_document-metadata | 116 | 4 | 4 | 0 | 2 | 110 | 0 |
+| html_semantics_edits | 2 | 0 | 0 | 0 | 0 | 2 | 0 |
+| html_semantics_embedded-content | 798 | 6 | 6 | 0 | 8 | 784 | 0 |
+| html_semantics_forms | 648 | 15 | 15 | 0 | 27 | 606 | 0 |
+| html_semantics_grouping-content | 45 | 14 | 14 | 0 | 12 | 19 | 0 |
+| html_semantics_interactive-elements | 175 | 0 | 0 | 0 | 0 | 175 | 0 |
+| html_semantics_interestfor | 36 | 0 | 0 | 0 | 0 | 36 | 0 |
+| html_semantics_interfaces | 1 | 0 | 0 | 0 | 0 | 1 | 0 |
+| html_semantics_links | 36 | 1 | 1 | 0 | 1 | 34 | 0 |
+| html_semantics_permission-element | 114 | 36 | 36 | 0 | 20 | 58 | 0 |
+| html_semantics_popovers | 110 | 1 | 1 | 0 | 0 | 109 | 0 |
+| html_semantics_scripting-1 | 498 | 3 | 3 | 0 | 0 | 495 | 0 |
+| html_semantics_sections | 1 | 0 | 0 | 0 | 0 | 1 | 0 |
+| html_semantics_selectors | 33 | 0 | 0 | 0 | 1 | 32 | 0 |
+| html_semantics_tabular-data | 29 | 0 | 0 | 0 | 0 | 29 | 0 |
+| html_semantics_text-level-semantics | 36 | 1 | 1 | 0 | 24 | 11 | 0 |
+| html_syntax | 402 | 9 | 9 | 0 | 11 | 382 | 0 |
+| html_the-xhtml-syntax | 15 | 1 | 1 | 0 | 0 | 14 | 0 |
+| html_user-activation | 20 | 0 | 0 | 0 | 0 | 20 | 0 |
+| html_webappapis | 336 | 0 | 0 | 0 | 0 | 336 | 0 |
+| mathml | 579 | 70 | 70 | 0 | 81 | 428 | 0 |
+| svg | 1640 | 260 | 260 | 0 | 101 | 1279 | 0 |
+| **Total** | 11951 | 602 | 602 | 0 | 426 | 10923 | 0 |
+
+Fail-shape buckets, summed across directories (`aggregate.py` parses these
+from each log's `fail buckets:` line, not from the JSON, since the bucket is
+per-failure diagnostic rather than a stored field):
+
+| Count | Bucket | Reading |
+|---:|---|---|
+| 10 | `whole` | >=50% of pixels differ (layout or UA-chrome shape wrong) |
+| 341 | `local` | localized large delta (a feature or paint area is wrong, rest matches) |
+| 75 | `mismatch-eq` | pixels are identical yet the test still failed (an `==` reftest reporting fail, or a `!=` reftest reporting fail on a match) |
+
+`dims` (size mismatch) and `aa` (small per-channel, anti-alias/tolerance)
+were not observed. All 426 `Fail` records are accounted for by these three
+buckets (10 + 341 + 75 = 426). Note: the aggregate script's original bucket
+regex did not admit the hyphen in `mismatch-eq` and silently split it into a
+spurious `eq` bucket; `aggregate.py` in this lane's directory was corrected
+in place (`(\w+\??)=` to `([\w-]+\??)=`) before the totals above were taken.
+
+### Hangs and handling
+
+None. The 2026-09-06 census's one hang
+(`atomics-wait-async.https.any.html`, testharness lane) does not recur here:
+that file is a `dom`/`webappapis` testharness case, not one of this lane's
+reftest files. No directory in this run exceeded the 150-second watchdog
+threshold or the one-hour per-directory external timeout; `run_perfile.sh`
+and its per-file fallback were prepared but never invoked.
+
+### Near versus far reading
+
+**Near (file-count) reading:** the pass column looks small against Skip —
+602 of 11,951 files (about 5%) produced a pixel pass, 426
+failed, and 10,923 were skipped as non-reftest members of these directories
+(manual, crash, or otherwise unhosted files the WPT manifest still lists
+under these paths). Several directories (`editing`, `html_webappapis`,
+`html_interaction`, the policy families) pass zero files outright — either
+because everything in them is a manual/visual test the reftest lane cannot
+host, or the feature they gate (COOP/COEP/document-isolation, popovers,
+permission-element beyond its 36) is not yet functional under Livery.
+
+**Far (what's hosted) reading:** of the 1,028 files this lane actually
+executed as reftests (602 pass + 426 fail; 10,923 of the 11,951 total were
+non-reftest skips the manifest still lists here), Livery reference-verified
+59% (602/1,028). That is a materially higher hit rate than the testharness
+census's non-CSS families, and the fail buckets are concentrated in `local`
+(341, a localized rendering delta rather than a structural failure) rather
+than `whole` (10, structurally wrong) — consistent with a renderer that
+lays most of these documents out correctly and differs on paint detail
+inside them. `mismatch-eq` (75) is the one bucket worth flagging for tool
+correctness ahead of a reconciliation pass: it means the pixels already
+match (or don't, for a `!=` test) but the test still reports fail, which
+points at either fuzzy-match/reference-selection logic or a metadata
+mismatch rather than rendering fidelity, and is a candidate false-negative
+pool a reconciliation should re-check before spending effort on genuine
+paint bugs.
+
+Raw per-directory JSON exact maps and logs: `Code/testing/genet/wpt-ledger/2026-09-07_reftest_platform/reftest/`.
+`summary.md` in that directory is `aggregate.py`'s output and is the source
+of the table above.
