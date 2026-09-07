@@ -76,6 +76,9 @@ members = [
     # (design_docs/2026-09-03_ortet_founding_plan.md).
     "ports/ortet",
     "ports/genet-wpt",
+    # Offline generator for the scripted tier's interface table, from WPT's
+    # vendored WebIDL (design_docs/2026-09-07_idl_interface_table_plan.md).
+    "support/idl-interface-table",
     "tests/unit/malloc_size_of",
 ]
 default-members = ["ports/ortet"]

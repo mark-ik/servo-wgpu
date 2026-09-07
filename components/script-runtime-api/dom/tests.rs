@@ -2191,3 +2191,72 @@ fn dom_throwing_on_boa() {
 fn dom_throwing_on_nova() {
     dom_throwing_works::<script_engine_nova::NovaEngine>();
 }
+
+/// The checked-in interface table must match a fresh run of the generator over
+/// the vendored WPT WebIDL. Regenerate with
+/// `cargo run -p genet-idl-interface-table`.
+#[test]
+fn generated_table_is_current() {
+    let wpt = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/wpt/tests");
+    let fresh = genet_idl_interface_table::generate(&wpt).expect("generate interface table");
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("dom/html_interfaces_generated.rs");
+    let current = std::fs::read_to_string(&path).expect("read generated table");
+    let (interfaces, attributes, shapes) = html_interfaces::table_size();
+    assert!(
+        interfaces >= 72 && attributes >= 338 && shapes >= 41,
+        "generated table shrank: {interfaces} interfaces, {attributes} reflected attributes, {shapes} shapes"
+    );
+    assert_eq!(
+        current.replace("\r\n", "\n"),
+        fresh,
+        "{} is stale; rerun `cargo run -p genet-idl-interface-table`",
+        path.display()
+    );
+}
+
+/// Shape facts the generated table must carry: interfaces the hand table never
+/// had, an interface without `[HTMLConstructor]`, a readonly reflected
+/// attribute, a named constructor, and the unknown-element fallback.
+fn generated_interface_shape_works<E: ScriptEngine>() {
+    use genet_static_dom::StaticDocument;
+    let mut rt = Runtime::<E>::new().expect("runtime");
+    rt.load_dom(&StaticDocument::parse("<html><body></body></html>"));
+
+    rt.eval(
+        "function thrown(fn){ try { fn(); return 'no-throw'; } catch(e){ return e.name; } }\
+         console.log(typeof HTMLUnknownElement + ',' + typeof HTMLPictureElement + ',' + typeof HTMLFontElement + ',' + typeof HTMLFrameSetElement);\
+         console.log(thrown(function(){ new HTMLUnknownElement(); }) + ',' + thrown(function(){ new HTMLDivElement(); }));\
+         console.log(String(document.createElement('xxx') instanceof HTMLUnknownElement) + ',' + String(document.createElement('abbr') instanceof HTMLUnknownElement));\
+         console.log(Object.prototype.toString.call(document.createElement('div')));\
+         var a = document.createElement('a');\
+         a.relList = 'noopener';         console.log(typeof a.relList + ',' + a.getAttribute('rel'));\
+         console.log(typeof Image + ',' + String(new Image(4, 6) instanceof HTMLImageElement) + ',' + new Image(4, 6).getAttribute('width'));\
+         console.log(typeof Attr + ',' + typeof Range + ',' + typeof NamedNodeMap);",
+    )
+    .expect("generated interface shape script");
+
+    assert_eq!(
+        rt.host().borrow().console,
+        vec![
+            "function,function,function,function",
+            "TypeError,TypeError",
+            "true,false",
+            "[object HTMLDivElement]",
+            "object,noopener",
+            "function,true,4",
+            "function,function,function",
+        ],
+    );
+}
+
+#[test]
+fn generated_interface_shape_on_boa() {
+    generated_interface_shape_works::<script_engine_boa::BoaEngine>();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn generated_interface_shape_on_nova() {
+    generated_interface_shape_works::<script_engine_nova::NovaEngine>();
+}

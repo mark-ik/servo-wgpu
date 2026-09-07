@@ -1,0 +1,19 @@
+# Offline, deterministic generator for the scripted tier's interface table.
+# Reads WPT's vendored WebIDL (tests/wpt/tests/interfaces/*.idl) plus WPT's
+# tag -> interface map (html/semantics/interfaces.js) and emits
+# components/script-runtime-api/dom/html_interfaces_generated.rs.
+# No dependencies: the IDL subset genet needs is parsed by hand (src/idl.rs).
+[package]
+name = "genet-idl-interface-table"
+version = "0.0.0"
+edition = "2021"
+license = "MPL-2.0"
+publish = false
+
+[lib]
+name = "genet_idl_interface_table"
+path = "src/lib.rs"
+
+[[bin]]
+name = "genet-idl-interface-table"
+path = "src/main.rs"

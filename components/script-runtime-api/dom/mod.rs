@@ -1076,6 +1076,7 @@ fn find_by_id(dom: &ScriptedDom, root: NodeId, target: &str) -> Option<NodeId> {
 }
 
 mod html_interfaces;
+mod html_interfaces_generated;
 mod query_traverse;
 mod tree;
 mod xpath_eval;

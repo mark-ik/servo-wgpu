@@ -98,9 +98,11 @@
       if (__namespaceURI(ref) === XHTML_NS) {
         var tag = __tagName(ref);
         customDef = customElementDefinitionForRef(ref, tag);
+        // An HTML-namespaced name the table does not list is HTMLUnknownElement,
+        // unless it is a valid custom element name, which is HTMLElement.
         proto = (customDef && customDef.ctor.prototype) ||
                 (tag && elementSubclassProto[tag]) ||
-                (globalThis.HTMLElement ? globalThis.HTMLElement.prototype : Element.prototype);
+                unknownElementProto(tag);
       } else {
         proto = Element.prototype;
       }
@@ -122,6 +124,14 @@
   // Per-tag prototype table populated below as HTML* subclasses come online.
   // Each entry's key is the uppercased tag name `__tagName` returns.
   var elementSubclassProto = {};
+  function unknownElementProto(tag) {
+    var HTMLEl = globalThis.HTMLElement;
+    var base = HTMLEl ? HTMLEl.prototype : Element.prototype;
+    var Unknown = globalThis.HTMLUnknownElement;
+    if (!Unknown || !tag) return base;
+    // `__tagName` uppercases, so validity is checked on the folded name.
+    return isValidCustomElementName(String(tag).toLowerCase()) ? base : Unknown.prototype;
+  }
   var htmlInterfaceConstructors = {};
   var htmlInterfaceDefinitions = Object.create(null);
   var customElementDefinitions = Object.create(null);
@@ -1993,13 +2003,15 @@
   globalThis.Node = Node;
   globalThis.Element = Element;
   globalThis.Document = Document;
-  function makeHtmlInterfaceConstructor(name) {
+  // `htmlConstructor` is the IDL's [HTMLConstructor]. Without it (e.g.
+  // HTMLUnknownElement) the interface object is never constructible.
+  function makeHtmlInterfaceConstructor(name, htmlConstructor) {
     var Ctor = function() {
       if (htmlElementConstructionStack.length) {
         return htmlElementConstructionStack.pop();
       }
       var newTarget = new.target || Ctor;
-      if (newTarget === Ctor) throw new TypeError('Illegal constructor');
+      if (newTarget === Ctor || !htmlConstructor) throw new TypeError('Illegal constructor');
       return createElementForHtmlConstructor(Ctor, name, newTarget);
     };
     try { Object.defineProperty(Ctor, 'name', { configurable: true, value: name }); } catch (_) {}
@@ -2068,22 +2080,64 @@
     };
   }
 
+  function exposedOnWindow(def) {
+    var e = def.exposed || [];
+    // An interface with no [Exposed] in the source IDL is treated as exposed;
+    // the generator only emits Window-side definitions.
+    if (!e.length) return true;
+    return e.indexOf('Window') !== -1;
+  }
+
+  function setClassString(proto, name) {
+    try {
+      Object.defineProperty(proto, Symbol.toStringTag, {
+        configurable: true, value: name
+      });
+    } catch (_) {}
+  }
+
+  // [LegacyFactoryFunction]: `new Image(w, h)` and kin build the element the
+  // interface's tag names select, then apply the documented argument mapping.
+  function installNamedConstructor(alias, Ctor, tag) {
+    var F = function(a, b, c, d) {
+      var el = document.createElement(tag);
+      if (alias === 'Image') {
+        if (a !== undefined) el.setAttribute('width', String(a));
+        if (b !== undefined) el.setAttribute('height', String(b));
+      } else if (alias === 'Audio') {
+        el.setAttribute('preload', 'auto');
+        if (a !== undefined) { el.setAttribute('src', String(a)); }
+      } else if (alias === 'Option') {
+        if (a !== undefined && a !== '') el.textContent = String(a);
+        if (b !== undefined) el.setAttribute('value', String(b));
+        if (c) el.setAttribute('selected', '');
+        el.selected = !!d;
+      }
+      return el;
+    };
+    F.prototype = Ctor.prototype;
+    try { Object.defineProperty(F, 'name', { configurable: true, value: alias }); } catch (_) {}
+    globalThis[alias] = F;
+  }
+
   function installHtmlInterfaceTable() {
     var table = globalThis.__genetHtmlInterfaceTable || [];
     for (var i = 0; i < table.length; i++) {
       var def = table[i];
+      if (!exposedOnWindow(def)) continue;
       htmlInterfaceDefinitions[def.name] = def;
       var parent = htmlInterfaceConstructors[def.parent] || globalThis[def.parent];
       if (typeof parent !== 'function') {
         throw new Error('Unknown HTML interface parent: ' + def.parent);
       }
-      var Ctor = makeHtmlInterfaceConstructor(def.name);
+      var Ctor = makeHtmlInterfaceConstructor(def.name, def.htmlConstructor !== false);
       Ctor.prototype = Object.create(parent.prototype);
       Object.defineProperty(Ctor.prototype, 'constructor', {
         configurable: true,
         writable: true,
         value: Ctor
       });
+      setClassString(Ctor.prototype, def.name);
       globalThis[def.name] = Ctor;
       htmlInterfaceConstructors[def.name] = Ctor;
       installReflectedAttributes(Ctor.prototype, def.reflected || []);
@@ -2093,12 +2147,51 @@
       for (var j = 0; j < tags.length; j++) {
         elementSubclassProto[String(tags[j]).toUpperCase()] = Ctor.prototype;
       }
+      var named = def.namedConstructors || [];
+      for (var n = 0; n < named.length; n++) {
+        if (tags.length) installNamedConstructor(named[n], Ctor, tags[0]);
+      }
     }
     try { delete globalThis.__genetHtmlInterfaceTable; } catch (_) {}
+  }
+
+  // DOM / CSSOM interfaces the generator read from dom.idl and cssom.idl. Only
+  // the shape is installed, and only where the bootstrap has not already
+  // defined the name: an interface object with the right prototype chain and
+  // class string, no members. Never replaces a working implementation.
+  function installShapeInterfaces() {
+    var table = globalThis.__genetShapeInterfaceTable || [];
+    for (var i = 0; i < table.length; i++) {
+      var def = table[i];
+      if (!exposedOnWindow(def)) continue;
+      var existing = globalThis[def.name];
+      if (typeof existing === 'function') {
+        if (existing.prototype) setClassString(existing.prototype, def.name);
+        continue;
+      }
+      var parent = def.parent ? globalThis[def.parent] : null;
+      var Ctor = (function(name, constructible) {
+        return function() {
+          if (!constructible) throw new TypeError('Illegal constructor');
+          throw new TypeError(name + ' is not implemented');
+        };
+      })(def.name, def.constructible);
+      Ctor.prototype = typeof parent === 'function'
+        ? Object.create(parent.prototype)
+        : Object.create(Object.prototype);
+      Object.defineProperty(Ctor.prototype, 'constructor', {
+        configurable: true, writable: true, value: Ctor
+      });
+      setClassString(Ctor.prototype, def.name);
+      try { Object.defineProperty(Ctor, 'name', { configurable: true, value: def.name }); } catch (_) {}
+      globalThis[def.name] = Ctor;
+    }
+    try { delete globalThis.__genetShapeInterfaceTable; } catch (_) {}
   }
   // (Text / Comment / CharacterData exposed above, with their prototype chain.)
 
   installHtmlInterfaceTable();
+  installShapeInterfaces();
   installTraversal();
 
   // Live HTMLCollection / NodeList as legacy-platform exotic objects, modeled with
@@ -2321,7 +2414,7 @@
       if (!isFinite(v) || v < 0) return 0;
       return Math.floor(v) >>> 0;
     }
-    function def(idl, kind, attr, keywords, miss) {
+    function def(idl, kind, attr, keywords, miss, readonly) {
       // Reflected HTML content-attribute names are lowercase (tabIndex ->
       // tabindex); this also keeps get/set consistent with HTML setAttribute,
       // which lowercases. Explicit names passed in are already lowercase.
@@ -2360,7 +2453,10 @@
         desc.set = function(v) { this.setAttribute(attr, String(toUnsignedLong(v))); };
       } else if (kind === 't') {
         // tokenlist: a DOMTokenList over the content attribute (e.g. relList -> rel).
+        // Every one of these is [SameObject, PutForwards=value] in IDL, so
+        // assigning to the IDL attribute writes the content attribute.
         desc.get = function() { return makeDOMTokenList(this, attr); };
+        desc.set = function(v) { this.setAttribute(attr, String(v)); };
       } else if (kind === 'u') {
         // url: reflect the content attribute resolved against the document base URL
         // (absent -> ""); the raw string is stored on set. `__resolve_url` returns the
@@ -2368,11 +2464,14 @@
         desc.get = function() { var v = this.getAttribute(attr); return v === null ? '' : __resolve_url(v); };
         desc.set = function(v) { this.setAttribute(attr, String(v)); };
       }
+      // A readonly IDL attribute keeps only its getter, except the
+      // PutForwards token lists above, whose setter is the forwarded write.
+      if (readonly && kind !== 't') delete desc.set;
       if (desc.get || desc.set) Object.defineProperty(proto, idl, desc);
     }
     for (var i = 0; i < attrs.length; i++) {
       var a = attrs[i];
-      def(a.idl, a.kind, a.attr, a.keywords || [], a.missing);
+      def(a.idl, a.kind, a.attr, a.keywords || [], a.missing, !!a.readonly);
     }
   }
 

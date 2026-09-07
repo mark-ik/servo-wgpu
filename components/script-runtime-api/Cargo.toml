@@ -33,6 +33,9 @@ url = { workspace = true }
 xpath = { workspace = true }
 
 [dev-dependencies]
+# Regenerates dom/html_interfaces_generated.rs from WPT's vendored WebIDL so the
+# `generated_table_is_current` test fails loudly on drift.
+genet-idl-interface-table = { path = "../../support/idl-interface-table" }
 # Validate the host surface against a real backend. Boa is pure Rust (all targets);
 # Nova is available to tests on every 64-bit target, including wasm64.
 script-engine-boa = { path = "../script-engine-boa" }

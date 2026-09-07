@@ -49,6 +49,8 @@ older `docs/` corpus without changing their location or governance.
 | [Servo cone retirement](2026-09-07_servo_cone_retirement_plan.md) | servo-paint's compositor half carved out as genet-compositor; the reftest lane renders through genet-render-host; the constellation trait cone left the graph 2026-09-07. All gates green; next proof is Mere's dependency rename at its next bump. |
 | [Web platform WPT census](2026-09-06_web_platform_wpt_census.md) | Baseline exact maps for 41 non-CSS WPT directories (21,672 files, disk mode, Boa/Livery) landed 2026-09-06. Three of its four harness caveats are closed by the harness-repair plan; the reftest caveat and the per-directory lanes remain open. |
 | [WPT harness repair](2026-09-07_wpt_harness_repair_plan.md) | Per-test worker isolation, the disk-mode include and `.py` fixes, and a configurable, quiescing server-mode deadline landed 2026-09-07, with a re-run census whose 204 movements are all attributed. Next proof: a server-mode measurement of the network-dependent families on a live `wpt serve`. |
+| [XMLHttpRequest](2026-09-07_xhr_plan.md) | XHR as a state machine over the fetch seam, landed 2026-09-07: xhr 53 to 281 subtests in disk mode, 831 of 1,336 in server mode, fetch holds. Residuals: responseXML needs DOMParser; 28 errors are Worker and document.domain demand. |
+| [IDL interface table](2026-09-07_idl_interface_table_plan.md) | The scripted tier's HTML interface table is generated from WPT's vendored WebIDL plus its tag map, with 41 reasoned overrides and a drift test. 72 interfaces / 338 reflected attributes / 41 shape-only DOM-CSSOM interfaces. Next proof is extending the shape pass past `html`, `dom` and `cssom`, and the reflection-algorithm gaps (`ReflectRange` clamping, invalid-value defaults). |
 | [Host contract ownership](../docs/2026-08-14_web_platform_host_contract_plan.md) | Genet owns retained session contracts; Mere owns surface orchestration and product adapters. The older S0-S5 receipts need a consumer-side status refresh before resuming those lanes. |
 
 The [Buckram master](../docs/2026-07-26_buckram_css_layout_engine_plan.md)
@@ -75,6 +77,24 @@ completed corpus census or bounded slice does not close its enclosing feature.
   a dated plan when it is.)
 
 ## WPT census — the web platform beyond CSS
+
+- [idl_interface_table_plan](2026-09-07_idl_interface_table_plan.md)
+  (**landed 2026-09-07**: the scripted tier's hand-maintained HTML interface
+  table is replaced by one generated offline from WPT's vendored WebIDL
+  (`tests/wpt/tests/interfaces/{html,dom,cssom}.idl`) plus its tag map
+  (`html/semantics/interfaces.js`), by a dependency-free generator at
+  `support/idl-interface-table`. 65 → 72 interfaces, 277 → 338 reflected
+  attributes, 74 → 148 tag names, and 41 shape-only DOM/CSSOM interfaces;
+  342 hand-written rows become 41 overrides, each with a stated reason. A
+  drift test regenerates and byte-compares. Sixteen measured directories move
+  5 `error -> fail` and 5 `fail -> pass` with zero pass-to-fail, +2,049
+  subtest passes, and `html/semantics/interfaces.html` goes 0/438 → 298/438.
+  Raw maps under
+  `Code/testing/genet/wpt-ledger/2026-09-07_idl_interface_table/`.)
+- [xhr_plan](2026-09-07_xhr_plan.md)
+  (**landed 2026-09-07**: XMLHttpRequest, XMLHttpRequestUpload and
+  ProgressEvent over the deferred fetch seam, synchronous XHR through
+  `FetchHandler::fetch_blocking`; first server-mode xhr baseline.)
 
 - [wpt_harness_repair_plan](2026-09-07_wpt_harness_repair_plan.md)
   (**landed 2026-09-07**: `genet-wpt testharness` now runs every test in a
@@ -221,7 +241,8 @@ same session; links out of it are rewritten for its new depth.
 
 ## Status
 
-Founded 2026-08-24; current work map reconciled 2026-09-07. The index covers
+Founded 2026-08-24; current work map reconciled 2026-09-07, including the IDL
+interface-table lane. The index covers
 the flat plans sectioned above and two archived plans; the count in this line
 was stale before 2026-09-07 and is now stated by the sections themselves.
 All three former component area roots now live in Mere. The older `docs/`
