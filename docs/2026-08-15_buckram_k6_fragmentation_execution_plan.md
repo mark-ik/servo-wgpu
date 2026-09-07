@@ -2,12 +2,15 @@
 
 **Date:** 2026-08-15
 
-**Status:** K6a typed inputs and K6b's retained fragmentation model are
-implemented and reviewed, 2026-09-06. The clean pre-K6 source, release runner,
-and corpus are frozen. All 6,077 named candidate WPT records are identical to
-that baseline. Live formatter continuation and multicol geometry remain
-unimplemented; K6c is next. The verification record below distinguishes model,
-focused, and broad receipts.
+**Status:** K6a typed inputs, K6b's retained fragmentation model, and a narrow
+pre-K6c input/dispatch seam are implemented and reviewed, 2026-09-06. The clean
+pre-K6 source, release runner, and corpus are frozen. All 6,077 named candidate
+WPT records are identical to that baseline. The new seam admits a definite,
+horizontal, sequential `column-fill: auto` shape and reports it as explicitly
+unsupported per run. It does not create live column geometry. Formatter-owned
+used geometry and typed fragmentainers/continuations remain the next K6c
+done-condition. The verification record below distinguishes model, focused, and
+broad receipts.
 
 **Parent:** [Buckram CSS layout engine plan](2026-07-26_buckram_css_layout_engine_plan.md),
 K6.
@@ -61,8 +64,8 @@ The current K5 shape is still specific enough to fix ownership:
 | `FragmentTree::static_positions` | One static-position record per box is asserted as an unfragmented K5 invariant. | Index the record by the fragment or fragmentainer that supplied it. Positioned descendants must resume in the correct containing fragment. |
 | `FragmentTree::replace_subtree` | Correctly rejects a replacement that selects only some fragments of a box. | Add a continuation-chain replacement operation. Keep the K5 operation for unfragmented roots. |
 | `components/buckram/src/box_tree.rs` | K5 retains generated `BoxId` provenance independently from storage order. | One continued box keeps one `BoxId`; fragmentainers and continuations never synthesize duplicate CSS boxes. |
-| `components/buckram/src/taffy_adapter/run.rs` and `block.rs` | The live ordinary block route spans the Taffy adapter and Buckram's block placement state. K6b's executable kernel is intentionally synthetic. | Make the live formatter resumable. Export exact snapshots from their current owners before claiming margin, float/exclusion, clearance, inline, or nested continuation state. |
-| `components/genet-livery/src/layout.rs` | Produces Buckram fragments and selected-root replacements. Several consumer paths still use `get` or `principal_fragment`, which select one rectangle. | Lower fragmentation inputs, materialize all continued fragments, and remove single-fragment selection from fragment-aware paint, hit-test, scroll, and geometry paths. |
+| `components/buckram/src/taffy_adapter/run.rs` and `block.rs` | The live ordinary block route spans the Taffy adapter and Buckram's block placement state. K6b's executable kernel is intentionally synthetic. The pre-K6c seam resets a per-run output and records an explicit unsupported dispatch when it sees its narrow input. | Make the live formatter resumable. Compute used geometry here, then create typed fragmentainers and continuations from that geometry before claiming margin, float/exclusion, clearance, inline, or nested continuation state. |
+| `components/genet-livery/src/layout.rs` | Produces Buckram fragments and selected-root replacements. It now lowers only the narrow definite horizontal `column-fill: auto` style shape to Buckram, while several consumer paths still use `get` or `principal_fragment`, which select one rectangle. | Materialize all continued fragments, and remove single-fragment selection from fragment-aware paint, hit-test, scroll, and geometry paths. |
 | `components/genet-livery/src/document.rs` | K5 damage selection and fresh-final equivalence are authoritative. Fragmented roots remain outside local replacement. | Promote damage to the fragmentation context when necessary, then replace only the affected continuation chain and compare with a fresh final document. |
 | `components/genet-livery/src/{text,paint}.rs` | Text and paint are retained side data keyed by the K5 result. | Consume continued fragment identity and fragmentainer clips. They do not get independent break decisions. |
 | `components/genet-livery/src/{table_block,table_shadow,table_wrapper}.rs` | K4/K5 table geometry and retained paint side planes are live. | Table fragmentation consumes the K4 model and publishes split table fragments through the same K6 tree. |
@@ -220,6 +223,13 @@ K6b is model work. It receives no live layout, multicol, paint, interaction, or
 WPT credit. K6c consumes it through the live formatter and browser path.
 
 ### K6c. Live multicol and first load-bearing continuation
+
+The accepted pre-K6c seam is a stop line, not K6c1. It intentionally carries
+style-only values rather than used content geometry, and `FragmentationOutput`
+records `SequentialMulticolUnsupported` for each affected layout run. K6c1
+begins when the formatter owns the box-sized used width, height, and available
+block space, then produces typed fragmentainers and continuation placements
+from those values.
 
 Start with a definite-height sequential-fill container. Balancing, spanners,
 column rules, nested multicol, and overflow columns are follow-on sub-gates
@@ -568,6 +578,29 @@ cannot hide a moved regression.
   remain typed deferrals. K6c must source exact state from
   `taffy_adapter/run.rs` and `block.rs`, then prove the live Livery geometry,
   paint, hit-test, mutation, and named WPT path.
+
+### 2026-09-06 pre-K6c input and dispatch seam
+
+- Integrated main commit `7eada46277b` adds Buckram-owned
+  `SequentialMulticolInput` collection and a per-layout-run
+  `FragmentationOutput` (from reviewed source commit `afca0c511fc`).
+  Genet-Livery admits only definite horizontal,
+  non-floating, non-positioned `column-fill: auto` boxes with an explicit
+  positive `column-count`, absolute pixel gap, and optional explicit pixel
+  `column-width`; nested multicol and balance modes stay outside this seam.
+- The input contains only authored style values. In particular, CSS width and
+  height are used solely to keep Livery's admission narrow; they are not copied
+  into the input or treated as used content geometry. Each run resets its output
+  and dispatches `SequentialMulticolUnsupported` when one or more such inputs
+  are present.
+- Focused Buckram and Livery tests cover run-scoped reset, narrow lowering, and
+  explicit unsupported dispatch. This is a dormant prerequisite: it creates no
+  fragment geometry, fragmentainers, continuation placements, paint, hit-test,
+  extent, mutation, or WPT result.
+- The next done-condition is formatter-owned used geometry after box sizing,
+  padding, and min/max resolution, followed by typed fragmentainers and
+  continuations that Livery's geometry, paint, hit-test, and extent consumers
+  use for the K6c1 fixture.
 
 ## Gate verification
 

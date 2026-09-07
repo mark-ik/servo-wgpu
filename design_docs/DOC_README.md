@@ -39,8 +39,8 @@ older `docs/` corpus without changing their location or governance.
 | Work | Current boundary and next proof |
 |---|---|
 | [Font fallback](2026-09-04_common_script_font_fallback_plan.md) | Windows T1 is accepted with focused regressions and Ortet readback. Consumer revision adoption, upstream disposition, and other-platform measurements remain open. |
-| [Ortet](2026-09-03_ortet_founding_plan.md) | O0-O4 landed. Native accessibility and the raw wasm canvas host have platform receipts; the wasm cone excludes AccessKit and winit. Browser http(s) fetching, stable accessibility IDs, and publication remain separate. |
-| [K6 fragmentation](../docs/2026-08-15_buckram_k6_fragmentation_execution_plan.md) | K6a typed inputs and K6b's retained context/token model landed. All 6,077 named records match the frozen pre-K6 baseline. Live formatter continuation and multicol geometry remain K6c work. |
+| [Ortet](2026-09-03_ortet_founding_plan.md) | O0-O4 landed. Native accessibility and the raw wasm canvas host have platform receipts; the wasm cone excludes AccessKit and winit. Browser http(s) provisioning has structural resolver/session and headed HTTP runtime receipts; stable accessibility IDs and publication remain open. |
+| [K6 fragmentation](../docs/2026-08-15_buckram_k6_fragmentation_execution_plan.md) | K6a typed inputs, K6b's retained context/token model, and a dormant pre-K6c style/input dispatch seam landed. All 6,077 named records match the frozen pre-K6 baseline. Live formatter continuation and multicol geometry remain K6c work. |
 | [Flex and grid, Row 18](2026-08-25_livery_flex_shorthand_plan.md#row-18-closure-and-remaining-work) | Bounded vertical-flex slices landed. Remaining work includes mixed-writing-mode baselines, generated/pseudo self edges, shared font metrics and percentage provenance, then a measured grid inventory. The dated guard review records 21 pre-K6 flex/grid pass-to-fail cases. |
 | [Floats and shapes, Row 12](../docs/2026-08-25_buckram_horizontal_float_direction_reconciliation.md) | Horizontal box-shape and direction slices landed. Vertical/orthogonal transforms and remaining shape families retain their own unproved boundaries. |
 | [Counters, lists and generated content, Row 17](../docs/2026-08-21_buckram_livery_lane_program_plan.md#wave-2-now-unblocked) | Open inventory. Name the computed-content, counter-scope and marker-box consumers and a bounded execution gate before implementation. |
@@ -55,9 +55,10 @@ completed corpus census or bounded slice does not close its enclosing feature.
 
 ## ortet — the raw host
 
-- [ortet_founding_plan](2026-09-03_ortet_founding_plan.md) (**O0, O1 and O4
-  landed 2026-09-03; O2 Windows accessibility accepted 2026-09-05;
-  publication and O3 web target open**: the one headed port that proves the
+- [ortet_founding_plan](2026-09-03_ortet_founding_plan.md) (**O0-O4 landed;
+  browser http(s) provisioning and its headed HTTP runtime receipt accepted
+  2026-09-06; stable accessibility IDs and publication remain open**: the one
+  headed port that proves the
   engine runs without Mere, over `genet-winit-host`, `genet-render-host`,
   `genet-documents`' Livery lane and `document-session-api`, with a cone
   witness that forbids every Mere crate and a self-driven frame receipt.

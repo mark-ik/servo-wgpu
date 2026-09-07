@@ -1,7 +1,8 @@
 # Ortet founding plan
 
-**Status:** implementation gates complete, updated 2026-09-06. O0 through O4
-landed; the crates.io claim stays pending. The
+**Status:** O0 through O4 landed, updated 2026-09-06. Browser http(s) resource
+provisioning landed structurally in `35efc1985bc` and its headed HTTP runtime
+gate is accepted in `247a52e612a`. The crates.io claim stays pending. The
 `fleece` carve-out is reconciled with the boundary plan's §9.1 (see Findings);
 the witness still names fleece on every run.
 
@@ -637,7 +638,46 @@ graph control.
   final source `96f2f65c5bf`; local artifacts are under
   `C:/Users/mark_/Code/scratch/genet-k6b-ortet-o3-20260906/chrome-final-main/`.
 
-  The remaining browser boundary is http(s) resource loading. The synchronous
-  `ResourceFetcher` cannot await browser fetch, so the wasm entrypoint currently
-  accepts local data documents and data/package resources. Authored text on
-  wasm must supply font bytes through `@font-face`; no system fonts exist there.
+  Browser http(s) loading now uses the staged path recorded below. Authored text
+  on wasm still supplies font bytes through `@font-face`; no system fonts exist
+  there.
+
+- 2026-09-06: **Browser resource provisioning landed structurally.** Integrated
+  commit `35efc1985bc` gives the wasm host browser-owned http(s) fetch for both
+  the top-level document and the session's staged linked stylesheet, nested
+  import, image, and font requests. The top-level response retains its
+  redirect-final URL as document identity and resource base, including the
+  requested fragment where applicable.
+
+  `StagedResourceResolution` owns the exact DOM and immutable response ledger
+  that Livery will spawn. Requests are rediscovered through the existing
+  resolver and only the currently pending canonical request may be supplied;
+  the prepared Livery session therefore cannot diverge from a separate static
+  DOM or an arbitrary response map. Redirect-final URL and content-type
+  metadata remain with each resolved resource, including redirected fonts.
+
+  Browser reads stream response bodies under configurable per-response,
+  aggregate-byte, and resource-count budgets. Navigation generations gate both
+  success and failure publication, so an older load cannot replace or log over
+  a newer one. The focused resolver and prepared-session receipts, including a
+  redirected-font metadata case, passed with the wasm Ortet check.
+
+  2026-09-06: **The headed HTTP runtime gate is accepted.** Integrated main
+  commit `247a52e612a` (review source `8de3f373ec1`) adds
+  `support/ci/run_ortet_chromium_http_receipt.ps1`. Its checked-in invocation,
+  `./support/ci/run_ortet_chromium_http_receipt.ps1 -ArtifactDir <artifact-dir>`,
+  builds the wasm host, serves the local HTTP fixture, drives Chromium DevTools,
+  and retains `chromium-receipt.log`, `chromium-canvas.png`,
+  `chromium-canvas.sha256`, and `http-receipt-requests.json`.
+
+  The accepted 640 by 400 receipt counted 69,240 page-tone pixels, 133,848 card
+  pixels, 8,920 border pixels, 24,462 glyph-tone pixels, and 3,744 image-tone
+  pixels. Redirect, HTML, CSS, nested import, image, font, denied-resource, and
+  budget-rejected checks were all true. RGBA FNV-32 is `0xf6d99fe5`; PNG
+  SHA-256 is `fb29e1e44b7e1548414355a40ab88916ccf5a0e1713d4a803b91c29affe3a316`.
+  The retained request ledger covers `/start`'s redirect, final HTML, base CSS,
+  two imports, the image, authored Ahem TTF, the 403 resource, and a budget
+  overflow request.
+
+  This accepts the browser-runtime boundary. Stable accessibility IDs and
+  publication retain their separate gates.
