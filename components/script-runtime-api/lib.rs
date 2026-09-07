@@ -39,13 +39,18 @@ use genet_scripted_dom::{NodeId, ScriptedDom};
 use layout_dom_api::LayoutDom;
 use script_engine_api::{CallCx, NativeFn, ScriptEngine, ScriptEngineSnapshot};
 
+mod crypto;
 mod dom;
 mod fetch;
 mod harness;
+mod messaging;
 mod platform;
 mod selector;
+mod structured_clone;
+mod timing;
 mod webgl;
 
+pub use crypto::RandomSource;
 pub use dom::{
     ComputedStyleHandler, CookieProvider, InlineStyleHandler, InlineStyleValueResult,
     MediaQueryHandler, StyleSheetHandler, StyleSheetImportOwner, StyleSheetImportRule,
@@ -167,6 +172,12 @@ pub struct HostState {
     /// carries (`_ctx`). Each `__webgl_*` sink routes to one of these by its
     /// leading context-id argument. Grows by one per `getContext('webgl')`.
     pub webgl_contexts: Vec<Box<dyn WebGlHandler>>,
+    /// The host's cryptographically secure random source for `crypto`. `None` =
+    /// the built-in ChaCha20 default (seeded from `std`'s OS-derived hash keys),
+    /// so `getRandomValues` works with no host wiring. Installed by
+    /// [`Runtime::set_random_source`]; an `Rc` so the native sink clones it out
+    /// before calling (no live `HostState` borrow during the call).
+    pub random: Option<std::rc::Rc<dyn RandomSource>>,
     /// Protocol trace marks emitted through native sinks while JS is still
     /// running. [`Runtime`] drains these after each engine boundary so they land
     /// in the deterministic NDJSON stream with stable sequence numbers.
@@ -804,6 +815,13 @@ impl<E: ScriptEngine> Runtime<E> {
         self.host.borrow_mut().local_storage = Some(std::rc::Rc::from(provider));
     }
 
+    /// Install the host's random source for `crypto.getRandomValues` /
+    /// `crypto.randomUUID` (e.g. one over the platform CSPRNG). Until set, the
+    /// built-in ChaCha20 default runs, so `crypto` works without host wiring.
+    pub fn set_random_source(&mut self, source: Box<dyn RandomSource>) {
+        self.host.borrow_mut().random = Some(std::rc::Rc::from(source));
+    }
+
     /// Install the host's WebGL context factory (e.g. one that mints a
     /// webgl-wgpu context over a real `wgpu::Device` at the requested size).
     /// Until set, the JS `WebGLRenderingContext` methods no-op or return
@@ -1076,6 +1094,17 @@ fn install_host_surface<E: ScriptEngine>(engine: &mut E) -> Result<(), E::Error>
     // through the `__createWebGLContext()` helper.
     webgl::install_webgl_surface(engine)?;
 
+    // `structuredClone` + the serialize/deserialize algorithm. After `fetch` so
+    // `Blob` / `File` exist for the platform-object cases.
+    structured_clone::install_structured_clone_surface(engine)?;
+    // `performance` (hr-time, user timing) + `PerformanceObserver`.
+    timing::install_timing_surface(engine)?;
+    // `MessageChannel` / `MessagePort` / `BroadcastChannel` / `MessageEvent`.
+    // After `structured_clone` so `postMessage` can clone its argument.
+    messaging::install_messaging_surface(engine)?;
+    // `crypto.getRandomValues` / `crypto.randomUUID` over the host random source.
+    crypto::install_crypto_surface(engine)?;
+
     // Window platform services: `location` (reflecting the document URL), plus
     // `localStorage` / `history` as they land. After `dom` so `document` exists.
     platform::install_platform_surface(engine)?;
@@ -1195,6 +1224,9 @@ const EVENT_LOOP_BOOTSTRAP: &str = r#"
       }
       if (idx < 0) break; // nothing eligible
       var due = timers.splice(idx, 1)[0];
+      // Advance the virtual clock to the fired task's due time in both modes, so
+      // performance.now() reports elapsed time in cooperative (disk) runs too.
+      if (due.at > vnow) vnow = due.at;
       fired++;
       if (due.repeat) { due.at = vnow + due.delay; due.seq = nextId++; timers.push(due); }
       due.cb();
@@ -1205,6 +1237,20 @@ const EVENT_LOOP_BOOTSTRAP: &str = r#"
       if (p && Object.keys(p).length > 0) break;
     }
     return fired;
+  };
+  // The timers' monotonic clock, in ms since the runtime started. `performance`
+  // reads this so a virtual-clock harness run stays deterministic.
+  globalThis.__virtualNow = function() { return vnow; };
+  // queueMicrotask: the HTML entry point onto the VM's own microtask queue, so it
+  // interleaves with promise reactions and drains at the existing checkpoint.
+  globalThis.queueMicrotask = function(callback) {
+    if (typeof callback !== 'function') {
+      throw new TypeError('queueMicrotask: callback is not callable');
+    }
+    Promise.resolve().then(function() {
+      // "Report the exception" rather than rejecting an invisible promise.
+      try { callback(); } catch (ex) { globalThis.__reportListenerException(ex); }
+    });
   };
   // Milliseconds until the next timer is due (real-time), or -1 if none. The drive
   // loop sleeps at most this long so a timer fires near its real deadline.

@@ -50,6 +50,7 @@ older `docs/` corpus without changing their location or governance.
 | [Web platform WPT census](2026-09-06_web_platform_wpt_census.md) | Baseline exact maps for 41 non-CSS WPT directories (21,672 files, disk mode, Boa/Livery) landed 2026-09-06. Three of its four harness caveats are closed by the harness-repair plan; the reftest caveat and the per-directory lanes remain open. |
 | [WPT harness repair](2026-09-07_wpt_harness_repair_plan.md) | Per-test worker isolation, the disk-mode include and `.py` fixes, and a configurable, quiescing server-mode deadline landed 2026-09-07, with a re-run census whose 204 movements are all attributed. Next proof: a server-mode measurement of the network-dependent families on a live `wpt serve`. |
 | [XMLHttpRequest](2026-09-07_xhr_plan.md) | XHR as a state machine over the fetch seam, landed 2026-09-07: xhr 53 to 281 subtests in disk mode, 831 of 1,336 in server mode, fetch holds. Residuals: responseXML needs DOMParser; 28 errors are Worker and document.domain demand. |
+| [Cheap globals](2026-09-07_cheap_globals_plan.md) | `performance` (+ `PerformanceObserver`), `queueMicrotask`, `structuredClone`, `MessageChannel` / `MessagePort` / `BroadcastChannel` and `crypto` landed 2026-09-07: 79 forward file movements, zero pass-to-fail, +462 subtest passes over ten directories. Next proof is `crypto.subtle`, real `ArrayBuffer` detachment, and the cross-agent reuse of the clone walker by the Worker lane. |
 | [IDL interface table](2026-09-07_idl_interface_table_plan.md) | The scripted tier's HTML interface table is generated from WPT's vendored WebIDL plus its tag map, with 41 reasoned overrides and a drift test. 72 interfaces / 338 reflected attributes / 41 shape-only DOM-CSSOM interfaces. Next proof is extending the shape pass past `html`, `dom` and `cssom`, and the reflection-algorithm gaps (`ReflectRange` clamping, invalid-value defaults). |
 | [Host contract ownership](../docs/2026-08-14_web_platform_host_contract_plan.md) | Genet owns retained session contracts; Mere owns surface orchestration and product adapters. The older S0-S5 receipts need a consumer-side status refresh before resuming those lanes. |
 
@@ -91,6 +92,22 @@ completed corpus census or bounded slice does not close its enclosing feature.
   subtest passes, and `html/semantics/interfaces.html` goes 0/438 → 298/438.
   Raw maps under
   `Code/testing/genet/wpt-ledger/2026-09-07_idl_interface_table/`.)
+- [cheap_globals_plan](2026-09-07_cheap_globals_plan.md)
+  (**landed 2026-09-07**: the day-scale entries from the census's
+  missing-globals inventory, each a JS bootstrap over the existing VM
+  primitives. `performance` with hr-time, User Timing and a
+  `PerformanceObserver` on the drive loop (`timing.rs`); `queueMicrotask` on
+  the existing microtask checkpoint; the structured serialize/deserialize
+  algorithm as an engine-neutral value walk with a transferable registry
+  (`structured_clone.rs`), the substrate the Worker lane reuses;
+  `MessageEvent` / `MessageChannel` / `MessagePort` / `BroadcastChannel` and a
+  real `window.postMessage` (`messaging.rs`); and `crypto` over a
+  `RandomSource` host seam with a dependency-free ChaCha20 default
+  (`crypto.rs`). `Image` / `Option` / `Audio` needed no code — the interface
+  table already declares them. hr-time 0 to 2 all-pass, user-timing 1 to 24,
+  performance-timeline 0 to 17, webmessaging 20 to 52, WebCryptoAPI 104 to 72
+  errored; the structured-clone battery 0/150 to 119/150. Raw maps under
+  `Code/testing/genet/wpt-ledger/2026-09-07_cheap_globals/`.)
 - [xhr_plan](2026-09-07_xhr_plan.md)
   (**landed 2026-09-07**: XMLHttpRequest, XMLHttpRequestUpload and
   ProgressEvent over the deferred fetch seam, synchronous XHR through
@@ -231,6 +248,14 @@ same session; links out of it are rewritten for its new depth.
 - **Freeze dependency resolution with a measured runner.** `Cargo.lock` is
   intentionally ignored here. Retain the generated lockfile, its digest,
   target/features and local-override facts with the source and binary receipt.
+- **A lane's baseline map must come from the lane's own runner build.**
+  `Cargo.lock` is ignored and rewritten by builds, so two runners built at
+  different times can embed different dependency revisions even from the
+  same tree; the cheap-globals lane saw 14 files move under an unmodified
+  tree for that reason. Another lane's `post` maps are therefore not a
+  controlled baseline. Build the unmodified tree in your own target
+  directory, run `pre`, then run `post`, and record both runner digests.
+  See the cheap-globals plan's Findings.
 - **Verify paired forks from a standalone consumer.** Cargo root patches are
   not inherited by downstream workspaces. A coupled dependency must travel with
   its caller; prove that resolution before refreshing product revisions.
@@ -242,7 +267,7 @@ same session; links out of it are rewritten for its new depth.
 ## Status
 
 Founded 2026-08-24; current work map reconciled 2026-09-07, including the IDL
-interface-table lane. The index covers
+interface-table and cheap-globals lanes. The index covers
 the flat plans sectioned above and two archived plans; the count in this line
 was stale before 2026-09-07 and is now stated by the sections themselves.
 All three former component area roots now live in Mere. The older `docs/`

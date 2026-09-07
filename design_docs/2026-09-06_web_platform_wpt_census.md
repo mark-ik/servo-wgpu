@@ -229,6 +229,15 @@ loading gap, not an engine gap.
 These are first errors only. A file that dies on `crypto` may also need
 `Worker`; the true demand for each interface is at least this count.
 
+> **Partly closed 2026-09-07** by
+> [`2026-09-07_cheap_globals_plan.md`](2026-09-07_cheap_globals_plan.md):
+> `crypto` (86), `performance` (22), `BroadcastChannel` (14), `MessageChannel`
+> (8), `PerformanceObserver` (4), `queueMicrotask` (3) and `Image` / `Option` /
+> `Audio` are now present, as is `structuredClone`. `XMLHttpRequest` (83) was
+> closed by the XHR plan. The remainder — `Worker`, `SharedWorker`,
+> `getSelection`, `AudioContext`, `IDBKeyRange`, `MutationObserver`,
+> `WebSocket`, `DOMMatrix`, the observers and `trustedTypes` — is untouched.
+
 ## Harness caveats found by the run
 
 These are runner gaps that depress counts and should be fixed before the
