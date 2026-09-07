@@ -410,10 +410,10 @@ fn load_lane_results(
                     path.display()
                 ));
             }
-            if test.is_worker() {
+            if test.is_unhostable_variant() {
                 if record.status != "skip" {
                     return Err(format!(
-                        "{} credits unhostable worker `{url}` as `{}`",
+                        "{} credits unhostable variant `{url}` as `{}`",
                         path.display(),
                         record.status
                     ));
@@ -545,7 +545,7 @@ fn summarize_lane(
         let url = normalize_url(&test.url);
         expected_urls.insert(url.clone());
         summary.manifest_tests += 1;
-        if test.is_worker() {
+        if test.is_unhostable_variant() {
             summary.unhostable_manifest_tests += 1;
         } else {
             summary.hostable_manifest_tests += 1;
@@ -572,7 +572,7 @@ fn summarize_lane(
                     "reftest result `{url}` unexpectedly carries subtest counts"
                 ));
             }
-        } else if !test.is_worker() {
+        } else if !test.is_unhostable_variant() {
             summary.missing_hostable_tests += 1;
         }
     }
@@ -897,7 +897,11 @@ mod tests {
     fn report_counts_missing_and_unhostable_manifest_tests() {
         let tests = vec![
             manifest_test("/css/a.html", "css/a.html", TestKind::Testharness),
-            manifest_test("/css/a.worker.html", "css/a.any.js", TestKind::Testharness),
+            manifest_test(
+                "/css/a.sharedworker.html",
+                "css/a.any.js",
+                TestKind::Testharness,
+            ),
             manifest_test("/css/b.html", "css/b.html", TestKind::Reftest),
             manifest_test("/css/manual.html", "css/manual.html", TestKind::Manual),
         ];
@@ -1179,22 +1183,26 @@ mod tests {
     }
 
     #[test]
-    fn worker_records_never_inflate_hostable_totals() {
+    fn unhostable_variant_records_never_inflate_hostable_totals() {
         let tests = vec![
             manifest_test("/css/a.html", "css/a.html", TestKind::Testharness),
-            manifest_test("/css/a.worker.html", "css/a.any.js", TestKind::Testharness),
+            manifest_test(
+                "/css/a.sharedworker.html",
+                "css/a.any.js",
+                TestKind::Testharness,
+            ),
             manifest_test("/css/b.html", "css/b.html", TestKind::Reftest),
         ];
         let harness = write_results(
-            &temp_path("worker-harness"),
+            &temp_path("unhostable-harness"),
             "testharness",
             serde_json::json!({
                 "css/a.html": "pass",
-                "css/a.worker.html": "pass"
+                "css/a.sharedworker.html": "pass"
             }),
         );
         let reftest = write_results(
-            &temp_path("worker-reftest"),
+            &temp_path("unhostable-reftest"),
             "reftest",
             serde_json::json!({"css/b.html": "pass"}),
         );
@@ -1205,15 +1213,15 @@ mod tests {
                 std::slice::from_ref(&harness),
             ),
         )
-        .expect_err("an unhostable worker cannot pass");
-        assert!(error.contains("credits unhostable worker"), "{error}");
+        .expect_err("an unhostable variant cannot pass");
+        assert!(error.contains("credits unhostable variant"), "{error}");
 
         write_results(
             &harness,
             "testharness",
             serde_json::json!({
                 "css/a.html": "pass",
-                "css/a.worker.html": {"status": "skip", "reason": "worker-only"}
+                "css/a.sharedworker.html": {"status": "skip", "reason": "worker-only"}
             }),
         );
         let report = build_report(
@@ -1223,7 +1231,7 @@ mod tests {
                 std::slice::from_ref(&harness),
             ),
         )
-        .expect("worker skip is excluded");
+        .expect("unhostable skip is excluded");
         assert_eq!(report.testharness.observed_tests, 1);
         assert_eq!(report.testharness.statuses.pass, 1);
         assert_eq!(report.testharness.statuses.skip, 0);

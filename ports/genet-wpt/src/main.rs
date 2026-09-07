@@ -217,7 +217,7 @@ impl TestCase {
     }
 
     fn from_manifest(test: manifest::ManifestTest, tests_root: &Path) -> Option<TestCase> {
-        if test.is_worker() {
+        if test.is_unhostable_variant() {
             return None;
         }
         let source_path = strip_url_path(&test.source_path);
@@ -384,44 +384,14 @@ fn synthesize_any_js(path: &Path, variant_url: Option<&str>) -> Option<String> {
         return None;
     }
     let src = fs::read_to_string(path).ok()?;
-    let mut scripts: Vec<String> = Vec::new();
-    let mut window_ok = true;
-    let mut in_block = false;
-    // The `// META:` directives form the leading comment header; scan until the
-    // first real statement (tracking /* */ so a license block doesn't end it).
-    for line in src.lines() {
-        let t = line.trim();
-        if in_block {
-            if t.contains("*/") {
-                in_block = false;
-            }
-            continue;
-        }
-        if t.starts_with("/*") {
-            if !t.contains("*/") {
-                in_block = true;
-            }
-            continue;
-        }
-        if let Some(meta) = t.strip_prefix("// META:") {
-            let meta = meta.trim();
-            if let Some(s) = meta.strip_prefix("script=") {
-                scripts.push(s.trim().to_owned());
-            } else if let Some(g) = meta.strip_prefix("global=") {
-                // window-shaped run: only `.any.js` whose globals include window
-                // (or the dedicated-window aliases) is hostable here.
-                window_ok = g.split(',').any(|tok| {
-                    let tok = tok.trim();
-                    tok == "window" || tok == "default" || tok.starts_with("window")
-                });
-            }
-            continue;
-        }
-        if t.is_empty() || t.starts_with("//") {
-            continue;
-        }
-        break; // first real statement: META header is over
-    }
+    let (scripts, globals) = harness::meta_directives(&src);
+    // window-shaped run: only `.any.js` whose globals include window (or the
+    // dedicated-window aliases) is hostable here.
+    let window_ok = globals.as_deref().is_none_or(|g| {
+        g.split(',').any(|tok| {
+            matches!(tok.trim(), "window" | "default") || tok.trim().starts_with("window")
+        })
+    });
     // `.window.js` is inherently window-scoped; the global directive only gates
     // `.any.js`.
     if name.ends_with(".any.js") && !window_ok {
@@ -755,8 +725,9 @@ fn discover_tests(args: &Args) -> Vec<TestCase> {
 
 /// Enumerate tests under a subset from MANIFEST.json (harness-exactness H1), for
 /// diffing the authoritative manifest enumeration against the directory walk. The
-/// manifest sits at `<tests-root>/../meta/MANIFEST.json`. Worker variants are counted
-/// but excluded from the runnable total (this window-shaped runner cannot host them).
+/// manifest sits at `<tests-root>/../meta/MANIFEST.json`. Shared/service-worker and
+/// shadow-realm variants are counted but excluded from the runnable total; dedicated
+/// workers are hostable and count as runnable.
 fn manifest_list(args: &Args) {
     let manifest_path = manifest_path(&args.tests_root);
     let manifest = match manifest::Manifest::load(&manifest_path) {
@@ -768,14 +739,18 @@ fn manifest_list(args: &Args) {
     };
     let tests = manifest.tests_under(&args.subset);
     let mut total = 0usize;
+    let mut unhostable = 0usize;
     let mut workers = 0usize;
     let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
     for t in &tests {
-        if t.is_worker() {
-            workers += 1;
+        if t.is_unhostable_variant() {
+            unhostable += 1;
             continue;
         }
         total += 1;
+        if t.is_dedicated_worker() {
+            workers += 1;
+        }
         *counts.entry(t.kind.label()).or_default() += 1;
         if args.verbose {
             println!("{:<12} {}", t.kind.label(), t.url);
@@ -783,7 +758,7 @@ fn manifest_list(args: &Args) {
     }
     let by_kind: Vec<String> = counts.iter().map(|(k, n)| format!("{k}={n}")).collect();
     println!(
-        "manifest: {total} runnable test(s) under '{}' ({}); {workers} worker variant(s) skipped",
+        "manifest: {total} runnable test(s) under '{}' ({}); {workers} dedicated-worker variant(s); {unhostable} unhostable variant(s) skipped",
         if args.subset.is_empty() {
             "<all>"
         } else {
@@ -919,26 +894,100 @@ enum TestHtml {
     ReadError,
 }
 
-fn worker_family_reason(test: &TestCase) -> &'static str {
+/// Which global a `.any.js`-style variant runs in. Dedicated workers became
+/// hostable with the worker lane; shared and service workers and shadow realms
+/// keep their skip reasons.
+enum VariantGlobal {
+    Window,
+    DedicatedWorker,
+    Unhostable(&'static str),
+}
+
+fn variant_global(test: &TestCase) -> VariantGlobal {
     let name = test.name();
     if name.contains(".sharedworker.") {
-        "sharedworker-unsupported"
-    } else if name.contains(".serviceworker.") {
-        "serviceworker-unsupported"
-    } else if name.contains(".shadowrealm-") {
-        "shadowrealm-unsupported"
-    } else if name.contains(".worker.") || name.contains(".worker?") {
-        "dedicated-worker-unsupported"
-    } else {
-        "non-window-global"
+        return VariantGlobal::Unhostable("sharedworker-unsupported");
     }
+    if name.contains(".serviceworker.") {
+        return VariantGlobal::Unhostable("serviceworker-unsupported");
+    }
+    if name.contains(".shadowrealm-") {
+        return VariantGlobal::Unhostable("shadowrealm-unsupported");
+    }
+    let file = test
+        .path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    if file.ends_with(".worker.js") || name.contains(".worker.") || name.contains(".worker?") {
+        return VariantGlobal::DedicatedWorker;
+    }
+    // Walk discovery has no variant expansion, so the `global=` directive is the
+    // only thing that says which global a `.any.js` belongs in.
+    if file.ends_with(".any.js") {
+        let src = fs::read_to_string(&test.path).unwrap_or_default();
+        let (_, globals) = harness::meta_directives(&src);
+        let Some(globals) = globals else {
+            return VariantGlobal::Window;
+        };
+        let tokens: Vec<&str> = globals.split(',').map(str::trim).collect();
+        let window_ok = tokens
+            .iter()
+            .any(|t| *t == "default" || t.starts_with("window"));
+        if !window_ok {
+            let worker_ok = tokens
+                .iter()
+                .any(|t| matches!(*t, "worker" | "dedicatedworker" | "default"));
+            return if worker_ok {
+                VariantGlobal::DedicatedWorker
+            } else {
+                VariantGlobal::Unhostable("non-window-global")
+            };
+        }
+    }
+    VariantGlobal::Window
+}
+
+/// WPT's generated `<name>.worker.html` / `<stem>.any.worker.html`: a window that
+/// starts the worker and pipes its testharness results back through the same
+/// results bridge. The worker script itself comes off the resource route.
+fn synthesize_worker_wrapper(test: &TestCase) -> Option<String> {
+    let name = test.path.file_name()?.to_str()?;
+    let script = if name.ends_with(".worker.js") {
+        name.to_owned()
+    } else {
+        format!("{}.any.worker.js", name.strip_suffix(".any.js")?)
+    };
+    let query = test
+        .name()
+        .split_once('?')
+        .map(|(_, q)| q.split('#').next().unwrap_or(q))
+        .filter(|q| !q.is_empty());
+    let script = match query {
+        Some(q) => format!("{script}?{q}"),
+        None => script,
+    };
+    Some(format!(
+        "<!doctype html><meta charset=utf-8>\n\
+         <script src=\"/resources/testharness.js\"></script>\n\
+         <script src=\"/resources/testharnessreport.js\"></script>\n\
+         <div id=log></div>\n\
+         <script>fetch_tests_from_worker(new Worker(\"{script}\"));</script>\n"
+    ))
 }
 
 fn load_test_document_disk(test: &TestCase) -> TestHtml {
     if is_any_js(&test.path) {
-        return match synthesize_any_js(&test.path, Some(test.name())) {
-            Some(h) => TestHtml::Html(h),
-            None => TestHtml::Skip(worker_family_reason(test)),
+        return match variant_global(test) {
+            VariantGlobal::Unhostable(reason) => TestHtml::Skip(reason),
+            VariantGlobal::DedicatedWorker => match synthesize_worker_wrapper(test) {
+                Some(h) => TestHtml::Html(h),
+                None => TestHtml::Skip("dedicated-worker-unsupported"),
+            },
+            VariantGlobal::Window => match synthesize_any_js(&test.path, Some(test.name())) {
+                Some(h) => TestHtml::Html(h),
+                None => TestHtml::Skip("non-window-global"),
+            },
         };
     }
     let Ok(bytes) = fs::read(&test.path) else {

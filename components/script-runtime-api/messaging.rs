@@ -82,6 +82,7 @@ const MESSAGING_BOOTSTRAP: &str = r#"
     this._enabled = false;
     this._closed = false;
     this._transferred = false;
+    this._remote = null;       // non-null on a stub standing in for another agent
   }
   MessagePort.prototype = Object.create(EventTarget.prototype);
   MessagePort.prototype.constructor = MessagePort;
@@ -116,8 +117,16 @@ const MESSAGING_BOOTSTRAP: &str = r#"
     for (var i = 0; i < ports.length; i++) {
       if (ports[i] === this) throw dataClone("The source port");
     }
-    var data = globalThis.__structuredClone(message, transfer);
     var peer = this._peer;
+    if (peer && peer._remote !== null) {
+      // The entangled endpoint lives in another agent: serialize to the wire
+      // and let the host route it by port id.
+      var payload = globalThis.__scSerialize(message, transfer);
+      var minted = globalThis.__portTakePending();
+      globalThis.__portForward(peer._remote, payload, minted.join(','));
+      return;
+    }
+    var data = globalThis.__structuredClone(message, transfer);
     if (!peer || peer._closed) return;  // no entangled port: the message is dropped
     var event = internalMessageEvent(data, { ports: ports, origin: '' });
     if (peer._enabled) deliver(peer, event); else peer._queue.push(event);
@@ -155,19 +164,83 @@ const MESSAGING_BOOTSTRAP: &str = r#"
     return out;
   }
 
-  // A transferred port keeps its identity and entanglement; only the sender's
-  // handle is detached, which is what "disentangle then entangle" means inside
-  // one agent.
+  // ---- Cross-agent endpoints ----
+  // A port transferred to another agent leaves a *stub* behind: the peer keeps
+  // its entanglement, but delivery forwards over the host link keyed by a
+  // process-unique port id instead of dispatching locally.
+  var remoteStubs = {};      // port id -> stub port
+  var pendingPortIds = [];   // ids minted by the serialization in progress
+
+  function remoteStub(id) {
+    var p = new MessagePort();
+    p._remote = id;
+    remoteStubs[id] = p;
+    return p;
+  }
+  // The ids this agent minted while serializing; the caller binds them to the
+  // link the record is about to travel on.
+  globalThis.__portTakePending = function() {
+    var ids = pendingPortIds;
+    pendingPortIds = [];
+    return ids;
+  };
+  // A message arriving from the other agent for port `id`.
+  globalThis.__portDeliver = function(id, payload) {
+    var stub = remoteStubs[id];
+    if (!stub) return;
+    var target = stub._peer;
+    if (!target || target._closed) return;
+    var event;
+    try {
+      event = internalMessageEvent(globalThis.__scDeserialize(payload), { origin: '' });
+    } catch (e) {
+      event = new MessageEvent('messageerror', { origin: '' });
+    }
+    if (target._enabled) deliver(target, event); else target._queue.push(event);
+  };
+
+  // A transferred port keeps its identity and entanglement inside one agent;
+  // only the sender's handle is detached, which is what "disentangle then
+  // entangle" means there. Crossing an agent takes the `serialize` half.
   globalThis.__sc_registerTransferable({
     ctor: MessagePort,
     name: 'MessagePort',
+    tag: 'port',
     transfer: function(port) {
       if (port._transferred) throw dataClone("An already-transferred MessagePort");
       port._transferred = true;
       // The receiving side re-enables it; clear the sender's enabled flag so a
-      // queued message is not delivered to the old owner's listeners.
-      setTimeout(function() { port._transferred = false; }, 0);
+      // queued message is not delivered to the old owner's listeners. A port
+      // that left the agent entirely stays detached.
+      setTimeout(function() { if (!port._crossAgent) port._transferred = false; }, 0);
       return port;
+    },
+    serialize: function(port) {
+      var id = String(globalThis.__portAllocId());
+      port._crossAgent = true;
+      // Undelivered messages travel with the port.
+      var queued = [];
+      for (var i = 0; i < port._queue.length; i++) {
+        queued.push(globalThis.__scSerialize(port._queue[i].data));
+      }
+      port._queue = [];
+      var peer = port._peer;
+      var stub = remoteStub(id);
+      if (peer) { peer._peer = stub; stub._peer = peer; }
+      port._peer = null;
+      port._closed = true;
+      pendingPortIds.push(id);
+      return { id: id, q: queued };
+    },
+    deserialize: function(rec) {
+      var p = new MessagePort();
+      var stub = remoteStub(rec.id);
+      p._peer = stub;
+      stub._peer = p;
+      for (var i = 0; i < rec.q.length; i++) {
+        p._queue.push(internalMessageEvent(globalThis.__scDeserialize(rec.q[i]), { origin: '' }));
+      }
+      return p;
     }
   });
 
@@ -259,5 +332,11 @@ const MESSAGING_BOOTSTRAP: &str = r#"
   };
   defineHandler(globalThis, 'message', null);
   defineHandler(globalThis, 'messageerror', null);
+
+  // Shared with the worker surface, which needs the same transfer-list
+  // normalization and the same `on<type>` property shape.
+  globalThis.__normalizeTransfer = normalizeTransfer;
+  globalThis.__defineEventHandler = defineHandler;
+  globalThis.__internalMessageEvent = internalMessageEvent;
 })();
 "#;

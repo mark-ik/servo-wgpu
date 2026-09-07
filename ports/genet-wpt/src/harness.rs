@@ -34,7 +34,8 @@ use layout_dom_api::{LayoutDom, LocalName, Namespace};
 use livery::media::{Device as MediaDevice, MediaQueryList};
 use script_engine_api::ScriptEngine;
 use script_runtime_api::{
-    FetchHandler, FetchOutcome, MediaQueryHandler, Runtime, TestResult, WebGlFactory,
+    FetchHandler, FetchOutcome, MediaQueryHandler, Runtime, ScriptResourceLoader, TestResult,
+    WebGlFactory,
 };
 
 /// `matchMedia` seam for the WPT runner: evaluates against a default device.
@@ -165,6 +166,14 @@ pub trait ScriptSrcLoader {
     /// The contents of a non-harness `<script src>`, or `None` to skip it
     /// (unresolvable, remote-in-disk-mode, or fetch failed).
     fn load_script(&self, src: &str) -> Option<String>;
+
+    /// The same route, detached from this borrow, for a worker agent to pull its
+    /// classic script and `importScripts` targets through. `None` leaves the
+    /// runtime on its `fetch()` seam, which is what server mode wants: a live
+    /// `wpt serve` generates the worker variants itself.
+    fn resource_route(&self) -> Option<Box<dyn ScriptResourceLoader>> {
+        None
+    }
 }
 
 /// Disk loader: resolve `<script src>` against the test dir / tests root, read the
@@ -202,6 +211,110 @@ impl ScriptSrcLoader for DiskLoader<'_> {
         let path = resolve(src, self.base_dir, self.tests_root)?;
         fs::read_to_string(path).ok()
     }
+
+    fn resource_route(&self) -> Option<Box<dyn ScriptResourceLoader>> {
+        Some(Box::new(DiskResources {
+            base_dir: self.base_dir.to_path_buf(),
+            tests_root: self.tests_root.to_path_buf(),
+        }))
+    }
+}
+
+/// The disk route a worker agent reads through: the same resolution as
+/// [`DiskLoader`], owned rather than borrowed, plus the one file WPT's server
+/// would have generated — `<stem>.any.worker.js`, the worker-global wrapper
+/// around a `.any.js` test.
+struct DiskResources {
+    base_dir: PathBuf,
+    tests_root: PathBuf,
+}
+
+impl ScriptResourceLoader for DiskResources {
+    fn load(&self, url: &str) -> Option<String> {
+        let bare = url.split(['#', '?']).next().unwrap_or(url).trim();
+        if let Some(stem) = bare.strip_suffix(".any.worker.js") {
+            let source = resolve(&format!("{stem}.any.js"), &self.base_dir, &self.tests_root)?;
+            let src = fs::read_to_string(&source).ok()?;
+            let name = source.file_name()?.to_str()?;
+            return Some(any_worker_wrapper(&src, name, url));
+        }
+        let path = resolve(bare, &self.base_dir, &self.tests_root)?;
+        fs::read_to_string(path).ok()
+    }
+}
+
+/// The `// META:` header of a `.any.js`-style test: its `script=` helpers and its
+/// `global=` directive. Shared by the window wrapper the runner synthesizes and
+/// the worker wrapper above, which must import the same helpers.
+pub fn meta_directives(src: &str) -> (Vec<String>, Option<String>) {
+    let mut scripts = Vec::new();
+    let mut globals = None;
+    let mut in_block = false;
+    for line in src.lines() {
+        let t = line.trim();
+        if in_block {
+            if t.contains("*/") {
+                in_block = false;
+            }
+            continue;
+        }
+        if t.starts_with("/*") {
+            if !t.contains("*/") {
+                in_block = true;
+            }
+            continue;
+        }
+        if let Some(meta) = t.strip_prefix("// META:") {
+            let meta = meta.trim();
+            if let Some(s) = meta.strip_prefix("script=") {
+                scripts.push(s.trim().to_owned());
+            } else if let Some(g) = meta.strip_prefix("global=") {
+                globals = Some(g.trim().to_owned());
+            }
+            continue;
+        }
+        if t.is_empty() || t.starts_with("//") {
+            continue;
+        }
+        break; // first real statement: the META header is over
+    }
+    (scripts, globals)
+}
+
+/// WPT's generated `<stem>.any.worker.js`: the worker-global `self.GLOBAL` stub,
+/// `testharness.js`, the META helpers, the test itself, then `done()`.
+fn any_worker_wrapper(src: &str, test_name: &str, variant_url: &str) -> String {
+    let (scripts, _) = meta_directives(src);
+    let mut out = String::from(
+        "self.GLOBAL = { isWindow: function() { return false; },          isWorker: function() { return true; },          isShadowRealm: function() { return false; } };
+         importScripts('/resources/testharness.js');
+",
+    );
+    for s in scripts {
+        out.push_str(&format!(
+            "importScripts('{s}');
+"
+        ));
+    }
+    let query = variant_url
+        .split_once('?')
+        .map(|(_, q)| q.split('#').next().unwrap_or(q))
+        .filter(|q| !q.is_empty());
+    match query {
+        Some(q) => out.push_str(&format!(
+            "importScripts('{test_name}?{q}');
+"
+        )),
+        None => out.push_str(&format!(
+            "importScripts('{test_name}');
+"
+        )),
+    }
+    out.push_str(
+        "done();
+",
+    );
+    out
 }
 
 /// A `<script src>` that names a WPT server-side handler (`foo.py`, usually with
@@ -312,6 +425,8 @@ fn run_test_with_webgl_and_style(
     collect_scripts(&doc, doc.document(), loader, &mut scripts);
     let test_src = scripts.join("\n;\n");
 
+    let route = loader.resource_route();
+
     match engine {
         Engine::Boa => run_with::<script_engine_boa::BoaEngine>(
             testharness_js,
@@ -322,6 +437,7 @@ fn run_test_with_webgl_and_style(
             completion,
             webgl,
             style,
+            route,
         ),
         Engine::Nova => run_with::<script_engine_nova::NovaEngine>(
             testharness_js,
@@ -332,6 +448,7 @@ fn run_test_with_webgl_and_style(
             completion,
             webgl,
             style,
+            route,
         ),
     }
 }
@@ -395,7 +512,14 @@ impl NovaHarnessTemplate {
             Ok(rt) => rt,
             Err(e) => return HarnessOutcome::Threw(format!("runtime snapshot clone: {e:?}")),
         };
-        prepare_runtime(&mut rt, &doc, base_url, handler, webgl);
+        prepare_runtime(
+            &mut rt,
+            &doc,
+            base_url,
+            handler,
+            webgl,
+            loader.resource_route(),
+        );
         run_loaded_with(&mut rt, &test_src, completion, style)
     }
 
@@ -439,24 +563,27 @@ fn run_with<E: ScriptEngine>(
     completion: Option<&dyn CompletionSource>,
     webgl: Option<WebGlFactory>,
     style: StyleRoute,
+    route: Option<Box<dyn ScriptResourceLoader>>,
 ) -> HarnessOutcome {
     let mut rt = match Runtime::<E>::new() {
         Ok(rt) => rt,
         Err(e) => return HarnessOutcome::Threw(format!("runtime init: {e:?}")),
     };
-    prepare_runtime(&mut rt, doc, base_url, handler, webgl);
+    prepare_runtime(&mut rt, doc, base_url, handler, webgl, route);
     if let Err(e) = rt.load_testharness(testharness_js) {
         return HarnessOutcome::Threw(format!("testharness load: {e:?}"));
     }
     run_loaded_with(&mut rt, test_src, completion, style)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn prepare_runtime<E: ScriptEngine>(
     rt: &mut Runtime<E>,
     doc: &StaticDocument,
     base_url: Option<&str>,
     handler: Option<Box<dyn FetchHandler>>,
     webgl: Option<WebGlFactory>,
+    route: Option<Box<dyn ScriptResourceLoader>>,
 ) {
     // The test's body becomes the live DOM, so scripts querying body elements
     // (getElementById / querySelector / document.body) see them.
@@ -466,6 +593,11 @@ fn prepare_runtime<E: ScriptEngine>(
     }
     if let Some(h) = handler {
         rt.set_fetch_handler(h);
+    }
+    // Dedicated workers pull their classic script and `importScripts` targets
+    // through the page's own route.
+    if let Some(route) = route {
+        rt.set_script_resource_loader(route);
     }
     // `window.matchMedia` over a default device, so css/mediaqueries tests can
     // parse + evaluate queries (they never render).
@@ -735,6 +867,11 @@ fn run_loaded_with<E: ScriptEngine>(
 fn drive_virtual<E: ScriptEngine>(rt: &mut Runtime<E>, render: &RenderSession) -> HarnessOutcome {
     let start = Instant::now();
     let mut now_ms = 0.0f64;
+    // The virtual jumps taken so far. While another agent is running, the clock
+    // is wall time plus those jumps instead: a worker's reply arrives in real
+    // time, and a virtual jump to testharness's own 10s timeout would time the
+    // test out before the worker had started.
+    let mut skipped_ms = 0.0f64;
     loop {
         if start.elapsed() >= drive_deadline() {
             rt.fail_all_pending("test timed out");
@@ -744,23 +881,37 @@ fn drive_virtual<E: ScriptEngine>(rt: &mut Runtime<E>, render: &RenderSession) -
         let fired = rt.run_timers(TIMER_BUDGET, now_ms);
         let rendered = render.turn(rt, now_ms);
         let acted = process_testdriver_actions(rt, render, &mut now_ms, true);
+        // Dedicated workers: answer their resource requests and deliver their
+        // messages. A worker that has not reported idle can still speak, so it
+        // holds the loop open the way a pending timer does.
+        let worked = rt.pump_workers();
+        let workers_live = rt.has_worker_work();
         let has_raf = rt.has_animation_frame_callbacks();
         let animating = render.animating();
         let next_timer = rt.next_timer_delay();
         if fired == 0
             && rendered == 0
             && acted == 0
+            && worked == 0
+            && !workers_live
             && !has_raf
             && !animating
             && next_timer.is_none()
         {
             break; // quiescent: no timer, no frame consumer, nothing happened
         }
+        if workers_live {
+            now_ms = now_ms.max(start.elapsed().as_millis() as f64 + skipped_ms);
+            if fired == 0 && rendered == 0 && acted == 0 && worked == 0 {
+                std::thread::sleep(Duration::from_millis(1)); // do not spin on the worker
+            }
+            continue;
+        }
         // Advance the virtual clock: to the sooner of the next frame and the next
         // timer while frames are wanted, else straight to the next timer. A turn
         // that did work but scheduled nothing time-based loops once more at the
         // same instant and then quiesces.
-        now_ms += if has_raf || animating {
+        let step = if has_raf || animating {
             match next_timer {
                 Some(d) if d < FRAME_MS => d.max(0.0),
                 _ => FRAME_MS,
@@ -770,6 +921,8 @@ fn drive_virtual<E: ScriptEngine>(rt: &mut Runtime<E>, render: &RenderSession) -
         } else {
             0.0
         };
+        now_ms += step;
+        skipped_ms += step;
     }
     HarnessOutcome::Ran(rt.results())
 }
@@ -816,6 +969,8 @@ fn drive_wall<E: ScriptEngine>(
         // interpreter reports them; a headed consumer would pace real frames).
         let mut wall_now = clock;
         let acted = process_testdriver_actions(rt, render, &mut wall_now, false);
+        let worked = rt.pump_workers();
+        let workers_live = rt.has_worker_work();
         let has_raf = rt.has_animation_frame_callbacks();
         let animating = render.animating();
         let pending = rt.pending_fetches();
@@ -826,10 +981,17 @@ fn drive_wall<E: ScriptEngine>(
             && applied == 0
             && rendered == 0
             && acted == 0
+            && worked == 0
+            && !workers_live
             && !has_raf
             && !animating
         {
-            break; // quiescent: no fetch, no timer, no frame consumer
+            break; // quiescent: no fetch, no timer, no frame consumer, no worker
+        }
+        if fired == 0 && applied == 0 && rendered == 0 && acted == 0 && worked == 0 && workers_live
+        {
+            std::thread::sleep(Duration::from_millis(1));
+            continue;
         }
         if fired == 0 && applied == 0 && rendered == 0 && acted == 0 {
             if pending == 0 && !has_raf && !animating {

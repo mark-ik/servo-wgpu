@@ -86,14 +86,21 @@ pub struct ManifestTest {
 }
 
 impl ManifestTest {
-    /// Whether this variant runs in a worker (`.worker.html` / `.any.worker.html`).
-    /// The window-shaped runner cannot host workers, so callers skip these.
-    pub fn is_worker(&self) -> bool {
-        self.url.contains(".worker.")
-            || self.url.contains(".worker?")
-            || self.url.contains(".sharedworker.")
+    /// Whether this variant runs in a global the runner cannot host: a shared
+    /// worker, a service worker, or a shadow realm. Dedicated workers left this
+    /// set when the worker lane landed — the runner now runs them in a real
+    /// second agent — so callers skip only these.
+    pub fn is_unhostable_variant(&self) -> bool {
+        self.url.contains(".sharedworker.")
             || self.url.contains(".serviceworker.")
             || self.url.contains(".shadowrealm-")
+    }
+
+    /// Whether this variant runs in a dedicated worker (`.worker.html` /
+    /// `.any.worker.html`), which the runner hosts.
+    pub fn is_dedicated_worker(&self) -> bool {
+        !self.is_unhostable_variant()
+            && (self.url.contains(".worker.") || self.url.contains(".worker?"))
     }
 }
 
@@ -280,8 +287,9 @@ impl Manifest {
     }
 
     /// Enumerate the runnable tests of the kinds this runner can host, with
-    /// variants expanded. Worker-only variants are included (flagged by
-    /// [`ManifestTest::is_worker`]); the caller decides whether to skip them.
+    /// variants expanded. Unhostable globals are included (flagged by
+    /// [`ManifestTest::is_unhostable_variant`]); the caller decides whether to
+    /// skip them.
     pub fn tests(&self) -> Vec<ManifestTest> {
         let mut out = Vec::new();
         for (kind, key) in [
@@ -546,8 +554,8 @@ mod tests {
             .find(|t| t.url == "/FileAPI/Blob/x.any.worker.html")
             .expect("worker variant");
         assert!(
-            worker.is_worker(),
-            "worker variant flagged so the runner can skip it"
+            worker.is_dedicated_worker() && !worker.is_unhostable_variant(),
+            "a dedicated-worker variant is hostable, not skipped"
         );
         // Real manifests mix leading-slash and slashless explicit variant URLs.
         // Subset filtering must treat both as the same URL space.

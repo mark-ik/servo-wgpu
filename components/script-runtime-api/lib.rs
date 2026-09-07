@@ -49,6 +49,7 @@ mod selector;
 mod structured_clone;
 mod timing;
 mod webgl;
+mod worker;
 
 pub use crypto::RandomSource;
 pub use dom::{
@@ -60,6 +61,7 @@ pub use fetch::{FetchHandler, FetchOutcome, FetchRequest};
 pub use harness::TestResult;
 pub use platform::StorageProvider;
 pub use webgl::{WebGlFactory, WebGlHandler};
+pub use worker::ScriptResourceLoader;
 
 /// State the runtime's native callbacks share, stored as the engine's single
 /// host-data slot (`Rc<dyn Any>`). One aggregate so every host object reaches the
@@ -183,10 +185,37 @@ pub struct HostState {
     /// [`Runtime::set_random_source`]; an `Rc` so the native sink clones it out
     /// before calling (no live `HostState` borrow during the call).
     pub random: Option<std::rc::Rc<dyn RandomSource>>,
+    /// The page's resource route for worker scripts, `importScripts` and a
+    /// worker `fetch()`. `None` = fall through to [`Self::fetch`]. Installed by
+    /// [`Runtime::set_script_resource_loader`]; disk-mode WPT uses it, a hosted
+    /// page leaves it unset.
+    pub script_loader: Option<std::rc::Rc<dyn ScriptResourceLoader>>,
+    /// Live dedicated workers this agent owns, indexed by the id script holds.
+    workers: Vec<worker::WorkerHandle>,
+    /// Envelopes drained off the worker links, waiting for `__worker_take`.
+    worker_events: std::collections::VecDeque<String>,
+    /// Cross-agent message ports: `(port id, owning worker index)`.
+    port_routes: Vec<(String, usize)>,
+    /// The monomorphized worker entry point for this runtime's engine, as a
+    /// plain `fn` pointer — the reason spawning a worker needs no engine bound
+    /// and no engine value crosses the thread boundary.
+    worker_spawn: Option<fn(worker::WorkerBoot)>,
+    /// Set only on a worker runtime: its end of the link to the owning agent.
+    worker_link: Option<std::rc::Rc<RefCell<worker::WorkerLink>>>,
     /// Protocol trace marks emitted through native sinks while JS is still
     /// running. [`Runtime`] drains these after each engine boundary so they land
     /// in the deterministic NDJSON stream with stable sequence numbers.
     pending_trace: Vec<PendingTraceEvent>,
+}
+
+impl HostState {
+    /// The worker a cross-agent port id belongs to.
+    fn port_route(&self, id: &str) -> Option<usize> {
+        self.port_routes
+            .iter()
+            .find(|(p, _)| p == id)
+            .map(|(_, w)| *w)
+    }
 }
 
 /// Shared handle to the runtime's [`HostState`]. The host reads it after running
@@ -247,6 +276,7 @@ impl<E: ScriptEngine> Runtime<E> {
         host.borrow_mut().viewport_size = (800.0, 600.0);
         engine.set_host_data(host.clone());
         install_host_surface(&mut engine)?;
+        host.borrow_mut().worker_spawn = Some(worker::worker_main::<E> as fn(_));
         Ok(Self {
             engine,
             host,
@@ -846,6 +876,24 @@ impl<E: ScriptEngine> Runtime<E> {
     /// Until set, the JS `WebGLRenderingContext` methods no-op or return
     /// `gl.NO_ERROR`. The factory is called once per `getContext('webgl')`,
     /// so each `<canvas>` gets its own independent context.
+    pub fn set_script_resource_loader(&mut self, loader: Box<dyn ScriptResourceLoader>) {
+        self.host.borrow_mut().script_loader = Some(loader.into());
+    }
+
+    /// One turn of dedicated-worker service: drain the worker links, answer the
+    /// resource requests they made, and dispatch the queued events as tasks.
+    /// Returns how much work happened, which the host's drive loop counts.
+    pub fn pump_workers(&mut self) -> usize {
+        worker::pump(self)
+    }
+
+    /// Whether a worker could still produce work. The drive loop must not treat
+    /// the agent as quiescent while this is true: a worker that has not reported
+    /// idle can still post a message, and the page cannot see it until it pumps.
+    pub fn has_worker_work(&self) -> bool {
+        worker::has_work(&self.host)
+    }
+
     pub fn set_webgl_factory(&mut self, factory: WebGlFactory) {
         self.host.borrow_mut().webgl_factory = Some(factory);
     }
@@ -1033,6 +1081,13 @@ impl<E: ScriptEngine> Runtime<E> {
     }
 }
 
+impl<E: ScriptEngine> Drop for Runtime<E> {
+    /// No worker thread outlives the agent that owns it.
+    fn drop(&mut self) {
+        worker::shutdown(&self.host);
+    }
+}
+
 impl<E: ScriptEngineSnapshot> Runtime<E> {
     /// Clone this runtime's idle engine heap while replacing host-owned state.
     ///
@@ -1060,7 +1115,9 @@ impl<E: ScriptEngineSnapshot> Runtime<E> {
 fn install_host_surface<E: ScriptEngine>(engine: &mut E) -> Result<(), E::Error> {
     // `self` and `window` alias the global. `globalThis` is provided by the engine
     // (ES2020), so both backends bootstrap the aliases the same way.
-    engine.eval("var self = globalThis; var window = globalThis;")?;
+    // Plain properties, not `var` bindings: a global `var` is non-configurable,
+    // and a worker global must be able to delete `window`.
+    engine.eval("globalThis.self = globalThis; globalThis.window = globalThis;")?;
 
     // console.log / console.error: native sinks, exposed as methods on a `console`
     // object. (A future slice formats multiple arguments; this records the first.)
@@ -1123,6 +1180,9 @@ fn install_host_surface<E: ScriptEngine>(engine: &mut E) -> Result<(), E::Error>
     messaging::install_messaging_surface(engine)?;
     // `crypto.getRandomValues` / `crypto.randomUUID` over the host random source.
     crypto::install_crypto_surface(engine)?;
+    // `Worker`: a second agent of the same engine on its own thread. After
+    // `messaging` so the transfer-list helpers and `MessageEvent` exist.
+    worker::install_worker_surface(engine)?;
 
     // Window platform services: `location` (reflecting the document URL), plus
     // `localStorage` / `history` as they land. After `dom` so `document` exists.
