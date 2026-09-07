@@ -83,7 +83,7 @@ fn livery_lowers_only_definite_auto_multicol_inputs() {
     let padded = super::build_block::lower_sequential_multicol(
         styles.get(node).expect("computed style"),
         BlockStyle {
-            padding: PhysicalSides::splat(8.0),
+            padding: PhysicalSides::splat(FlowLength::px(8.0)),
             border: PhysicalSides::splat(2.0),
             ..BlockStyle::default()
         },
@@ -116,7 +116,10 @@ fn livery_lowers_only_definite_auto_multicol_inputs() {
         super::build_block::lower_sequential_multicol(
             styles.get(node).expect("computed style"),
             BlockStyle {
-                flow: FlowAxes::new(WritingMode::VerticalRl, Direction::Ltr),
+                flow: FlowAxes::new(
+                    buckram::WritingMode::VerticalRl,
+                    buckram::Direction::Ltr,
+                ),
                 ..BlockStyle::default()
             },
         )
