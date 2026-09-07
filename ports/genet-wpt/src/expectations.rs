@@ -736,10 +736,7 @@ pub(crate) fn compare(tests: &[TestCase], args: &Args) {
             },
         };
         let base_dir = test.path.parent().unwrap_or(tests_root);
-        let disk = harness::DiskLoader {
-            base_dir,
-            tests_root,
-        };
+        let disk = harness::DiskLoader::new(base_dir, tests_root);
         let doc_url = test.disk_doc_url();
         let run = |engine| {
             panic::catch_unwind(AssertUnwindSafe(|| {

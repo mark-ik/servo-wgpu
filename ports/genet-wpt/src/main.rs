@@ -46,10 +46,10 @@ use testharness::*;
 
 mod conformance;
 mod harness;
-mod testdriver;
 mod manifest;
 mod render;
 mod test262;
+mod testdriver;
 #[cfg(test)]
 mod webgl_conformance;
 
@@ -233,6 +233,20 @@ impl TestCase {
             long_timeout: test.long_timeout,
             from_manifest: true,
         })
+    }
+
+    /// The one test a `testharness-one` worker was handed: its backing file and
+    /// its runnable URL, which the parent already resolved from the manifest.
+    fn single(path: PathBuf, url: String) -> TestCase {
+        TestCase {
+            path,
+            url: normalize_test_url(&url),
+            kind: Kind::Testharness,
+            refs: Vec::new(),
+            fuzzy: None,
+            long_timeout: false,
+            from_manifest: true,
+        }
     }
 
     fn name(&self) -> &str {
@@ -489,6 +503,8 @@ fn real_main() {
         },
     };
 
+    harness::set_drive_deadline_secs(args.drive_deadline_secs);
+
     // bench needs only the tests root (for resources/testharness.js), not a subset
     // walk; handle it before the corpus collection below.
     if args.command == "bench" {
@@ -517,6 +533,11 @@ fn real_main() {
     // The per-test worker the parent `test262` run spawns for hang isolation.
     if args.command == "test262-one" {
         test262_one(&args);
+        return;
+    }
+    // The same, for `testharness`: one test, one process, one encoded result.
+    if args.command == "testharness-one" {
+        testharness_one(&args);
         return;
     }
 

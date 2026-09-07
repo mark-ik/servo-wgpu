@@ -47,7 +47,8 @@ older `docs/` corpus without changing their location or governance.
 | [K7 foundational sizing and dispatch](../docs/2026-07-26_buckram_css_layout_engine_plan.md#k7-foundational-sizing-and-dispatch-closure) | Reconcile landed sizing fixes with remaining deferrals before choosing a slice. Fragmentainer-dependent work consumes K6; final closure includes deleting CSS-facing Taffy block dispatch. |
 | [WPT harness and ledger](../docs/2026-08-24_wpt_harness_ledger_execution_plan.md) | Exact scorer and reference-verification gates landed. Freeze a fresh candidate runner for new work; unsupported test/reference agreement earns no conformance credit. |
 | [Servo cone retirement](2026-09-07_servo_cone_retirement_plan.md) | servo-paint's compositor half carved out as genet-compositor; the reftest lane renders through genet-render-host; the constellation trait cone left the graph 2026-09-07. All gates green; next proof is Mere's dependency rename at its next bump. |
-| [Web platform WPT census](2026-09-06_web_platform_wpt_census.md) | Baseline exact maps for 41 non-CSS WPT directories (21,672 files, disk mode, Boa/Livery) landed 2026-09-06. Next proof: fix the four harness caveats it names, then open a lane per zero-pass directory against this baseline. |
+| [Web platform WPT census](2026-09-06_web_platform_wpt_census.md) | Baseline exact maps for 41 non-CSS WPT directories (21,672 files, disk mode, Boa/Livery) landed 2026-09-06. Three of its four harness caveats are closed by the harness-repair plan; the reftest caveat and the per-directory lanes remain open. |
+| [WPT harness repair](2026-09-07_wpt_harness_repair_plan.md) | Per-test worker isolation, the disk-mode include and `.py` fixes, and a configurable, quiescing server-mode deadline landed 2026-09-07, with a re-run census whose 204 movements are all attributed. Next proof: a server-mode measurement of the network-dependent families on a live `wpt serve`. |
 | [Host contract ownership](../docs/2026-08-14_web_platform_host_contract_plan.md) | Genet owns retained session contracts; Mere owns surface orchestration and product adapters. The older S0-S5 receipts need a consumer-side status refresh before resuming those lanes. |
 
 The [Buckram master](../docs/2026-07-26_buckram_css_layout_engine_plan.md)
@@ -63,8 +64,28 @@ completed corpus census or bounded slice does not close its enclosing feature.
   compositor as `genet-compositor` and absorbs the testdriver input path into
   genet-wpt. Media, WebGL and Piccolo stay by consumer.)
 
+## Deferred web platform lanes
+
+- [deferred_web_platform_lanes_scoping](2026-09-07_deferred_web_platform_lanes_scoping.md)
+  (**research 2026-09-07**: Shadow DOM, Canvas 2D, service workers, iframes
+  and nested browsing contexts, dedicated Worker, WebSocket, IndexedDB and
+  storage, Web Animations, and editing. Per lane: what exists in the tree,
+  the work in landing order, the decisions that are Mark's, and
+  done-conditions against the census. Nothing scheduled; promote a section to
+  a dated plan when it is.)
+
 ## WPT census — the web platform beyond CSS
 
+- [wpt_harness_repair_plan](2026-09-07_wpt_harness_repair_plan.md)
+  (**landed 2026-09-07**: `genet-wpt testharness` now runs every test in a
+  worker subprocess, as `test262` does, so the `Atomics.waitAsync` hang is
+  recorded rather than survived; the disk loader stops swallowing WPT support
+  scripts whose name merely ends in `testharness.js` and stops handing `.py`
+  server handlers to the engine; the server-mode drive loop takes
+  `--drive-deadline` and advances its clock to the next timer instead of
+  sleeping to it. The re-run census moves 204 files, every one attributed,
+  none from a passing status. Raw maps under
+  `Code/testing/genet/wpt-ledger/2026-09-07_harness_repair/`.)
 - [web_platform_wpt_census](2026-09-06_web_platform_wpt_census.md)
   (**complete 2026-09-06**: exact `genet-wpt` testharness maps for every
   non-CSS WPT directory a web engine owns, `html` split by subdirectory;
@@ -200,8 +221,9 @@ same session; links out of it are rewritten for its new depth.
 
 ## Status
 
-Founded 2026-08-24; current work map reconciled 2026-09-05. The index covers
-five flat plans and two archived plans. All three former component area roots
-now live in Mere. The older `docs/` corpus has selected execution entry points
-above; its full migration and governance remain deferred under the policy's
-local addendum.
+Founded 2026-08-24; current work map reconciled 2026-09-07. The index covers
+the flat plans sectioned above and two archived plans; the count in this line
+was stale before 2026-09-07 and is now stated by the sections themselves.
+All three former component area roots now live in Mere. The older `docs/`
+corpus has selected execution entry points above; its full migration and
+governance remain deferred under the policy's local addendum.

@@ -26,6 +26,18 @@ pub(crate) struct Args {
     /// running longer is killed and recorded as a timeout. Generous enough for slow
     /// (but finite) tests; bounds true infinite hangs.
     pub(crate) timeout_secs: u64,
+    /// Per-test wall-clock ceiling for the testharness drive loop (seconds). Server
+    /// mode spends this on any test awaiting something that never settles, so a run
+    /// over a network-shaped directory wants it short.
+    pub(crate) drive_deadline_secs: u64,
+    /// Run every `testharness` test in the parent process, the pre-isolation path. A
+    /// test that blocks inside the engine then hangs the whole run.
+    pub(crate) in_process: bool,
+    /// Worker subprocesses `testharness` runs concurrently. Each test is isolated, so
+    /// the result map does not depend on this.
+    pub(crate) jobs: usize,
+    /// The backing file for the single test a `testharness-one` worker runs.
+    pub(crate) test_path: Option<String>,
     /// Write the full `test262` worklist (every Nova gap + every timeout, not just the
     /// printed sample) to this path. Essential for a full-corpus run, whose lists run to
     /// thousands.
@@ -73,6 +85,10 @@ pub(crate) fn parse_args() -> Result<Args, String> {
     let mut server_base = None;
     let mut spawn_server = false;
     let mut timeout_secs = 30u64;
+    let mut drive_deadline_secs = 15u64;
+    let mut in_process = false;
+    let mut jobs = 1usize;
+    let mut test_path = None;
     let mut worklist_out = None;
     let mut walk_discovery = false;
     let mut expectations = None;
@@ -122,6 +138,27 @@ pub(crate) fn parse_args() -> Result<Args, String> {
             "--timeout" => {
                 let v = it.next().ok_or("--timeout needs a value (seconds)")?;
                 timeout_secs = v.parse().map_err(|_| format!("invalid --timeout: {v}"))?;
+            },
+            "--drive-deadline" => {
+                let v = it
+                    .next()
+                    .ok_or("--drive-deadline needs a value (seconds)")?;
+                drive_deadline_secs =
+                    v.parse().ok().filter(|s| *s > 0).ok_or_else(|| {
+                        format!("invalid --drive-deadline: {v} (expected 1 or more)")
+                    })?;
+            },
+            "--in-process" => in_process = true,
+            "--jobs" => {
+                let v = it.next().ok_or("--jobs needs a value")?;
+                jobs = v
+                    .parse()
+                    .ok()
+                    .filter(|j| *j > 0)
+                    .ok_or_else(|| format!("invalid --jobs: {v} (expected 1 or more)"))?;
+            },
+            "--test-path" => {
+                test_path = Some(it.next().ok_or("--test-path needs a path")?);
             },
             "--worklist-out" => {
                 worklist_out = Some(it.next().ok_or("--worklist-out needs a path")?);
@@ -194,6 +231,10 @@ pub(crate) fn parse_args() -> Result<Args, String> {
         server_base,
         spawn_server,
         timeout_secs,
+        drive_deadline_secs,
+        in_process,
+        jobs,
+        test_path,
         worklist_out,
         walk_discovery,
         expectations,
@@ -227,7 +268,12 @@ Usage:
 
 Options:
     --tests-root <dir>   tests root (default: tests/wpt/tests)
-    --timeout <secs>     per-test worker timeout for `test262` (default: 30)
+    --timeout <secs>     per-test worker timeout (default: 30) for `test262` and
+                         for the `testharness` worker subprocesses
+    --drive-deadline <secs>
+                         per-test testharness drive-loop deadline (default: 15)
+    --in-process         run `testharness` tests without worker isolation
+    --jobs <n>           `testharness` worker subprocesses in flight (default: 1)
     --worklist-out <f>   write the full `test262` Nova-gap + timeout list to <f>
     --walk-discovery     use the legacy directory walk instead of MANIFEST.json
     --expectations <f>   fail if testharness results differ from JSON expectations

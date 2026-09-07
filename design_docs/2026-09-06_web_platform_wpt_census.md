@@ -232,7 +232,13 @@ These are first errors only. A file that dies on `crypto` may also need
 ## Harness caveats found by the run
 
 These are runner gaps that depress counts and should be fixed before the
-next census, so that the delta measures the engine:
+next census, so that the delta measures the engine.
+
+> **Caveats 1-3 closed 2026-09-07** by
+> [`2026-09-07_wpt_harness_repair_plan.md`](2026-09-07_wpt_harness_repair_plan.md),
+> whose re-run of this census moves 204 files and leaves the rest of these maps
+> byte-identical. Caveat 1's `/css/support/` guess did not hold: those helpers
+> have a different cause and did not move. Caveat 4 is still open.
 
 1. **Absolute `/resources/*` support scripts are dropped.** The disk loader
    filters harness includes by path and takes

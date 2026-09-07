@@ -425,10 +425,7 @@ mod tests {
         let html = fs::read_to_string(&test_path).expect("read conformance html");
         let base_dir = test_path.parent().unwrap().to_path_buf();
         let tests_root = wpt.join("webgl/tests");
-        let loader = DiskLoader {
-            base_dir: base_dir.as_path(),
-            tests_root: tests_root.as_path(),
-        };
+        let loader = DiskLoader::new(base_dir.as_path(), tests_root.as_path());
         run_test_with_webgl(
             &testharness_js,
             &html,

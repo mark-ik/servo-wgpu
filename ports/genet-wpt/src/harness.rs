@@ -21,6 +21,7 @@
 //! HTML body do not see them yet (parsing the body into the scripted DOM is a
 //! later step).
 
+use std::cell::Cell;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -79,9 +80,25 @@ pub trait CompletionSource {
     fn wait(&self, timeout: Duration, apply: &mut dyn FnMut(FetchCompletion)) -> usize;
 }
 
-/// Per-test wall-clock ceiling for the deferred drive loop: a test that awaits a
-/// never-settling fetch fails (TIMEOUT) instead of hanging the runner.
-const DRIVE_DEADLINE: Duration = Duration::from_secs(15);
+/// Per-test wall-clock ceiling for the drive loops: a test that awaits a
+/// never-settling fetch or event fails (TIMEOUT) instead of hanging the runner.
+/// Process-global because every `run_test*` entry point would otherwise have to
+/// thread it through; set once from `--drive-deadline`.
+const DEFAULT_DRIVE_DEADLINE_SECS: u64 = 15;
+static DRIVE_DEADLINE_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(DEFAULT_DRIVE_DEADLINE_SECS * 1000);
+
+/// Set the per-test drive deadline (seconds). Zero is rejected by the parser.
+pub fn set_drive_deadline_secs(secs: u64) {
+    DRIVE_DEADLINE_MS.store(
+        secs.saturating_mul(1000),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+fn drive_deadline() -> Duration {
+    Duration::from_millis(DRIVE_DEADLINE_MS.load(std::sync::atomic::Ordering::Relaxed))
+}
 /// Timers fired per drive turn before re-checking the completion channel.
 const TIMER_BUDGET: u32 = 64;
 /// The WPT viewport, in CSS px. One constant so the three consumers cannot
@@ -155,13 +172,45 @@ pub trait ScriptSrcLoader {
 pub struct DiskLoader<'a> {
     pub base_dir: &'a Path,
     pub tests_root: &'a Path,
+    /// Set when a `<script src>` named a server-side WPT handler (`.py`). Disk
+    /// mode cannot run one, so it is skipped rather than parsed as JavaScript;
+    /// the caller reads this to record the honest reason.
+    server_handler: Cell<bool>,
+}
+
+impl<'a> DiskLoader<'a> {
+    pub fn new(base_dir: &'a Path, tests_root: &'a Path) -> Self {
+        DiskLoader {
+            base_dir,
+            tests_root,
+            server_handler: Cell::new(false),
+        }
+    }
+
+    /// Whether this loader skipped a server-side handler during the run.
+    pub fn saw_server_handler(&self) -> bool {
+        self.server_handler.get()
+    }
 }
 
 impl ScriptSrcLoader for DiskLoader<'_> {
     fn load_script(&self, src: &str) -> Option<String> {
+        if is_server_handler_src(src) {
+            self.server_handler.set(true);
+            return None;
+        }
         let path = resolve(src, self.base_dir, self.tests_root)?;
         fs::read_to_string(path).ok()
     }
+}
+
+/// A `<script src>` that names a WPT server-side handler (`foo.py`, usually with
+/// a query string). Only a running `wpt serve` can execute one; on disk it is a
+/// Python source file, and feeding it to the engine produced a spurious syntax
+/// error rather than a missing-script failure.
+fn is_server_handler_src(src: &str) -> bool {
+    let s = src.split(['#', '?']).next().unwrap_or(src).trim();
+    s.rsplit('/').next().is_some_and(|n| n.ends_with(".py"))
 }
 
 /// Run one testharness test HTML and collect its results, using `loader` to fetch
@@ -534,7 +583,8 @@ fn process_testdriver_actions<E: ScriptEngine>(
         let [x, y, w, h] = cssom.fragment_rect(node)?;
         Some((f64::from(x + w / 2.0), f64::from(y + h / 2.0)))
     };
-    let ticks = match crate::testdriver::webdriver_actions::interpret_actions(&sequences, &resolver) {
+    let ticks = match crate::testdriver::webdriver_actions::interpret_actions(&sequences, &resolver)
+    {
         Ok(t) => t,
         Err(e) => {
             settle(rt, Some(format!("{e:?}")));
@@ -686,7 +736,7 @@ fn drive_virtual<E: ScriptEngine>(rt: &mut Runtime<E>, render: &RenderSession) -
     let start = Instant::now();
     let mut now_ms = 0.0f64;
     loop {
-        if start.elapsed() >= DRIVE_DEADLINE {
+        if start.elapsed() >= drive_deadline() {
             rt.fail_all_pending("test timed out");
             break;
         }
@@ -724,21 +774,30 @@ fn drive_virtual<E: ScriptEngine>(rt: &mut Runtime<E>, render: &RenderSession) -
     HarnessOutcome::Ran(rt.results())
 }
 
-/// Server-mode drive: timers fire on a real-time gate (virtual clock = elapsed
-/// wall ms), so a short abort timer fires at its delay while the far-future
-/// testharness timeout stays pending, and fetch completions arrive out of band
-/// on the channel. Each turn additionally runs a rendering turn; idle waits are
-/// capped at one frame while rAF callbacks or animations pend.
+/// Server-mode drive: timers fire on a clock that tracks elapsed wall ms while
+/// the network is in flight, so a short abort timer fires at its delay and fetch
+/// completions arrive out of band on the channel. Each turn additionally runs a
+/// rendering turn; idle waits are capped at one frame while rAF callbacks or
+/// animations pend.
+///
+/// When nothing but timers remains — no fetch in flight, no frame consumer, no
+/// completion applied — the clock *jumps* to the next timer's due time instead
+/// of sleeping to it, the way the disk loop does. Without that every test whose
+/// only survivor is testharness.js's own far-future timeout cost the full
+/// deadline in wall time.
 fn drive_wall<E: ScriptEngine>(
     rt: &mut Runtime<E>,
     render: &RenderSession,
     cs: &dyn CompletionSource,
 ) -> HarnessOutcome {
     let start = Instant::now();
+    let deadline = drive_deadline();
+    // Virtual offset added to elapsed wall time by the quiescent jumps below.
+    let mut skipped_ms = 0.0f64;
     let elapsed_ms =
         |start: Instant| (Instant::now().saturating_duration_since(start)).as_millis() as f64;
     loop {
-        if elapsed_ms(start) >= DRIVE_DEADLINE.as_millis() as f64 {
+        if elapsed_ms(start) >= deadline.as_millis() as f64 {
             rt.fail_all_pending("test timed out");
             break;
         }
@@ -750,11 +809,12 @@ fn drive_wall<E: ScriptEngine>(
             FetchCompletion::Error(id) => rt.error_stream(id),
             FetchCompletion::Fail(id, m) => rt.fail_fetch(id, &m),
         });
-        let fired = rt.run_timers(TIMER_BUDGET, elapsed_ms(start));
-        let rendered = render.turn(rt, elapsed_ms(start));
+        let clock = elapsed_ms(start) + skipped_ms;
+        let fired = rt.run_timers(TIMER_BUDGET, clock);
+        let rendered = render.turn(rt, clock);
         // Wall-clock drive: tick durations are collapsed, not slept (the
         // interpreter reports them; a headed consumer would pace real frames).
-        let mut wall_now = elapsed_ms(start);
+        let mut wall_now = clock;
         let acted = process_testdriver_actions(rt, render, &mut wall_now, false);
         let has_raf = rt.has_animation_frame_callbacks();
         let animating = render.animating();
@@ -772,10 +832,20 @@ fn drive_wall<E: ScriptEngine>(
             break; // quiescent: no fetch, no timer, no frame consumer
         }
         if fired == 0 && applied == 0 && rendered == 0 && acted == 0 {
+            if pending == 0 && !has_raf && !animating {
+                // Only timers are outstanding and nothing is coming off the
+                // network: advance the clock to the next one instead of
+                // sleeping to it. The wall deadline above still bounds a
+                // runaway self-rearming timer.
+                if let Some(d) = next_timer {
+                    skipped_ms += d.max(0.0);
+                    continue;
+                }
+            }
             // Nothing ran this turn. Sleep until the next event: a fetch
             // completion, the next timer's due time, or — while frames are
             // wanted — at most one frame.
-            let remaining = (DRIVE_DEADLINE.as_millis() as f64 - elapsed_ms(start)).max(0.0);
+            let remaining = (deadline.as_millis() as f64 - elapsed_ms(start)).max(0.0);
             let mut wait_ms = remaining;
             if let Some(d) = next_timer {
                 wait_ms = wait_ms.min(d);
@@ -851,9 +921,14 @@ fn collect_scripts<D: LayoutDom>(
 /// results bridge replaces the report), so the test's own copies are skipped.
 fn is_harness_src(src: &str) -> bool {
     let s = src.split(['#', '?']).next().unwrap_or(src);
-    s.ends_with("testharness.js")
-        || s.ends_with("testharnessreport.js")
-        || s.ends_with("testharnesscss.css")
+    // Match the file NAME, not a suffix: WPT support scripts such as
+    // `/resources/SVGAnimationTestCase-testharness.js` end with "testharness.js"
+    // and were being dropped with the harness itself.
+    let name = s.rsplit('/').next().unwrap_or(s);
+    matches!(
+        name,
+        "testharness.js" | "testharnessreport.js" | "testharnesscss.css"
+    )
 }
 
 /// Whether a `<script src>` is WPT's `testdriver-vendor.js` — the file WPT ships
@@ -949,6 +1024,31 @@ fn truncate(s: &str, max: usize) -> String {
 mod tests {
     use super::*;
 
+    /// The harness filter takes file names, not suffixes. WPT support scripts
+    /// whose name ends in `-testharness.js` (the SVG animation helpers, 163
+    /// files in the 2026-09-06 census) were being dropped with the harness.
+    #[test]
+    fn only_the_harness_itself_is_filtered_from_script_src() {
+        assert!(is_harness_src("/resources/testharness.js"));
+        assert!(is_harness_src("/resources/testharnessreport.js"));
+        assert!(is_harness_src("../../resources/testharness.js?x=1"));
+        assert!(!is_harness_src(
+            "/resources/SVGAnimationTestCase-testharness.js"
+        ));
+        assert!(!is_harness_src("/css/support/parsing-testcommon.js"));
+        assert!(!is_harness_src("support/my-testharness.js"));
+    }
+
+    /// A `.py` include is a WPT server-side handler; disk mode must not hand
+    /// the Python source to the engine.
+    #[test]
+    fn server_side_handlers_are_not_loaded_as_javascript() {
+        assert!(is_server_handler_src("/common/echo.py?content=x"));
+        assert!(is_server_handler_src("resources/log.py"));
+        assert!(!is_server_handler_src("/resources/testdriver.js"));
+        assert!(!is_server_handler_src("/support/py-helper.js"));
+    }
+
     struct EmptyLoader;
 
     impl ScriptSrcLoader for EmptyLoader {
@@ -1029,10 +1129,7 @@ test(function() {
         let html = fs::read_to_string(&test_path).expect("test html");
         let base_dir = test_path.parent().unwrap().to_path_buf();
         let tests_root = wpt.join("tests");
-        let loader = DiskLoader {
-            base_dir: base_dir.as_path(),
-            tests_root: tests_root.as_path(),
-        };
+        let loader = DiskLoader::new(base_dir.as_path(), tests_root.as_path());
         let outcome = run_test(
             &testharness_js,
             &html,
@@ -1069,10 +1166,7 @@ test(function() {
             fs::read_to_string(wpt.join("tests/resources/testharness.js")).expect("harness");
         let tests_root = wpt.join("tests");
         let base_dir = tests_root.join("dom");
-        let loader = DiskLoader {
-            base_dir: base_dir.as_path(),
-            tests_root: tests_root.as_path(),
-        };
+        let loader = DiskLoader::new(base_dir.as_path(), tests_root.as_path());
         let html = r#"<!DOCTYPE html>
 <script src="/resources/testdriver.js"></script>
 <script src="/resources/testdriver-vendor.js"></script>
@@ -1130,10 +1224,7 @@ async_test(function(t) {
             fs::read_to_string(wpt.join("tests/resources/testharness.js")).expect("harness");
         let tests_root = wpt.join("tests");
         let base_dir = tests_root.join("dom");
-        let loader = DiskLoader {
-            base_dir: base_dir.as_path(),
-            tests_root: tests_root.as_path(),
-        };
+        let loader = DiskLoader::new(base_dir.as_path(), tests_root.as_path());
         let page = |passive: bool| {
             format!(
                 r#"<!DOCTYPE html>
@@ -1257,10 +1348,7 @@ pub fn bench(tests_root: &str) {
     // (c) a full run_test on a trivial inline testharness test.
     let html = "<!doctype html><script src=/resources/testharness.js></script>\
                 <script>test(function(){ assert_true(true); }, 'x');</script>";
-    let loader = DiskLoader {
-        base_dir: root,
-        tests_root: root,
-    };
+    let loader = DiskLoader::new(root, root);
     let t = Instant::now();
     for _ in 0..n {
         let _ = run_test(
