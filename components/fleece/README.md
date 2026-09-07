@@ -36,8 +36,8 @@ have no anchor.
 code points; Fleece preserves extended grapheme boundaries while truncating it.
 Fleece names neither source URLs nor Web Annotations. Consumers supply source
 identity and serialize the sibling selectors if they need an annotation. These
-are W3C-shaped selector values, not a complete Web Annotation representation or
-conformance claim.
+selectors implement the extraction profile below; they are not a complete Web
+Annotation representation.
 
 Fleece 0.5 gives every `ExtractedDocument`, including a page with no selected
 article, an `ExtractionContract`. The contract names the canonical-text hash
@@ -53,6 +53,24 @@ present or absent anchors. Decode verifies the text hash, source spans, and ever
 retained range, quote, and context before returning a record. This narrow record
 is the stable source-selection boundary; complete page, reader, metadata, table,
 capture, and storage records remain caller-owned.
+
+### Standards profile
+
+- Web Annotation Data Model §4.2.4 and §4.2.5: quote and position selectors use
+  normalized logical text and Unicode code-point offsets, and retain every
+  prefix/exact/suffix match, including overlaps. Fleece makes the model's
+  grapheme-boundary recommendation a stricter local validity rule. Covered by
+  `web_annotation_profile.rs`, `anchor_conformance.rs`, and `language_direction.rs`.
+- RFC 5147 character ranges: the typed fragment projection parses and emits the
+  half-open `char=start,end` form for the preserved `text/plain` resource.
+  Covered by `web_annotation_profile.rs`.
+- JSON-LD 1.1 Processing Algorithms §9.5.2: HTML JSON-LD script text is retained
+  and classified as parsed or invalid JSON. Selection options, expansion, base
+  IRI policy, RDF construction, and remote loading remain consumer-owned.
+  Covered by `json_ld_blocks.rs` and `preservation_record.rs`.
+
+This is a tested Fleece extraction profile. It is not a claim that Fleece is a
+general Web Annotation, HTML, JSON-LD, RDF, or browser conformance implementation.
 
 Language evidence follows the nearest HTML or XML declaration without
 canonicalizing its BCP 47 spelling. Direction evidence follows HTML `dir`,

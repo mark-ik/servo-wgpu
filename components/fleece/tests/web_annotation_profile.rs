@@ -9,7 +9,7 @@
 use fleece::{
     CANONICAL_TEXT_MEDIA_TYPE, CanonicalTextSelectorProjection, ExtractionOptions,
     FragmentSelector, RFC5147_CONFORMS_TO, TextPositionSelector, anchor_for_range,
-    extract_document_with_options,
+    extract_document_with_options, resolve_anchor,
 };
 use genet_static_dom::StaticDocument;
 
@@ -104,5 +104,24 @@ fn selectors_can_be_projected_for_an_arbitrary_unicode_segment() {
     assert_eq!(
         FragmentSelector::parse(&projection.fragment.value()),
         Some(projection.fragment)
+    );
+}
+
+#[test]
+fn repeated_quote_resolution_retains_overlapping_matches() {
+    // Web Annotation Data Model §4.2.4 says an ambiguous quote selector SHOULD
+    // match all matching text sequences. `str::match_indices` skips overlaps,
+    // so this fixture protects the second `aba` beginning at code point two.
+    // https://www.w3.org/TR/annotation-model/#text-quote-selector
+    let text = "ababa";
+    let anchor = anchor_for_range(text, TextPositionSelector { start: 0, end: 3 }, 0)
+        .expect("first occurrence");
+
+    assert_eq!(
+        resolve_anchor(text, &anchor),
+        vec![
+            TextPositionSelector { start: 0, end: 3 },
+            TextPositionSelector { start: 2, end: 5 },
+        ]
     );
 }

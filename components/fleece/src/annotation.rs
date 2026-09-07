@@ -127,15 +127,22 @@ pub fn resolve_anchor(text: &str, anchor: &TextAnchor) -> Vec<TextPositionSelect
         return Vec::new();
     }
 
-    text.match_indices(&anchor.quote.exact)
-        .filter_map(|(byte_start, exact)| {
-            let byte_end = byte_start.checked_add(exact.len())?;
+    let exact = anchor.quote.exact.as_str();
+    let exact_len = exact.len();
+    let exact_code_points = exact.chars().count() as u64;
+    text.char_indices()
+        .filter_map(|(byte_start, _)| {
+            let rest = text.get(byte_start..)?;
+            rest.starts_with(exact).then_some(byte_start)
+        })
+        .filter_map(|byte_start| {
+            let byte_end = byte_start.checked_add(exact_len)?;
             let before = text.get(..byte_start)?;
             let after = text.get(byte_end..)?;
             (before.ends_with(&anchor.quote.prefix) && after.starts_with(&anchor.quote.suffix))
                 .then(|| TextPositionSelector {
                     start: before.chars().count() as u64,
-                    end: before.chars().count() as u64 + exact.chars().count() as u64,
+                    end: before.chars().count() as u64 + exact_code_points,
                 })
         })
         .filter(|position| valid_range(text, *position))
