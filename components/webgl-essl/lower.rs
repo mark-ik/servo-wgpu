@@ -243,11 +243,7 @@ struct Ctx<'a> {
     type_ivec2: Word,
     type_ivec3: Word,
     type_ivec4: Word,
-    type_image_2d: Word,
-    type_image_cube: Word,
     type_sampler: Word,
-    type_sampled_image_2d: Word,
-    type_sampled_image_cube: Word,
     type_vec2: Word,
     type_vec3: Word,
     type_vec4: Word,
@@ -387,10 +383,6 @@ struct SamplerBinding {
     /// `OpSampledImage` instruction at the call site produces a
     /// value of this type.
     sampled_image_type: Word,
-    /// ESSL value type (`Sampler2D` or `SamplerCube`). Tracked
-    /// so `texture2D` / `textureCube` dispatch can verify their
-    /// first arg matches.
-    kind: TypeKind,
 }
 
 #[derive(Clone)]
@@ -407,8 +399,6 @@ struct FnParamBinding {
     /// SPIR-V Word for the OpFunctionParameter (the SSA value, not a
     /// pointer; function-parameter storage is Function class).
     value_id: Word,
-    /// ESSL value type.
-    kind: TypeKind,
 }
 
 #[derive(Clone, Copy)]
@@ -479,8 +469,6 @@ fn build_spirv(
         None,
     );
     let type_sampler = b.type_sampler();
-    let type_sampled_image_2d = b.type_sampled_image(type_image_2d);
-    let type_sampled_image_cube = b.type_sampled_image(type_image_cube);
 
     // Inputs: vertex attributes always; fragment varyings under
     // ShaderStage::Fragment.
@@ -559,11 +547,7 @@ fn build_spirv(
         type_ivec2,
         type_ivec3,
         type_ivec4,
-        type_image_2d,
-        type_image_cube,
         type_sampler,
-        type_sampled_image_2d,
-        type_sampled_image_cube,
         type_vec2,
         type_vec3,
         type_vec4,
@@ -1552,10 +1536,7 @@ fn emit_user_function_body(
             .map_err(|e| LoweringError::SpirvBuild(format!("{e:?}")))?;
         fn_params.insert(
             p.name.clone(),
-            FnParamBinding {
-                value_id: pid,
-                kind: p.ty.kind,
-            },
+            FnParamBinding { value_id: pid },
         );
     }
 
@@ -1660,13 +1641,9 @@ fn register_samplers(
         if g.storage != StorageQualifier::Uniform {
             continue;
         }
-        let (image_type, sampled_image_type, kind) = match g.ty.kind {
-            TypeKind::Sampler2D => (type_image_2d, type_sampled_image_2d, TypeKind::Sampler2D),
-            TypeKind::SamplerCube => (
-                type_image_cube,
-                type_sampled_image_cube,
-                TypeKind::SamplerCube,
-            ),
+        let (image_type, sampled_image_type) = match g.ty.kind {
+            TypeKind::Sampler2D => (type_image_2d, type_sampled_image_2d),
+            TypeKind::SamplerCube => (type_image_cube, type_sampled_image_cube),
             _ => continue,
         };
         let ptr_image = b.type_pointer(None, StorageClass::UniformConstant, image_type);
@@ -1702,7 +1679,6 @@ fn register_samplers(
                 sampler_var,
                 image_type,
                 sampled_image_type,
-                kind,
             },
         );
     }

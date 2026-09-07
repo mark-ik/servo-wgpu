@@ -15,7 +15,7 @@
 mod shader;
 mod webgl;
 
-use paint_api::rendering_context_core::{RenderingContextCore, WgpuCapability};
+use genet_compositor::rendering_context_core::{RenderingContextCore, WgpuCapability};
 
 pub use shader::{CANONICAL_TRIANGLE_FRAGMENT_SHADER, CANONICAL_TRIANGLE_VERTEX_SHADER};
 pub use webgl::{

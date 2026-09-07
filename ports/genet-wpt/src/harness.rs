@@ -54,9 +54,12 @@ impl MediaQueryHandler for WptMediaQueries {
 /// network error before the headers.
 // The receiving half of fetch streaming is wired and matched; nothing in the
 // runner constructs these yet, because no subcommand drives a streaming fetch.
-#[expect(
-    dead_code,
-    reason = "receiving half of fetch streaming, not yet driven"
+#[cfg_attr(
+    not(feature = "netfetch"),
+    expect(
+        dead_code,
+        reason = "receiving half of fetch streaming; only the netfetch worker drives it"
+    )
 )]
 pub enum FetchCompletion {
     StartStream(u64, FetchOutcome),
@@ -531,7 +534,7 @@ fn process_testdriver_actions<E: ScriptEngine>(
         let [x, y, w, h] = cssom.fragment_rect(node)?;
         Some((f64::from(x + w / 2.0), f64::from(y + h / 2.0)))
     };
-    let ticks = match embedder_traits::webdriver_actions::interpret_actions(&sequences, &resolver) {
+    let ticks = match crate::testdriver::webdriver_actions::interpret_actions(&sequences, &resolver) {
         Ok(t) => t,
         Err(e) => {
             settle(rt, Some(format!("{e:?}")));
@@ -570,11 +573,11 @@ fn process_testdriver_actions<E: ScriptEngine>(
 fn dispatch_input_event<E: ScriptEngine>(
     rt: &mut Runtime<E>,
     render: &RenderSession,
-    event: &embedder_traits::input_events::InputEvent,
+    event: &crate::testdriver::input_events::InputEvent,
     touch_targets: &mut std::collections::HashMap<i32, DomNodeId>,
 ) {
-    use embedder_traits::WebViewPoint;
-    use embedder_traits::input_events::{InputEvent, MouseButtonAction, TouchEventType};
+    use crate::testdriver::WebViewPoint;
+    use crate::testdriver::input_events::{InputEvent, MouseButtonAction, TouchEventType};
     let xy = |p: &WebViewPoint| match p {
         WebViewPoint::Page(pt) => (pt.x, pt.y),
         WebViewPoint::Device(pt) => (pt.x, pt.y),
@@ -868,7 +871,7 @@ fn is_testdriver_vendor_src(src: &str) -> bool {
 /// element-reference format carrying the node's raw ref (only the host can
 /// resolve geometry), queues the transaction, and returns a Promise the drive
 /// loop settles after running the ticks through the shared interpreter
-/// (`embedder_traits::webdriver_actions::interpret_actions`). Commands beyond
+/// (`crate::testdriver::webdriver_actions::interpret_actions`). Commands beyond
 /// `action_sequence` keep their spec-honest throwing defaults;
 /// `in_automation = true` makes them throw instead of waiting forever for a
 /// human.

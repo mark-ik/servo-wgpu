@@ -29,7 +29,7 @@ repatriated here from mere.
    the last three moved to mere with their code on 2026-09-03, and active
    plans sit flat in `design_docs/`.
 
-## Current engine work (2026-09-05)
+## Current engine work (2026-09-07)
 
 Use the linked plan's current gate and dated receipts before implementing a
 lane. Historical corpus totals are measurements of their named source, not a
@@ -46,12 +46,31 @@ older `docs/` corpus without changing their location or governance.
 | [Counters, lists and generated content, Row 17](../docs/2026-08-21_buckram_livery_lane_program_plan.md#wave-2-now-unblocked) | Open inventory. Name the computed-content, counter-scope and marker-box consumers and a bounded execution gate before implementation. |
 | [K7 foundational sizing and dispatch](../docs/2026-07-26_buckram_css_layout_engine_plan.md#k7-foundational-sizing-and-dispatch-closure) | Reconcile landed sizing fixes with remaining deferrals before choosing a slice. Fragmentainer-dependent work consumes K6; final closure includes deleting CSS-facing Taffy block dispatch. |
 | [WPT harness and ledger](../docs/2026-08-24_wpt_harness_ledger_execution_plan.md) | Exact scorer and reference-verification gates landed. Freeze a fresh candidate runner for new work; unsupported test/reference agreement earns no conformance credit. |
+| [Servo cone retirement](2026-09-07_servo_cone_retirement_plan.md) | servo-paint's compositor half carved out as genet-compositor; the reftest lane renders through genet-render-host; the constellation trait cone left the graph 2026-09-07. All gates green; next proof is Mere's dependency rename at its next bump. |
+| [Web platform WPT census](2026-09-06_web_platform_wpt_census.md) | Baseline exact maps for 41 non-CSS WPT directories (21,672 files, disk mode, Boa/Livery) landed 2026-09-06. Next proof: fix the four harness caveats it names, then open a lane per zero-pass directory against this baseline. |
 | [Host contract ownership](../docs/2026-08-14_web_platform_host_contract_plan.md) | Genet owns retained session contracts; Mere owns surface orchestration and product adapters. The older S0-S5 receipts need a consumer-side status refresh before resuming those lanes. |
 
 The [Buckram master](../docs/2026-07-26_buckram_css_layout_engine_plan.md)
 defines ownership and the [lane program](../docs/2026-08-21_buckram_livery_lane_program_plan.md)
 assigns residuals. The linked execution plans carry their current gate; a
 completed corpus census or bounded slice does not close its enclosing feature.
+
+## Servo cone retirement
+
+- [servo_cone_retirement_plan](2026-09-07_servo_cone_retirement_plan.md)
+  (**landed 2026-09-07**: retired servo-paint's message painter,
+  paint-api and the embedder/constellation trait cone; keeps the platform
+  compositor as `genet-compositor` and absorbs the testdriver input path into
+  genet-wpt. Media, WebGL and Piccolo stay by consumer.)
+
+## WPT census — the web platform beyond CSS
+
+- [web_platform_wpt_census](2026-09-06_web_platform_wpt_census.md)
+  (**complete 2026-09-06**: exact `genet-wpt` testharness maps for every
+  non-CSS WPT directory a web engine owns, `html` split by subdirectory;
+  676 all-pass / 13,845 fail / 2,392 error / 985 no-results / 3,774 skip of
+  21,672 files, with the missing-global inventory and four harness caveats.
+  Raw maps under `Code/testing/genet/wpt-ledger/2026-09-06_platform_census/`.)
 
 ## ortet — the raw host
 

@@ -5,9 +5,10 @@
 //! HTML -> image, for reftest pixel comparison (phase 2).
 //!
 //! Replicates the public path the `html_to_pixels_e2e` test drives:
-//! parse -> cascade -> layout -> emit paint list -> netrender -> readback.
-//! The wgpu boot + netrender instance are created once
-//! ([`Renderer::boot`]) and reused across every test in a subset.
+//! parse -> cascade -> layout -> emit paint list -> netrender -> readback,
+//! through the same `genet-render-host` core the raw host presents with. The
+//! wgpu boot + netrender instance are created once ([`Renderer::boot`]) and
+//! reused across every test in a subset.
 //!
 //! The Livery route keeps the producer bounded: linked stylesheets and local
 //! image bytes are supplied by the host, while remote fetch remains outside
@@ -16,11 +17,7 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::Path;
-use std::rc::Rc;
 
-use dpi::PhysicalSize;
-use embedder_traits::ViewportDetails;
-use euclid::{Scale, Size2D};
 use genet_document_resources::{ResolvedDocumentResources, ResourceKind, resolve_with};
 use genet_livery::{
     Device as LiveryDevice, LiveryDocument, StyleSet as LiveryStyleSet,
@@ -28,18 +25,14 @@ use genet_livery::{
 };
 use genet_static_dom::StaticDocument;
 use layout_dom_api::LayoutDom;
-use netrender::{NetrenderOptions, boot, create_netrender_instance};
-use paint::Paint;
-use paint_api::display_list::{AxesScrollSensitivity, PaintDisplayListInfo, ScrollType};
-use paint_api::wgpu_readback::read_texture_to_image;
-use paint_api::{PaintMessage, PipelineExitSource};
+use genet_render_host::RenderCore;
+use netrender::{ColorLoad, NetrenderOptions};
 use paint_list_api::{
     ColorF, CommonPlacement, DeviceIntSize, IdNamespace, ImageKey, LayoutPoint, LayoutRect,
     LayoutTransform, PaintCmd, PaintEnvelope, RectItem, TransformKind, TransformSpec,
 };
+use paint_list_render::translate_envelope_with_external_textures;
 use paint_types::PipelineId;
-use paint_types::units::{DeviceIntRect, LayoutSize};
-use servo_base::id::{PainterId, PipelineNamespace, PipelineNamespaceId, WebViewId};
 
 pub type Image = image::ImageBuffer<image::Rgba<u8>, Vec<u8>>;
 
@@ -164,11 +157,7 @@ fn scaled_dimension(css: u32, device_scale: f32) -> Result<u32, String> {
 
 /// A booted renderer reused across a subset's tests.
 pub struct Renderer {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    paint: Rc<std::cell::RefCell<Paint>>,
-    painter_id: PainterId,
-    webview_id: WebViewId,
+    core: RenderCore,
     next_pipeline_index: Cell<u32>,
 }
 
@@ -177,33 +166,50 @@ impl Renderer {
     /// unavailable (the runner can then report reftests as unrunnable
     /// rather than crash).
     pub fn boot() -> Result<Self, String> {
-        let handles = boot().map_err(|e| format!("wgpu boot: {e:?}"))?;
-        let device = handles.device.clone();
-        let queue = handles.queue.clone();
-        let renderer = create_netrender_instance(
-            handles,
-            NetrenderOptions {
-                tile_cache_size: Some(64),
-                enable_vello: true,
-                ..Default::default()
-            },
-        )
-        .map_err(|e| format!("create_netrender_instance: {e:?}"))?;
-
-        let paint = Paint::new_for_test();
-        PipelineNamespace::install(PipelineNamespaceId(1));
-        let painter_id = PainterId::next();
-        paint.borrow().install_renderer(painter_id, renderer);
-        let webview_id = WebViewId::new(painter_id);
-
+        let core = RenderCore::boot(NetrenderOptions {
+            tile_cache_size: Some(64),
+            enable_vello: true,
+            ..Default::default()
+        })?;
         Ok(Self {
-            device,
-            queue,
-            paint,
-            painter_id,
-            webview_id,
+            core,
             next_pipeline_index: Cell::new(1),
         })
+    }
+
+    /// Lower one device-space envelope to a netrender scene, materialize its
+    /// blurred box-shadow masks, rasterize into a fresh RGBA8 target and read
+    /// it back. Reftest envelopes carry no producer textures, so external
+    /// texture draws are not composited here.
+    fn rasterize(&self, envelope: &PaintEnvelope, viewport: RenderViewport) -> Image {
+        let (device_width, device_height) = viewport.device_size();
+        let translated = translate_envelope_with_external_textures(envelope);
+        debug_assert!(
+            translated.external_textures.is_empty(),
+            "reftest envelopes carry no producer textures"
+        );
+        for mask in &translated.box_shadow_masks {
+            self.core.renderer().build_box_shadow_mask(
+                mask.key,
+                mask.dim,
+                mask.bounds,
+                mask.corner_radius,
+                mask.blur_radius_px,
+                mask.invert,
+            );
+        }
+        let (texture, _view) = self.core.rasterize_scaled(
+            &translated.scene,
+            device_width,
+            device_height,
+            ColorLoad::Clear(wgpu::Color::TRANSPARENT),
+            1.0,
+        );
+        let frame = self
+            .core
+            .read_rgba8_texture(&texture, device_width, device_height)
+            .expect("reftest readback");
+        Image::from_raw(frame.width, frame.height, frame.rgba).expect("reftest frame dimensions")
     }
 
     fn next_pipeline_id(&self) -> PipelineId {
@@ -215,57 +221,6 @@ impl Renderer {
     /// Render `html` to an image in `viewport`, resolving the page's inline +
     /// linked CSS and local images relative to `base_dir` (and `tests_root`
     /// for `/`-absolute URLs).
-    #[cfg(any())]
-    pub fn render_html_incumbent(
-        &self,
-        html: &str,
-        base_dir: &Path,
-        tests_root: &Path,
-        viewport: RenderViewport,
-        is_xml: bool,
-    ) -> Image {
-        let pipeline_id = self.next_pipeline_id();
-        let (css_width, css_height) = viewport.css_size();
-        let envelope = isolate_image_keys(
-            with_reftest_backdrop(
-                html_to_envelope(html, base_dir, tests_root, css_width, css_height, is_xml),
-                css_width,
-                css_height,
-            ),
-            pipeline_id,
-        );
-        let envelope = scale_envelope_for_device(envelope, viewport);
-        let (device_width, device_height) = viewport.device_size();
-        let paint = self.paint.borrow();
-        paint.handle_messages(vec![PaintMessage::SendPaintList {
-            webview_id: self.webview_id,
-            envelope,
-            paint_info: paint_info_for(pipeline_id, viewport),
-        }]);
-        paint.render(self.webview_id);
-        let master = paint
-            .composite_texture(self.painter_id)
-            .expect("composite_texture after render");
-        let image = read_texture_to_image(
-            &self.device,
-            &self.queue,
-            &master,
-            master.format(),
-            PhysicalSize::new(device_width, device_height),
-            DeviceIntRect::new(
-                paint_types::units::DeviceIntPoint::new(0, 0),
-                paint_types::units::DeviceIntPoint::new(device_width as i32, device_height as i32),
-            ),
-        )
-        .expect("master readback");
-        paint.handle_messages(vec![PaintMessage::PipelineExited(
-            self.webview_id,
-            pipeline_id.into(),
-            PipelineExitSource::default(),
-        )]);
-        image
-    }
-
     /// Render through the clean-room Livery lane. This first WPT bridge is
     /// intentionally bounded: it extracts inline and local linked stylesheets,
     /// supplies host-resolved local image bytes, and lets Livery handle its own
@@ -323,34 +278,7 @@ impl Renderer {
             pipeline_id,
         );
         let envelope = scale_envelope_for_device(envelope, viewport);
-        let (device_width, device_height) = viewport.device_size();
-        let paint = self.paint.borrow();
-        paint.handle_messages(vec![PaintMessage::SendPaintList {
-            webview_id: self.webview_id,
-            envelope,
-            paint_info: paint_info_for(pipeline_id, viewport),
-        }]);
-        paint.render(self.webview_id);
-        let master = paint
-            .composite_texture(self.painter_id)
-            .expect("composite_texture after Livery render");
-        let image = read_texture_to_image(
-            &self.device,
-            &self.queue,
-            &master,
-            master.format(),
-            PhysicalSize::new(device_width, device_height),
-            DeviceIntRect::new(
-                paint_types::units::DeviceIntPoint::new(0, 0),
-                paint_types::units::DeviceIntPoint::new(device_width as i32, device_height as i32),
-            ),
-        )
-        .expect("Livery master readback");
-        paint.handle_messages(vec![PaintMessage::PipelineExited(
-            self.webview_id,
-            pipeline_id.into(),
-            PipelineExitSource::default(),
-        )]);
+        let image = self.rasterize(&envelope, viewport);
         LiveryRender {
             image,
             table_ledger,
@@ -412,9 +340,8 @@ fn with_reftest_backdrop(mut envelope: PaintEnvelope, width: u32, height: u32) -
 }
 
 /// Adapt a CSS-space paint envelope to the physical target selected by the
-/// WPT runner. `PaintDisplayListInfo` records the scale for Paint, but the
-/// NetRender provider consumes the envelope's viewport and coordinates, so the
-/// provider needs this explicit root transform too.
+/// WPT runner. The NetRender provider consumes the envelope's viewport and
+/// coordinates, so the scale is an explicit root transform.
 fn scale_envelope_for_device(
     mut envelope: PaintEnvelope,
     viewport: RenderViewport,
@@ -446,151 +373,17 @@ fn remap_key(key: &mut ImageKey, remap: &HashMap<ImageKey, ImageKey>) {
     }
 }
 
-fn livery_image_urls(stylesheets: &[String]) -> Vec<String> {
-    let mut urls = Vec::new();
-    for stylesheet in stylesheets {
-        let lower = stylesheet.to_ascii_lowercase();
-        let mut cursor = 0;
-        while let Some(offset) = lower[cursor..].find("url(") {
-            let start = cursor + offset + 4;
-            let Some(close) = stylesheet[start..].find(')') else {
-                break;
-            };
-            let raw = stylesheet[start..start + close].trim();
-            let url = raw
-                .strip_prefix('"')
-                .and_then(|value| value.strip_suffix('"'))
-                .or_else(|| {
-                    raw.strip_prefix('\'')
-                        .and_then(|value| value.strip_suffix('\''))
-                })
-                .unwrap_or(raw)
-                .trim();
-            if !url.is_empty() && !urls.iter().any(|seen| seen == url) {
-                urls.push(url.to_owned());
-            }
-            cursor = start + close + 1;
-        }
-    }
-    urls
-}
-
-fn livery_font_urls(stylesheets: &[String]) -> Vec<String> {
-    let mut urls = Vec::new();
-    for stylesheet in stylesheets {
-        let lower = stylesheet.to_ascii_lowercase();
-        let mut cursor = 0;
-        while let Some(face_offset) = lower[cursor..].find("@font-face") {
-            let face_start = cursor + face_offset;
-            let Some(open) = stylesheet[face_start..].find('{') else {
-                break;
-            };
-            let body_start = face_start + open + 1;
-            let Some(close) = stylesheet[body_start..].find('}') else {
-                break;
-            };
-            let body_end = body_start + close;
-            let body = &stylesheet[body_start..body_end];
-            let body_lower = body.to_ascii_lowercase();
-            let mut body_cursor = 0;
-            while let Some(offset) = body_lower[body_cursor..].find("url(") {
-                let start = body_cursor + offset + 4;
-                let Some(close) = body[start..].find(')') else {
-                    break;
-                };
-                let raw = body[start..start + close].trim();
-                let url = raw
-                    .strip_prefix('"')
-                    .and_then(|value| value.strip_suffix('"'))
-                    .or_else(|| {
-                        raw.strip_prefix('\'')
-                            .and_then(|value| value.strip_suffix('\''))
-                    })
-                    .unwrap_or(raw)
-                    .trim();
-                if !url.is_empty() && !urls.iter().any(|seen| seen == url) {
-                    urls.push(url.to_owned());
-                }
-                body_cursor = start + close + 1;
-            }
-            cursor = body_end + 1;
-        }
-    }
-    urls
-}
-
-fn livery_dom_image_urls(document: &StaticDocument) -> Vec<String> {
-    let mut urls = Vec::new();
-    let mut stack = vec![document.document()];
-    while let Some(id) = stack.pop() {
-        if document
-            .element_name(id)
-            .is_some_and(|name| name.local.as_ref().eq_ignore_ascii_case("img"))
-        {
-            for attribute in document.attributes(id) {
-                if attribute.name.ns.as_ref().is_empty()
-                    && attribute.name.local.as_ref().eq_ignore_ascii_case("src")
-                    && !attribute.value.is_empty()
-                    && !urls.iter().any(|url| url == attribute.value)
-                {
-                    urls.push(attribute.value.to_owned());
-                }
-            }
-        }
-        let children = document.dom_children(id).collect::<Vec<_>>();
-        stack.extend(children.into_iter().rev());
-    }
-    urls
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        RenderViewport, isolate_image_keys, livery_dom_image_urls, livery_font_urls,
-        livery_image_urls, paint_info_for, scale_envelope_for_device, with_reftest_backdrop,
+        RenderViewport, isolate_image_keys, scale_envelope_for_device, with_reftest_backdrop,
     };
-    use genet_static_dom::StaticDocument;
     use paint_list_api::{
         AlphaType, ColorF, CommonPlacement, DeviceIntSize, EngineId, IdNamespace, ImageItem,
         ImageKey, ImageRendering, ImageResource, LayoutPoint, LayoutRect, PaintCmd, PaintEnvelope,
         RectItem,
     };
     use paint_types::PipelineId;
-
-    #[test]
-    fn livery_image_urls_deduplicates_css_sources() {
-        let sheets = vec![
-            ".a { background-image: url(\"a.png\"); }".to_owned(),
-            ".b { background-image: url(a.png); background: url(b.png); }".to_owned(),
-        ];
-        assert_eq!(
-            livery_image_urls(&sheets),
-            vec!["a.png".to_owned(), "b.png".to_owned()]
-        );
-    }
-
-    #[test]
-    fn livery_dom_image_urls_collects_replaced_sources() {
-        let document = StaticDocument::parse(
-            r#"<html><body><img src="a.png"><img src="a.png"><img src="b.png"></body></html>"#,
-        );
-        assert_eq!(
-            livery_dom_image_urls(&document),
-            vec!["a.png".to_owned(), "b.png".to_owned()]
-        );
-    }
-
-    #[test]
-    fn livery_font_urls_collects_font_face_sources() {
-        let sheets = vec![
-            "@font-face { font-family: Ahem; src: url('/fonts/Ahem.ttf'); }".to_owned(),
-            ".x { background: url(other.png); }".to_owned(),
-        ];
-        assert_eq!(
-            livery_font_urls(&sheets),
-            vec!["/fonts/Ahem.ttf".to_owned()]
-        );
-    }
 
     #[test]
     fn image_keys_are_namespaced_per_pipeline() {
@@ -682,11 +475,8 @@ mod tests {
         };
         assert_eq!(spec.transform.m11, 2.0);
         assert_eq!(spec.transform.m22, 2.0);
-
-        let info = paint_info_for(PipelineId(1, 1), viewport);
-        assert_eq!(info.viewport_details.size.width, 800.0);
-        assert_eq!(info.viewport_details.size.height, 600.0);
-        assert_eq!(info.viewport_details.hidpi_scale_factor.0, 2.0);
+        assert_eq!(viewport.css_size(), (800, 600));
+        assert_eq!(viewport.device_size(), (1600, 1200));
     }
 
     #[test]
@@ -695,89 +485,4 @@ mod tests {
         assert!(RenderViewport::new(800, 600, f32::NAN).is_err());
         assert!(RenderViewport::new(800, 600, f32::MAX).is_err());
     }
-}
-
-fn paint_info_for(pid: PipelineId, viewport: RenderViewport) -> PaintDisplayListInfo {
-    let (css_width, css_height) = viewport.css_size();
-    PaintDisplayListInfo::new(
-        ViewportDetails {
-            size: Size2D::new(css_width as f32, css_height as f32),
-            hidpi_scale_factor: Scale::new(viewport.device_scale()),
-        },
-        LayoutSize::new(css_width as f32, css_height as f32),
-        pid,
-        servo_base::Epoch(0),
-        AxesScrollSensitivity {
-            x: ScrollType::InputEvents | ScrollType::Script,
-            y: ScrollType::InputEvents | ScrollType::Script,
-        },
-        true,
-    )
-}
-
-/// HTML -> `PaintEnvelope` (the producer half). Mirrors the e2e test's
-/// `html_to_envelope`, plus author sheets from inline `<style>` + linked
-/// `<link rel="stylesheet">`, and a file-backed image loader. data-URI
-/// images decode inline; remote (`http(s)://`) resources are not fetched.
-#[cfg(any())]
-fn html_to_envelope(
-    html: &str,
-    base_dir: &Path,
-    tests_root: &Path,
-    width: u32,
-    height: u32,
-    is_xml: bool,
-) -> PaintEnvelope {
-    // Route by the caller's explicit format (from the file extension), not a
-    // content sniff — sniffing misroutes HTML files that merely mention "xhtml".
-    let document = if is_xml {
-        StaticDocument::parse_xml(html)
-    } else {
-        StaticDocument::parse(html)
-    };
-
-    let resolver = ResourceResolver {
-        base_dir: Some(base_dir.to_path_buf()),
-        tests_root: Some(tests_root.to_path_buf()),
-    };
-    let mut sheets = inline_stylesheets(&document);
-    sheets.extend(linked_stylesheets(&document, &resolver));
-    let sheet_refs: Vec<&str> = sheets.iter().map(String::as_str).collect();
-
-    // The document's file:// base URL, so relative CSS url() refs
-    // (e.g. background-image: url(support/x.png)) resolve to real files.
-    let base_url = resolver.base_url();
-
-    let mut styles: StylePlane<_> = StylePlane::new();
-    run_cascade(
-        &document,
-        &mut styles,
-        euclid::Size2D::new(width as f32, height as f32),
-        &sheet_refs,
-        base_url.as_deref(),
-    );
-
-    let loader = LocalFileImageLoader::new(resolver);
-    let images = ImagePlane::decode_from_dom_with_loader(&document, &loader);
-    let bg_images = BackgroundImagePlane::decode_from_cascade(&document, &styles, &loader);
-
-    let viewport = taffy::Size {
-        width: taffy::AvailableSpace::Definite(width as f32),
-        height: taffy::AvailableSpace::Definite(height as f32),
-    };
-    let (fragments, built, text_ctx) = layout(&document, &styles, &images, viewport);
-    let plist = emit_paint_list_with_layouts(
-        &document,
-        &styles,
-        &fragments,
-        &built,
-        &text_ctx,
-        &images,
-        &bg_images,
-        // Static reftest render has no scrolling, so pass empty
-        // scroll offsets (mirrors emit_paint_list's no_scroll).
-        &Default::default(),
-        DeviceIntSize::new(width as i32, height as i32),
-    );
-    PaintEnvelope::from_list(&plist)
 }

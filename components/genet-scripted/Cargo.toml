@@ -58,6 +58,8 @@ engine_observables_api = { workspace = true }
 script-engine-api = { path = "../script-engine-api" }
 
 [dev-dependencies]
+# Boa backs the in-crate tests only. A host picks one engine crate itself:
+# script-engine-boa or script-engine-nova, never both by way of this crate.
 script-engine-boa = { path = "../script-engine-boa" }
 
 [target.'cfg(target_pointer_width = "64")'.dependencies]

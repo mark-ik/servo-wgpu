@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use gstreamer_gl::prelude::*;
 use servo_media_gstreamer_render::Render;
 use servo_media_player::PlayerError;
-use servo_media_player::context::{GlApi, GlContext, NativeDisplay, PlayerGLContext};
+use servo_media_player::context::{GlApi, GlContext, PlayerGLContext};
 use servo_media_player::video::{Buffer, VideoFrame, VideoFrameData};
 
 struct GStreamerBuffer {

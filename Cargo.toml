@@ -6,6 +6,7 @@ members = [
     "components/shared/document-session-api",
     "components/shared/paint-types",
     "components/xpath",
+    "components/genet-compositor",
     "components/webgl-wgpu",
     "components/webgl-essl",
     "components/genet-document-resources",
@@ -75,7 +76,7 @@ members = [
     # (design_docs/2026-09-03_ortet_founding_plan.md).
     "ports/ortet",
     "ports/genet-wpt",
-    "tests/unit/*",
+    "tests/unit/malloc_size_of",
 ]
 default-members = ["ports/ortet"]
 # The SpiderMonkey-backed scripting stack (components/script,
@@ -87,6 +88,15 @@ default-members = ["ports/ortet"]
 # Git history is the reference for the eventual scripting rebuild. See
 # docs/2026-05-20_stylo_taffy_adoption_plan.md (and the cut commit). The
 # remaining Stylo + genet-layout compatibility cone was deleted 2026-08-21.
+# The Servo constellation cone (servo-paint's message painter, paint-api,
+# embedder/constellation/net/devtools/storage/canvas/profile traits, base,
+# config, url, pixels, geometry, hyper_serde, wakelock, servo_tracing,
+# default-resources, webgpu, webxr, profile, deny_public_fields) left the
+# graph 2026-09-07: its last consumers were the WPT reftest lane, which now
+# renders through genet-render-host like Ortet, and the testdriver input
+# path, which genet-wpt absorbed. The platform compositor half of
+# servo-paint survives as components/genet-compositor. See
+# design_docs/2026-09-07_servo_cone_retirement_plan.md.
 exclude = [".cargo"]
 
 [workspace.package]
@@ -302,7 +312,6 @@ url = "2.5"
 urlpattern = "0.3"
 utf-8 = "0.7"
 uuid = { version = "1.23.1", features = ["v4", "v5"] }
-vello = "0.10"
 vello_cpu = "0.2.0"
 webdriver = { version = "0.53.0", default-features = false }
 webpki-roots = "1.0"
@@ -336,17 +345,11 @@ zeroize = "1.8"
 # be listed here, between the `Begin` and `End` comments, so that we can easily find and
 # update the version requirements when bumping the workspace version.
 # Begin workspace-version dependencies - Don't change this comment, we grep for it in scripts!
-deny_public_fields = { package = "servo-deny-public-fields", version = "=0.2.0", path = "components/deny_public_fields" }
-devtools_traits = { package = "servo-devtools-traits", version = "=0.2.0", path = "components/shared/devtools" }
-embedder_traits = { package = "servo-embedder-traits", version = "=0.2.0", path = "components/shared/embedder" }
 engine_observables_api = { package = "engine-observables-api", version = "=0.1.1", path = "components/shared/engine-observables-api" }
-hyper_serde = { package = "servo-hyper-serde", version = "=0.2.0", path = "components/hyper_serde" }
 layout_dom_api = { package = "layout-dom-api", version = "=0.1.0", path = "components/shared/layout-dom" }
 malloc_size_of = { package = "servo-malloc-size-of", version = "=0.2.0", path = "components/malloc_size_of" }
 media = { package = "servo-media-thread", version = "=0.2.0", path = "components/media/media-thread" }
-net_traits = { package = "servo-net-traits", version = "=0.2.0", path = "components/shared/net" }
-paint = { package = "servo-paint", version = "=0.2.0", path = "components/paint" }
-paint_api = { package = "servo-paint-api", version = "=0.2.0", path = "components/shared/paint" }
+genet-compositor = { version = "=0.2.0", path = "components/genet-compositor" }
 # Moved to the netrender workspace as a neutral, engine-agnostic crate
 # (extraction plan 2026-05-20). genet is now a consumer, not the owner.
 paint_list_api = { git = "https://github.com/merely-made/netrender.git", rev = "6f1a4fe70a58a57ba6b248acfa662f0ec4e44a25", version = "0.1.0" }
@@ -354,9 +357,6 @@ paint_list_api = { git = "https://github.com/merely-made/netrender.git", rev = "
 # workspace so any engine can reuse the lowering.
 paint_list_render = { git = "https://github.com/merely-made/netrender.git", rev = "6f1a4fe70a58a57ba6b248acfa662f0ec4e44a25", version = "0.1.0" }
 paint_types = { package = "genet-paint-types", version = "=0.1.0", path = "components/shared/paint-types" }
-pixels = { package = "servo-pixels", version = "=0.2.0", path = "components/pixels" }
-profile = { package = "servo-profile", version = "=0.2.0", path = "components/profile" }
-profile_traits = { package = "servo-profile-traits", version = "=0.2.0", path = "components/shared/profile" }
 # `servo = "..."` workspace.dep removed 2026-05-15 per Mark's audit:
 # genet used to be servo-the-fork, but the umbrella servo crate is no
 # longer load-bearing. The two examples that depended on it
@@ -366,13 +366,7 @@ profile_traits = { package = "servo-profile-traits", version = "=0.2.0", path = 
 # paths for components that may be referenced — separate cleanup pass if
 # they turn out to be vestigial.
 servo-allocator = { version = "=0.2.0", path = "components/allocator" }
-servo-base = { version = "=0.2.0", path = "components/shared/base" }
-servo-canvas-traits = { version = "=0.2.0", path = "components/shared/canvas" }
-servo-config = { version = "=0.2.0", path = "components/config" }
 servo-config-macro = { version = "=0.2.0", path = "components/config/macro" }
-servo-constellation-traits = { version = "=0.2.0", path = "components/shared/constellation" }
-servo-default-resources = { version = "=0.2.0", path = "components/default-resources" }
-servo-geometry = { version = "=0.2.0", path = "components/geometry" }
 servo-media = { version = "=0.2.0", path = "components/media/servo-media" }
 servo-media-audio = { version = "=0.2.0", path = "components/media/audio" }
 servo-media-auto = { version = "=0.2.0", path = "components/media/backends/auto" }
@@ -386,26 +380,9 @@ servo-media-player = { version = "=0.2.0", path = "components/media/player" }
 servo-media-streams = { version = "=0.2.0", path = "components/media/streams" }
 servo-media-traits = { version = "=0.2.0", path = "components/media/traits" }
 servo-media-webrtc = { version = "=0.2.0", path = "components/media/webrtc" }
-servo-tracing = { version = "=0.2.0", path = "components/servo_tracing" }
-servo-url = { version = "=0.2.0", path = "components/url" }
-servo-wakelock = { version = "=0.2.0", path = "components/wakelock" }
-storage_traits = { package = "servo-storage-traits", version = "=0.2.0", path = "components/shared/storage" }
-webgpu = { package = "servo-webgpu", version = "=0.2.0", path = "components/webgpu" }
-webgpu_traits = { package = "servo-webgpu-traits", version = "=0.2.0", path = "components/shared/webgpu" }
 webgl_wgpu = { package = "servo-webgl-wgpu", version = "=0.2.0", path = "components/webgl-wgpu" }
-webxr = { package = "servo-webxr", version = "=0.2.0", path = "components/webxr" }
-webxr-api = { package = "servo-webxr-api", version = "=0.2.0", path = "components/shared/webxr" }
 xpath = { package = "servo-xpath", version = "=0.2.0", path = "components/xpath" }
 # End workspace-version dependencies - Don't change this comment, we grep for it in scripts!
-
-# RSA key generation could be very slow without compilation
-# optimizations, in development mode. Without optimizations, WPT might
-# consider RSA key generation tests fail due to timeout.
-# Building with higher optimization levels can speed up the key
-# generation process to avoid false negative result in those tests.
-# More details: <https://docs.rs/rsa/0.9.8/rsa/index.html#example>
-[profile.dev.package.num-bigint-dig]
-opt-level = 3
 
 # Force tikv-jemalloc-sys to build with at least -O1.
 # This can help with build environments that force _FORTIFY_SOURCE, such as Nix.
@@ -463,10 +440,6 @@ genet-paint-types = { path = "components/shared/paint-types" }
 genet-scripted-dom = { path = "components/genet-scripted-dom" }
 genet-static-dom = { path = "components/genet-static-dom" }
 layout-dom-api = { path = "components/shared/layout-dom" }
-# Sprigging's published manifest resolves paint_list_api from crates.io. Genet
-# develops against Netrender main, so redirect that registry edge to the same
-# source as the workspace dependency and keep PaintCommand identity unified.
-paint_list_api = { git = "https://github.com/merely-made/netrender.git", rev = "6f1a4fe70a58a57ba6b248acfa662f0ec4e44a25" }
 # If you need to temporarily test Servo with a local fork of some upstream
 # crate, add that here. Use the form:
 #
@@ -506,25 +479,11 @@ sonic-rs = { path = "support/patches/sonic-rs-0.5.8" }
 # docs/2026-05-31_css_rendering_conformance_plan.md (floats × BFC, the
 # original patch's context).
 genet-taffy = { path = "support/patches/taffy" }
-# Vano fork (genet-embedder branch on github.com/merely-made/vano). Carries the
-# EmbedderObject native-data patch plus the reflector-liveness weak-ref API
-# (`EmbedderObject::into_weak_ref`/`from_weak_ref` + `clear_weak_ref_kept_objects`,
-# G1 in docs/2026-06-11_gc_arena_dom_plan.md). Git dep so a bare clone resolves
-# without the sibling checkout; for local Vano dev, the gitignored
-# `Code/.cargo/config.toml` `paths` override redirects this to
-# `../../crates/vano/nova_vm`.
-nova_vm = { git = "https://github.com/merely-made/vano", branch = "genet-embedder" }
-# Boa fork (genet branch on github.com/mark-ik/boa) tracking boa-upstream main
-# (the 1.0.0-dev line). Carries an additive source patch — `JsObject::downgrade()`
-# + `WeakJsObject`, for the reflector-liveness weak cache (G1 in
-# docs/2026-06-11_gc_arena_dom_plan.md). boa_engine pulls its sibling boa_* crates
-# via boa's own intra-repo path deps, so only boa_engine + boa_gc are named from
-# crates.io (by script-engine-boa) and need patching. Git deps so a bare clone
-# resolves; for local boa dev, the gitignored `Code/.cargo/config.toml` `paths`
-# override redirects these to `../../crates/boa`.
-# See docs/2026-05-20_genet_script_engine_plan.md.
-boa_engine = { git = "https://github.com/mark-ik/boa.git", branch = "genet" }
-boa_gc = { git = "https://github.com/mark-ik/boa.git", branch = "genet" }
+# The Boa and Vano forks are named by git directly in script-engine-boa and
+# script-engine-nova since 2026-09-07 (they were crates-io names patched to
+# git here, which the local `[patch]` redirect in `.cargo/config.toml` could
+# not layer on). Fork provenance: docs/2026-05-20_genet_script_engine_plan.md
+# and G1 in docs/2026-06-11_gc_arena_dom_plan.md.
 # ipc-channel: in-process fork, vendored at support/patches/ipc-channel (like
 # taffy + gpu-allocator). Servo's multiprocess IPC transport is vestigial in
 # genet's single-process embedding (pelt; and mere's library use), so the fork
@@ -541,7 +500,6 @@ ipc-channel = { path = "support/patches/ipc-channel" }
 # stalled, and conflicted. The owned v0.10.0 tag carries exactly the
 # API changes in that PR, so this entry retires by deletion when a wgpu-30
 # vello (0.11) ships. The immutable tag prevents branch-tip drift.
-vello = { git = "https://github.com/mark-ik/vello.git", tag = "vello-0.10.0" }
 # For WebRender / netrender:
 # The netrender/ workspace (formerly the webrender-wgpu fork) dropped
 # webrender, webrender_api, and wr_malloc_size_of as separate crates. Local

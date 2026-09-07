@@ -5,7 +5,7 @@
 //! Env-gated DOM mutation capture for the scripted tier.
 
 use std::fs::{self, File};
-use std::io::{self, BufWriter, Read, Write};
+use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -75,13 +75,6 @@ pub(crate) struct DomCaptureRecorder {
     layout_height: u32,
     #[cfg(feature = "render")]
     shadow_layout: IncrementalLayout<NodeId>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ReplayReport {
-    pub batch_count: usize,
-    pub final_snapshot_html: String,
-    pub live_node_count: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -311,7 +304,9 @@ impl DomCaptureRecorder {
     }
 }
 
-pub(crate) fn read_capture_records(path: &Path) -> io::Result<Vec<DomCaptureRecord>> {
+#[cfg(test)]
+fn read_capture_records(path: &Path) -> io::Result<Vec<DomCaptureRecord>> {
+    use std::io::Read;
     let mut file = File::open(path)?;
     let mut out = Vec::new();
     loop {
@@ -329,165 +324,6 @@ pub(crate) fn read_capture_records(path: &Path) -> io::Result<Vec<DomCaptureReco
         out.push(record);
     }
     Ok(out)
-}
-
-pub(crate) fn replay_capture(path: &Path) -> io::Result<ReplayReport> {
-    let records = read_capture_records(path)?;
-    let Some(DomCaptureRecord::SessionStart {
-        snapshot_html,
-        stylesheets,
-        layout_width,
-        layout_height,
-    }) = records.first()
-    else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "capture file must start with SessionStart",
-        ));
-    };
-    let mut dom = ScriptedDom::from_serialized_document(snapshot_html);
-    #[cfg(feature = "render")]
-    let mut replay_layout = new_shadow_layout(&dom, stylesheets, *layout_width, *layout_height);
-    #[cfg(feature = "render")]
-    let replay_sheets = stylesheet_refs(stylesheets);
-    let mut batch_count = 0usize;
-    for record in records.iter().skip(1) {
-        let DomCaptureRecord::MutationBatch { mutations, layout } = record else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "unexpected SessionStart after capture start",
-            ));
-        };
-        let drained = replay_batch(&mut dom, mutations).map_err(|msg| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("replay batch {batch_count}: {msg}"),
-            )
-        })?;
-        #[cfg(feature = "render")]
-        if let Some(expected_layout) = layout {
-            let applied = replay_layout.apply(&dom, &replay_sheets, &drained);
-            let actual_layout = RecordedLayoutBatch::capture(&dom, &replay_layout, applied);
-            if &actual_layout != expected_layout {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "replay batch {batch_count}: layout mismatch: expected {:?}, got {:?}",
-                        expected_layout, actual_layout
-                    ),
-                ));
-            }
-        }
-        #[cfg(not(feature = "render"))]
-        if layout.is_some() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "capture file includes layout parity data but genet-scripted was built without render",
-            ));
-        }
-        batch_count += 1;
-    }
-    Ok(ReplayReport {
-        batch_count,
-        final_snapshot_html: dom.inner_html(dom.document()),
-        live_node_count: dom.live_node_count(),
-    })
-}
-
-fn replay_batch(
-    dom: &mut ScriptedDom,
-    mutations: &[RecordedMutation],
-) -> Result<Vec<DomMutation<NodeId>>, String> {
-    for mutation in mutations {
-        replay_mutation(dom, mutation)?;
-    }
-    let mut drained = Vec::new();
-    dom.drain_mutations(&mut drained);
-    if drained.len() != mutations.len() {
-        return Err(format!(
-            "replayed batch produced {} DomMutations, expected {}",
-            drained.len(),
-            mutations.len()
-        ));
-    }
-    Ok(drained)
-}
-
-fn replay_mutation(dom: &mut ScriptedDom, mutation: &RecordedMutation) -> Result<(), String> {
-    match mutation {
-        RecordedMutation::Inserted {
-            node,
-            parent,
-            next_sibling,
-            outer_html,
-        } => {
-            let imported = dom.import_serialized_subtree(outer_html)?;
-            if dom.capture_node_id(imported) != *node {
-                return Err(format!(
-                    "inserted subtree root reminted to {}, expected {}",
-                    dom.capture_node_id(imported),
-                    node
-                ));
-            }
-            let parent = dom.remint_node_id(*parent);
-            let next_sibling = next_sibling.map(|raw| dom.remint_node_id(raw));
-            dom.insert_before(parent, imported, next_sibling);
-        },
-        RecordedMutation::Removed {
-            node,
-            former_parent,
-            still_live,
-        } => {
-            let node = dom.remint_node_id(*node);
-            let former_parent = dom.remint_node_id(*former_parent);
-            if dom.parent(node) != Some(former_parent) {
-                return Err("removed node parent mismatch before replay".to_string());
-            }
-            if *still_live {
-                dom.remove_child(node);
-            } else {
-                dom.remove(node);
-            }
-        },
-        RecordedMutation::AttributeChanged {
-            node,
-            name,
-            new_value,
-            ..
-        } => {
-            let node = dom.remint_node_id(*node);
-            let name = name.clone().into_qual_name();
-            match new_value {
-                Some(value) => dom.set_attribute(node, name, value),
-                None => dom.remove_attribute(node, name),
-            }
-        },
-        RecordedMutation::CharacterDataChanged { node, new_data } => {
-            dom.set_text(dom.remint_node_id(*node), new_data);
-        },
-        RecordedMutation::SubtreeReplaced {
-            node,
-            new_inner_html,
-        } => {
-            dom.set_inner_html(dom.remint_node_id(*node), new_inner_html);
-        },
-        RecordedMutation::Moved {
-            node,
-            from_parent,
-            to_parent,
-            next_sibling,
-        } => {
-            let node = dom.remint_node_id(*node);
-            let from_parent = dom.remint_node_id(*from_parent);
-            if dom.parent(node) != Some(from_parent) {
-                return Err("moved node parent mismatch before replay".to_string());
-            }
-            let to_parent = dom.remint_node_id(*to_parent);
-            let next_sibling = next_sibling.map(|raw| dom.remint_node_id(raw));
-            dom.move_before(to_parent, node, next_sibling);
-        },
-    }
-    Ok(())
 }
 
 #[cfg(feature = "render")]
@@ -687,111 +523,6 @@ mod tests {
             },
             other => panic!("unexpected record: {other:?}"),
         }
-
-        let _ = fs::remove_file(path);
-    }
-
-    #[test]
-    fn replay_capture_rebuilds_document_and_orphan_liveness() {
-        let mut dom = ScriptedDom::new();
-        let root = dom.document();
-        let html = dom.create_element(qual("html"));
-        dom.append_child(root, html);
-        let head = dom.create_element(qual("head"));
-        dom.append_child(html, head);
-        let body = dom.create_element(qual("body"));
-        dom.append_child(html, body);
-
-        #[cfg(feature = "render")]
-        let sheets = structural_sheets();
-        #[cfg(not(feature = "render"))]
-        let sheets = Vec::new();
-        let path = temp_capture_path();
-        let mut recorder = DomCaptureRecorder::open_at_path(&path, &mut dom, &sheets).unwrap();
-
-        dom.set_inner_html(body, "<section><p>one</p></section>");
-        assert_eq!(recorder.record_pending(&mut dom).unwrap(), 1);
-
-        let section = dom.dom_children(body).next().unwrap();
-        let note = dom.create_comment("note");
-        dom.insert_before(body, note, Some(section));
-        assert_eq!(recorder.record_pending(&mut dom).unwrap(), 1);
-
-        dom.remove_child(note);
-        let p = dom
-            .first_tag(body, "p")
-            .expect("subtree replacement created paragraph");
-        let text = dom.dom_children(p).next().unwrap();
-        dom.set_text(text, "two");
-        dom.set_attribute(section, qual("data-x"), "1");
-        assert_eq!(recorder.record_pending(&mut dom).unwrap(), 3);
-
-        let expected_snapshot = dom.inner_html(dom.document());
-        let expected_live_nodes = dom.live_node_count();
-
-        let report = replay_capture(&path).unwrap();
-        assert_eq!(
-            report,
-            ReplayReport {
-                batch_count: 3,
-                final_snapshot_html: expected_snapshot,
-                live_node_count: expected_live_nodes,
-            }
-        );
-
-        let _ = fs::remove_file(path);
-    }
-
-    #[cfg(feature = "render")]
-    #[test]
-    fn replay_capture_verifies_layout_parity_batches() {
-        let mut dom =
-            ScriptedDom::from_serialized_document("<html><body><div>hello</div></body></html>");
-        let root = dom.document();
-        let body = dom.first_tag(root, "body").expect("body");
-        let div = dom.first_tag(root, "div").expect("div");
-
-        let sheets = structural_sheets();
-        let path = temp_capture_path();
-        let mut recorder = DomCaptureRecorder::open_at_path(&path, &mut dom, &sheets).unwrap();
-
-        dom.set_attribute(div, qual("style"), "display:block; width: 100px;");
-        assert_eq!(recorder.record_pending(&mut dom).unwrap(), 1);
-
-        dom.set_attribute(
-            div,
-            qual("style"),
-            "display:block; width: 100px; color: red;",
-        );
-        assert_eq!(recorder.record_pending(&mut dom).unwrap(), 1);
-
-        let note = dom.create_comment("note");
-        dom.insert_before(body, note, Some(div));
-        assert_eq!(recorder.record_pending(&mut dom).unwrap(), 1);
-
-        let records = read_capture_records(&path).unwrap();
-        let applied: Vec<_> = records
-            .iter()
-            .skip(1)
-            .map(|record| match record {
-                DomCaptureRecord::MutationBatch {
-                    layout: Some(layout),
-                    ..
-                } => layout.applied.clone(),
-                other => panic!("expected layout batch, got {other:?}"),
-            })
-            .collect();
-        assert_eq!(
-            applied,
-            vec![
-                RecordedApplied::Restyled,
-                RecordedApplied::RepaintOnly,
-                RecordedApplied::Spliced,
-            ]
-        );
-
-        let report = replay_capture(&path).unwrap();
-        assert_eq!(report.batch_count, 3);
 
         let _ = fs::remove_file(path);
     }

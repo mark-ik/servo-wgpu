@@ -206,15 +206,6 @@ impl WebGlContext {
         }
     }
 
-    pub(super) fn bound_texture_for_unit(
-        &self,
-        texture_unit: Option<u32>,
-    ) -> Option<&TextureObject> {
-        let unit = texture_unit? as usize;
-        let texture_id = self.bound_texture_2d_units.get(unit).copied().flatten()?;
-        self.textures.get(&texture_id)
-    }
-
     pub(super) fn current_readback_texture(&self) -> Option<(&wgpu::Texture, (u32, u32))> {
         let Some(framebuffer_id) = self.bound_framebuffer else {
             return Some((&self.canvas.output.texture, self.canvas.output.size));

@@ -46,6 +46,7 @@ use testharness::*;
 
 mod conformance;
 mod harness;
+mod testdriver;
 mod manifest;
 mod render;
 mod test262;
