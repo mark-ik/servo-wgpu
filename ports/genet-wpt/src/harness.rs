@@ -307,7 +307,7 @@ fn run_test_with_webgl_and_style(
     engine: Engine,
     style: StyleRoute,
 ) -> HarnessOutcome {
-    let doc = StaticDocument::parse(html);
+    let doc = parse_doc(html);
     let mut scripts = Vec::new();
     collect_scripts(&doc, doc.document(), loader, &mut scripts);
     let test_src = scripts.join("\n;\n");
@@ -387,7 +387,7 @@ impl NovaHarnessTemplate {
         webgl: Option<WebGlFactory>,
         style: StyleRoute,
     ) -> HarnessOutcome {
-        let doc = StaticDocument::parse(html);
+        let doc = parse_doc(html);
         let mut scripts = Vec::new();
         collect_scripts(&doc, doc.document(), loader, &mut scripts);
         let test_src = scripts.join("\n;\n");
@@ -917,6 +917,36 @@ fn collect_scripts<D: LayoutDom>(
     }
 }
 
+/// Whether `html` is XML-syntax markup that needs xml5ever rather than
+/// html5ever. Two shapes: the `<?xml` prologue, and the WPT `svg/` corpus's
+/// bare `<svg xmlns:h="...xhtml">` root (no prologue, but still meant for an
+/// XML parser — these files are served `image/svg+xml`). html5ever's HTML
+/// tokenizer does not split a namespace prefix from a tag name: `<h:script
+/// src="...">` parses as one literal, non-`script` element, so the `h:`-prefixed
+/// `<script src>` (and every other `h:`-prefixed element) silently drops out of
+/// [`collect_scripts`] instead of loading. xml5ever resolves the prefix via the
+/// `xmlns:h` declaration like any other namespace, so `element_name`'s local-name
+/// check (`"script"`) matches again.
+fn looks_like_xml(html: &str) -> bool {
+    let head = html.trim_start();
+    if head.starts_with("<?xml") {
+        return true;
+    }
+    let head = &head[..head.len().min(512)];
+    head.starts_with("<svg") && head.contains("xmlns:")
+}
+
+/// Parse a testharness document with the syntax it actually needs
+/// ([`looks_like_xml`]): xml5ever for XML-namespaced markup, html5ever
+/// otherwise.
+fn parse_doc(html: &str) -> StaticDocument {
+    if looks_like_xml(html) {
+        StaticDocument::parse_xml(html)
+    } else {
+        StaticDocument::parse(html)
+    }
+}
+
 /// `testharness.js` and its report hook are supplied by the host surface (the
 /// results bridge replaces the report), so the test's own copies are skipped.
 fn is_harness_src(src: &str) -> bool {
@@ -1047,6 +1077,61 @@ mod tests {
         assert!(is_server_handler_src("resources/log.py"));
         assert!(!is_server_handler_src("/resources/testdriver.js"));
         assert!(!is_server_handler_src("/support/py-helper.js"));
+    }
+
+    /// The `svg/` corpus's namespaced `<h:script src>` includes (`test_valid_value`
+    /// and kin, ~115 files) only resolve under xml5ever: html5ever keeps the `h:`
+    /// prefix as part of one literal tag name, so `element_name` never matches
+    /// `"script"` and the include silently drops. `looks_like_xml` is the switch;
+    /// both real WPT shapes it must catch (prologued and bare) and the plain-HTML
+    /// negative are pinned here so the switch cannot regress silently.
+    #[test]
+    fn xml_prologue_and_bare_namespaced_svg_are_recognized_as_xml() {
+        assert!(looks_like_xml(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<svg/>"
+        ));
+        assert!(looks_like_xml(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"\n     xmlns:h=\"http://www.w3.org/1999/xhtml\">"
+        ));
+        assert!(!looks_like_xml("<!doctype html><html><body></body></html>"));
+        assert!(!looks_like_xml(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>"
+        ));
+    }
+
+    /// End to end through the real corpus file: `fill-valid.svg` loads
+    /// `testharness.js` and `/css/support/parsing-testcommon.js` through two
+    /// `<h:script src>` includes, then calls `test_valid_value` from inline
+    /// `<script><![CDATA[...]]></script>`. Before `parse_doc` routed `.svg`-shaped
+    /// markup to xml5ever, both includes dropped silently and the first
+    /// `test_valid_value` call threw `ReferenceError`.
+    #[test]
+    fn namespaced_svg_script_includes_resolve_through_xml_parsing() {
+        let wpt = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/wpt");
+        let testharness_js =
+            fs::read_to_string(wpt.join("tests/resources/testharness.js")).expect("harness");
+        let tests_root = wpt.join("tests");
+        let test_path = tests_root.join("svg/painting/parsing/fill-valid.svg");
+        let html = fs::read_to_string(&test_path).expect("test svg");
+        let base_dir = test_path.parent().unwrap().to_path_buf();
+        let loader = DiskLoader::new(base_dir.as_path(), tests_root.as_path());
+        let results = unwrap_ran(run_test(
+            &testharness_js,
+            &html,
+            &loader,
+            None,
+            None,
+            None,
+            Engine::Boa,
+        ));
+        assert!(
+            !results.is_empty(),
+            "test_valid_value should have registered subtests instead of throwing"
+        );
+        assert!(
+            results.iter().all(|r| r.passed()),
+            "fill-valid.svg should pass end to end: {results:?}"
+        );
     }
 
     struct EmptyLoader;

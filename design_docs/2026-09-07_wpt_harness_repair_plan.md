@@ -87,6 +87,68 @@ against 28s in disk mode. When no fetch is in flight and no frame is wanted,
 the loop can advance its clock to the next timer instead of sleeping to it,
 which is what the disk loop already does.
 
+### F6 — 2026-09-07 (residual): the harness always parses with html5ever, even
+for XML-syntax documents
+
+Closes the residual F1 left open: the ~115 `svg/` files (the census's ~128
+estimate included two files with an `html:` prefix instead of `h:`, folded
+into the same count) that error `test_valid_value is not defined` and its
+three siblings (`test_computed_value`, `test_invalid_value`,
+`assert_not_inherited`/`assert_inherited` from `inheritance-testcommon.js`).
+F1 already ruled out the suffix-filter cause; this is a different bug in the
+same neighborhood.
+
+Every one of these `.svg` corpus files is well-formed XML using a namespace
+prefix for its XHTML-shaped elements — `<h:script src="/css/support/parsing-
+testcommon.js"/>` inside an `<svg xmlns="…svg" xmlns:h="…xhtml">` root (WPT
+serves `.svg` as `image/svg+xml`, an XML content type). `harness.rs`'s
+`run_test_with_webgl_and_style` (both the free-function Boa/Nova path and
+`NovaHarnessTemplate`'s copy) called `StaticDocument::parse(html)`
+unconditionally — the html5ever entry point — regardless of what kind of
+document the string held. `genet-static-dom` already ships an xml5ever entry
+point (`StaticDocument::parse_xml`, tested in isolation against the `.xht`
+corpus shape since 2026-05-31) and an auto-sniffing wrapper
+(`StaticDocument::parse_auto`), but nothing in `genet-wpt` ever called either:
+`build_test_html_disk` skips `.xhtml`/`.xht` outright rather than routing them
+to XML parsing, and no caller reached `parse_xml` at all before this fix.
+
+html5ever's HTML tokenizer does not split a namespace prefix from a tag name:
+`<h:script>` parses as one literal element named `h:script`, not an element
+named `script` in some namespace. `collect_scripts`'s test (`element_name(node)
+… local.as_ref() == "script"`) never matches it, so the `<script src>` — and
+every other `h:`-prefixed element in the document — silently drops out of
+`collect_scripts` instead of loading. `testharness.js` itself still runs
+(it is injected as a fixed string, not discovered via the DOM scan), so the
+document reaches the test body with the support script never having loaded;
+the first `test_valid_value(...)` call throws `ReferenceError`, which the
+runner had no way to distinguish from a genuine engine gap.
+
+**Fix** (`ports/genet-wpt/src/harness.rs`, both `StaticDocument::parse(html)`
+call sites): a local `looks_like_xml(html)` sniff — the `<?xml` prologue, or a
+bare `<svg …>` root carrying an `xmlns:` declaration (the shape of every
+`svg/` file that lacks a prologue) — routes the document through
+`StaticDocument::parse_xml` instead of `::parse` when it matches, via a new
+`parse_doc` wrapper. No signature changed and no other crate was touched: the
+fix is a content sniff local to `harness.rs`, not a threaded parameter,
+because every call site already had exactly the string the sniff needs and
+nothing else in the call chain needed to know which parser ran.
+
+Verified against three files from three different `svg/` subdirectories plus
+one `inheritance-testcommon.js` consumer
+(`svg/geometry/parsing/cx-valid.svg`, `svg/interact/parsing/pointer-events-
+valid.svg`, `svg/painting/parsing/fill-valid.svg`, `svg/geometry/
+inheritance.svg`): all four moved from `error/evaluation-threw` to `fail` or
+`pass`, none regressed. The `svg`-wide re-run (below) confirms the same
+pattern at scale: 122 files moved, all `error`/`no-results` -> `fail`/`pass`,
+zero `pass` -> anything else.
+
+Not the `svg/css-support` files' whole residual: two files carry `<html:
+script>` instead of `<h:script>` — same cause (a different chosen prefix),
+covered by the same sniff since it does not depend on the prefix's spelling.
+`test_namespace` (one of the four symptom names the task brief listed) has no
+definition or call site anywhere under `tests/wpt/tests/svg`; it is not part
+of this residual and this finding makes no claim about it.
+
 ## Phases
 
 ### H1 — per-test process isolation for `testharness`
@@ -253,8 +315,9 @@ tests, `resource-timing`'s `status-code.py`, `content-security-policy`'s
 The `/css/support/*.js` helpers the census suspected of sharing the SVG cause
 did **not** move: `test_valid_value` (37), `test_computed_value` (36) and
 `test_invalid_value` (36) are unchanged in the missing-globals table. F1 above
-records why — their file names never matched the filter. Their residual is a
-separate, still-open question for whichever lane owns those files.
+records why — their file names never matched the filter. Their residual was a
+separate question, closed same-day by F6: the cause was html5ever parsing an
+XML-namespaced `svg/` document, not the suffix filter.
 
 ### Missing globals
 
@@ -274,8 +337,32 @@ belong to the engine's residual rather than the harness's.
 ## Progress
 
 - **2026-09-07** — H1, H2 and H3 landed; H4 re-run recorded. Gates below.
+- **2026-09-07 (residual)** — F6 closes the `css/support/*-testcommon.js`
+  residual F1 left open: `ports/genet-wpt/src/harness.rs` now parses
+  XML-namespaced testharness documents (the `svg/` corpus's `<h:script>`
+  shape) with xml5ever instead of always using html5ever. `svg` re-run:
+  122 files moved `error`/`no-results` -> `fail`/`pass`, zero `pass` ->
+  anything else; `css/css-values`, `css/css-fonts`, `css/css-text`,
+  `css/css-color`, `css/css-transforms` measured for the first time (no prior
+  baseline, so no diff — none contain an affected `.svg` file). Gates below.
 
 ## Gates
+
+### Residual (2026-09-07, F6)
+
+| Gate | Result |
+|---|---|
+| `cargo test -p genet-wpt --features netfetch` | green: 64 passed, 0 failed, 3 ignored (unit, two new: `xml_prologue_and_bare_namespaced_svg_are_recognized_as_xml`, `namespaced_svg_script_includes_resolve_through_xml_parsing`) plus `fetch_netfetcher` 1 passed |
+| `cargo clippy -p genet-wpt --features netfetch --all-targets` | no new warning; the change touches only `harness.rs`, which clippy reports clean. The pre-existing warnings (`net.rs`, `conformance.rs`, two `#[expect(dead_code)]`/items-after-test-module notes) are unchanged from the 2026-09-07 baseline |
+| `cargo fmt` | applied; diff is the two `StaticDocument::parse(html)` -> `parse_doc(html)` call-site edits, the new `looks_like_xml`/`parse_doc` functions, and the two new tests — nothing else reformatted |
+| Release runner | built, `--features netfetch`, SHA-256 `df98ff8a10c6a32b8de6861b562d9db2f9d467e5af30c5876639b05f02895678` |
+| `reftest css/mediaqueries` | `unexpected=0` (16 passed / 40 failed / 37 skipped of 93) — unchanged from the 2026-09-07 baseline |
+| `reftest css/css-position` | `unexpected=0` (45 passed / 73 failed / 226 skipped of 344) — unchanged from the 2026-09-07 baseline |
+| Residual disk re-run | `css/css-values`, `css/css-fonts`, `css/css-text`, `css/css-color`, `css/css-transforms`, `svg` written to `Code/testing/genet/wpt-ledger/2026-09-07_css_support_residual/`; 122 `svg` movements, all diffed against `2026-09-07_harness_repair` and explained, 0 unattributed, 0 `pass -> anything else` |
+
+Raw results: `Code/testing/genet/wpt-ledger/2026-09-07_css_support_residual/`
+(`results.md` for the totals and the `svg` before/after table, `diff.md` for
+the full per-file transition table, `moved_files.txt` for the 122 file list).
 
 | Gate | Result |
 |---|---|
