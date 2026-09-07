@@ -110,6 +110,15 @@ pub trait FetchHandler {
     /// Cancel an in-flight deferred request (from `AbortController.abort()`). The
     /// default is a no-op (synchronous hosts have nothing in flight).
     fn cancel(&self, _id: u64) {}
+    /// Answer a request **blocking**, for synchronous `XMLHttpRequest`. A sync XHR
+    /// must have the whole response before `send()` returns, so a deferred host
+    /// cannot use its mailbox here: it drives its own transport to completion and
+    /// returns the outcome. The default bridges to [`fetch`](FetchHandler::fetch),
+    /// which is right for a synchronous host and yields a network error for a
+    /// deferred one that does not override this.
+    fn fetch_blocking(&self, request: FetchRequest) -> FetchOutcome {
+        self.fetch(request)
+    }
     /// Demand the next body chunk for a streaming response `id` (the response's
     /// `ReadableStream` was read and its buffer is empty). A deferred host streams
     /// the body lazily: one chunk per request, so a body the script never reads is
@@ -135,51 +144,53 @@ fn host_handler<E: ScriptEngine>(cx: &mut E::CallCx<'_>) -> Option<std::rc::Rc<d
 /// handler installed, every fetch is an inline network error.
 pub(crate) struct FetchStart;
 
+/// Decode the eleven request arguments starting at `base` (method, url, flat
+/// headers, body, cache, redirect, mode, referrer, referrer policy, credentials,
+/// integrity). Shared by `__fetch_start` (which carries a leading id) and
+/// `__fetch_sync` (which does not).
+fn read_request<E: ScriptEngine>(
+    cx: &mut E::CallCx<'_>,
+    base: usize,
+) -> Result<FetchRequest, E::Error> {
+    let s = |i: usize, cx: &mut E::CallCx<'_>| -> Result<String, E::Error> {
+        let a = cx.arg(base + i);
+        cx.value_to_string(&a)
+    };
+    let method = s(0, cx)?;
+    let url = s(1, cx)?;
+    let headers_flat = s(2, cx)?;
+    let body_str = s(3, cx)?;
+    let cache = s(4, cx)?;
+    let redirect = s(5, cx)?;
+    let mode = s(6, cx)?;
+    let referrer = s(7, cx)?;
+    let referrer_policy = s(8, cx)?;
+    let credentials = s(9, cx)?;
+    let integrity = s(10, cx)?;
+    // The body crosses as a lossless "binary string": each JS char code (0-255)
+    // is one byte. `char as u8` recovers the byte (every char is <= 0xFF).
+    let body =
+        (!body_str.is_empty()).then(|| body_str.chars().map(|c| c as u8).collect::<Vec<u8>>());
+    Ok(FetchRequest {
+        method,
+        url,
+        headers: parse_flat_headers(&headers_flat),
+        body,
+        cache,
+        redirect,
+        mode,
+        referrer,
+        referrer_policy,
+        credentials,
+        integrity,
+    })
+}
+
 impl<E: ScriptEngine> NativeFn<E> for FetchStart {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let a0 = cx.arg(0);
         let id = cx.value_to_string(&a0)?.parse::<u64>().unwrap_or(0);
-        let a1 = cx.arg(1);
-        let method = cx.value_to_string(&a1)?;
-        let a2 = cx.arg(2);
-        let url = cx.value_to_string(&a2)?;
-        let a3 = cx.arg(3);
-        let headers_flat = cx.value_to_string(&a3)?;
-        let a4 = cx.arg(4);
-        let body_str = cx.value_to_string(&a4)?;
-        let a5 = cx.arg(5);
-        let cache = cx.value_to_string(&a5)?;
-        let a6 = cx.arg(6);
-        let redirect = cx.value_to_string(&a6)?;
-        let a7 = cx.arg(7);
-        let mode = cx.value_to_string(&a7)?;
-        let a8 = cx.arg(8);
-        let referrer = cx.value_to_string(&a8)?;
-        let a9 = cx.arg(9);
-        let referrer_policy = cx.value_to_string(&a9)?;
-        let a10 = cx.arg(10);
-        let credentials = cx.value_to_string(&a10)?;
-        let a11 = cx.arg(11);
-        let integrity = cx.value_to_string(&a11)?;
-
-        let headers = parse_flat_headers(&headers_flat);
-        // The body crosses as a lossless "binary string": each JS char code (0-255)
-        // is one byte. `char as u8` recovers the byte (every char is <= 0xFF).
-        let body =
-            (!body_str.is_empty()).then(|| body_str.chars().map(|c| c as u8).collect::<Vec<u8>>());
-        let request = FetchRequest {
-            method,
-            url,
-            headers,
-            body,
-            cache,
-            redirect,
-            mode,
-            referrer,
-            referrer_policy,
-            credentials,
-            integrity,
-        };
+        let request = read_request::<E>(cx, 1)?;
 
         // Clone the handler before calling it (no borrow held across `start`).
         let outcome = match host_handler::<E>(cx) {
@@ -190,6 +201,23 @@ impl<E: ScriptEngine> NativeFn<E> for FetchStart {
             Some(o) => cx.make_string(&encode_outcome(&o)), // inline (sync) answer
             None => cx.make_string(""),                     // deferred: settle later
         }
+    }
+}
+
+/// `__fetch_sync(method, url, headers, body, …)` — perform a fetch **blocking**
+/// and return the JSON outcome. Backs synchronous `XMLHttpRequest`, which must
+/// have the whole response before `send()` returns and so cannot use the deferred
+/// path. With no handler installed the outcome is a network error.
+pub(crate) struct FetchSync;
+
+impl<E: ScriptEngine> NativeFn<E> for FetchSync {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let request = read_request::<E>(cx, 0)?;
+        let outcome = match host_handler::<E>(cx) {
+            Some(handler) => handler.fetch_blocking(request),
+            None => FetchOutcome::network_error(),
+        };
+        cx.make_string(&encode_outcome(&outcome))
     }
 }
 
@@ -444,10 +472,12 @@ fn push_json_str(out: &mut String, s: &str) {
     out.push('"');
 }
 
-/// Install the deferred fetch sinks (`__fetch_start` / `__fetch_abort`) and the
-/// `fetch()` / `Request` / `Response` / `Headers` bootstrap.
+/// Install the deferred fetch sinks (`__fetch_start` / `__fetch_sync` /
+/// `__fetch_abort`) and the `fetch()` / `Request` / `Response` / `Headers` /
+/// `XMLHttpRequest` bootstrap.
 pub(crate) fn install_fetch_surface<E: ScriptEngine>(engine: &mut E) -> Result<(), E::Error> {
     engine.set_function::<FetchStart>("__fetch_start", 12)?;
+    engine.set_function::<FetchSync>("__fetch_sync", 11)?;
     engine.set_function::<FetchAbort>("__fetch_abort", 1)?;
     engine.set_function::<FetchPull>("__fetch_pull", 1)?;
     engine.set_function::<ResolveUrl>("__resolve_url", 1)?;
@@ -469,6 +499,13 @@ pub(crate) fn install_fetch_surface<E: ScriptEngine>(engine: &mut E) -> Result<(
 /// buffered model (`ReadableStream` / `WritableStream` / `TransformStream` +
 /// `pipeTo` / `pipeThrough`); still missing byte (BYOB) readers, genuinely async
 /// producers, and strict rejection of malformed multipart.
+///
+/// It also carries `ProgressEvent` and the `XMLHttpRequest` family
+/// (`XMLHttpRequestEventTarget` / `XMLHttpRequestUpload`), which is a state
+/// machine over the same seam rather than a second network path: an async send
+/// runs through `fetch()` and a sync one through `__fetch_sync`. `responseXML`
+/// and `responseType = "document"` are always null — the scripted tier has no
+/// XML/HTML parser to build a document response from.
 const FETCH_BOOTSTRAP: &str = r#"
 (function() {
   var hasSym = (typeof Symbol !== 'undefined' && Symbol.iterator);
@@ -1743,5 +1780,429 @@ const FETCH_BOOTSTRAP: &str = r#"
     var e = __pending[id]; if (!e) return; delete __pending[id];
     if (e.controller) { try { e.controller.error(new TypeError('Failed to read response body')); } catch (x) {} }
   };
+
+  // ---- ProgressEvent ----
+  function ProgressEvent(type, init) {
+    if (arguments.length < 1) throw new TypeError("ProgressEvent requires a type");
+    Event.call(this, String(type), init);
+    init = init || {};
+    this.lengthComputable = !!init.lengthComputable;
+    this.loaded = init.loaded === undefined ? 0 : Number(init.loaded);
+    this.total = init.total === undefined ? 0 : Number(init.total);
+  }
+  ProgressEvent.prototype = Object.create(Event.prototype);
+  ProgressEvent.prototype.constructor = ProgressEvent;
+  // WebIDL shape: an interface object is a non-enumerable global property (a
+  // `for (p in window)` must not see it), its `prototype` is non-writable, and
+  // its `length` counts only the required arguments.
+  function defineInterface(name, ctor, len) {
+    Object.defineProperty(ctor, 'prototype', { writable: false });
+    Object.defineProperty(ctor, 'length', { value: len, configurable: true });
+    Object.defineProperty(globalThis, name, {
+      value: ctor, writable: true, enumerable: false, configurable: true
+    });
+  }
+  defineInterface('ProgressEvent', ProgressEvent, 1);
+
+  // ---- XMLHttpRequest ----
+  // A state machine over the same fetch seam, not a second network path: an async
+  // send runs through globalThis.fetch (so abort, streaming and the host mailbox
+  // come free) and a sync send through the blocking __fetch_sync sink.
+
+  // An `on<type>` IDL attribute. The forwarding listener is registered once, at
+  // first assignment, so reassigning the handler keeps its position in the
+  // listener list (the event-order tests depend on that).
+  function defineHandler(proto, type) {
+    var slot = '__on_' + type;
+    Object.defineProperty(proto, 'on' + type, {
+      configurable: true, enumerable: true,
+      get: function() { return this[slot] || null; },
+      set: function(v) {
+        var fn = (typeof v === 'function') ? v : null;
+        if (!this.__hooked) this.__hooked = {};
+        if (!this.__hooked[type]) {
+          this.__hooked[type] = true;
+          var self = this;
+          this.addEventListener(type, function(ev) { var h = self[slot]; if (h) h.call(self, ev); });
+        }
+        this[slot] = fn;
+      }
+    });
+  }
+  var XHR_EVENTS = ['loadstart', 'progress', 'abort', 'error', 'load', 'timeout', 'loadend'];
+
+  function XMLHttpRequestEventTarget() { EventTarget.call(this); }
+  XMLHttpRequestEventTarget.prototype = Object.create(EventTarget.prototype);
+  XMLHttpRequestEventTarget.prototype.constructor = XMLHttpRequestEventTarget;
+  for (var xe = 0; xe < XHR_EVENTS.length; xe++) defineHandler(XMLHttpRequestEventTarget.prototype, XHR_EVENTS[xe]);
+  defineInterface('XMLHttpRequestEventTarget', XMLHttpRequestEventTarget, 0);
+
+  function XMLHttpRequestUpload() { XMLHttpRequestEventTarget.call(this); }
+  XMLHttpRequestUpload.prototype = Object.create(XMLHttpRequestEventTarget.prototype);
+  XMLHttpRequestUpload.prototype.constructor = XMLHttpRequestUpload;
+  defineInterface('XMLHttpRequestUpload', XMLHttpRequestUpload, 0);
+
+  var XU = 0, XO = 1, XH = 2, XL = 3, XD = 4;   // UNSENT / OPENED / HEADERS_RECEIVED / LOADING / DONE
+  var XHR_UPPER = { DELETE: 1, GET: 1, HEAD: 1, OPTIONS: 1, POST: 1, PUT: 1 };
+  var XHR_BAD_METHOD = { CONNECT: 1, TRACE: 1, TRACK: 1 };
+  var XHR_TYPES = { '': 1, 'arraybuffer': 1, 'blob': 1, 'document': 1, 'json': 1, 'text': 1 };
+  // Labels this tier decodes as one byte per code point. Everything else falls
+  // back to UTF-8; there is no encoding registry in the scripted tier.
+  var XHR_LATIN1 = { 'windows-1252': 1, 'iso-8859-1': 1, 'latin1': 1, 'us-ascii': 1, 'ascii': 1 };
+
+  function xhrErr(name, msg) { return new DOMException(msg || name, name); }
+  function xhrDocHref() {
+    return (typeof location !== 'undefined' && location && location.href) ? location.href : '';
+  }
+  // Resolve against the document base. `null` = a genuinely invalid URL; with no
+  // real base (disk mode) a relative URL legitimately stays unresolved.
+  function xhrResolve(input) {
+    var href = __resolve_url(input);
+    var pj = __url_parse(href, "");
+    if (pj) return JSON.parse(pj).href;
+    var doc = xhrDocHref();
+    return (doc && doc !== 'about:blank') ? null : href;
+  }
+  // Split a MIME type into its lower-cased essence and charset parameter.
+  function parseMime(s) {
+    s = String(s).replace(/^[\t\n\r ]+|[\t\n\r ]+$/g, "");
+    var semi = s.indexOf(';');
+    var essence = (semi < 0 ? s : s.slice(0, semi)).replace(/[\t\n\r ]+$/, "");
+    if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+\/[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(essence)) return null;
+    var cm = /;[\t ]*charset[\t ]*=[\t ]*("?)([^";]*)\1/i.exec(s);
+    return { essence: essence.toLowerCase(), charset: cm ? cm[2].toLowerCase() : '' };
+  }
+  function latin1Decode(b) {
+    var out = '', CH = 0x8000;
+    for (var i = 0; i < b.length; i += CH) out += String.fromCharCode.apply(null, b.subarray(i, i + CH));
+    return out;
+  }
+  function hasAnyListener(t) {
+    var L = t.__listeners;
+    if (!L) return false;
+    for (var k in L) { if (L[k] && L[k].length) return true; }
+    return false;
+  }
+  function xhrFire(target, type) { target.dispatchEvent(new Event(type)); }
+  function xhrProgress(target, type, loaded, total, computable) {
+    target.dispatchEvent(new ProgressEvent(type, {
+      lengthComputable: !!computable, loaded: loaded || 0, total: total || 0
+    }));
+  }
+  function xhrClearTimer(x) { if (x._timer !== null) { clearTimeout(x._timer); x._timer = null; } }
+  function xhrArmTimeout(x) {
+    xhrClearTimer(x);
+    if (!x._timeout || !x._sendFlag) return;
+    var rem = x._timeout - (Date.now() - x._sendTime);
+    if (rem < 0) rem = 0;
+    x._timer = setTimeout(function() {
+      if (!x._sendFlag) return;
+      x._timedOut = true;
+      x._terminate();
+      xhrRequestError(x, 'timeout', false);
+    }, rem);
+  }
+  // The spec's request error steps. `allowThrow` is set only on the synchronous
+  // send path, where an error throws instead of firing events.
+  function xhrRequestError(x, type, allowThrow) {
+    x._state = XD;
+    x._sendFlag = false;
+    x._resp = null; x._bytes = null; x._respObj = undefined;
+    xhrClearTimer(x);
+    if (x._sync && allowThrow) {
+      throw xhrErr(type === 'timeout' ? 'TimeoutError' : type === 'abort' ? 'AbortError' : 'NetworkError',
+                   'XMLHttpRequest ' + type);
+    }
+    xhrFire(x, 'readystatechange');
+    if (!x._uploadComplete) {
+      x._uploadComplete = true;
+      if (x._uploadListener) { xhrProgress(x.upload, type, 0, 0, false); xhrProgress(x.upload, 'loadend', 0, 0, false); }
+    }
+    xhrProgress(x, type, 0, 0, false);
+    xhrProgress(x, 'loadend', 0, 0, false);
+  }
+
+  function XMLHttpRequest() {
+    if (!(this instanceof XMLHttpRequest)) throw new TypeError("Failed to construct 'XMLHttpRequest': use 'new'");
+    XMLHttpRequestEventTarget.call(this);
+    this._state = XU;
+    this._timeout = 0; this._sendTime = 0; this._timer = null;
+    this._withCred = false; this._respType = ''; this._sync = false;
+    this._sendFlag = false; this._uploadListener = false; this._uploadComplete = false;
+    this._timedOut = false;
+    this._method = ''; this._url = ''; this._reqHeaders = []; this._override = null;
+    this._resp = null; this._bytes = null; this._respObj = undefined;
+    this._ctl = null;
+    this.upload = new XMLHttpRequestUpload();
+  }
+  XMLHttpRequest.prototype = Object.create(XMLHttpRequestEventTarget.prototype);
+  XMLHttpRequest.prototype.constructor = XMLHttpRequest;
+  defineHandler(XMLHttpRequest.prototype, 'readystatechange');
+
+  XMLHttpRequest.prototype._terminate = function() {
+    xhrClearTimer(this);
+    if (this._ctl) { var c = this._ctl; this._ctl = null; try { c.abort(); } catch (e) {} }
+  };
+
+  XMLHttpRequest.prototype.open = function(method, url, async, username, password) {
+    if (arguments.length < 2) throw new TypeError("open requires a method and a URL");
+    method = String(method);
+    if (!TOKEN_RE.test(method)) throw xhrErr('SyntaxError', "Invalid method '" + method + "'");
+    var up = method.toUpperCase();
+    if (XHR_BAD_METHOD[up]) throw xhrErr('SecurityError', "Method '" + method + "' is not allowed");
+    if (XHR_UPPER[up]) method = up;
+    var href = xhrResolve(String(url));
+    if (href === null) throw xhrErr('SyntaxError', "Invalid URL");
+    var isAsync = (async === undefined) ? true : !!async;
+    if (!isAsync && (this._timeout !== 0 || this._respType !== ''))
+      throw xhrErr('InvalidAccessError', "A synchronous request cannot use timeout or responseType");
+    this._terminate();
+    this._sync = !isAsync;
+    this._method = method; this._url = href;
+    this._reqHeaders = []; this._override = null;
+    this._sendFlag = false; this._uploadListener = false; this._uploadComplete = false;
+    this._resp = null; this._bytes = null; this._respObj = undefined;
+    this._timedOut = false;
+    // Only a state that was not already OPENED fires readystatechange.
+    if (this._state !== XO) { this._state = XO; xhrFire(this, 'readystatechange'); }
+  };
+
+  XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+    if (this._state !== XO || this._sendFlag)
+      throw xhrErr('InvalidStateError', "setRequestHeader: the request is not OPENED");
+    name = String(name);
+    var v = String(value).replace(/^[\t\n\r ]+|[\t\n\r ]+$/g, "");
+    if (!TOKEN_RE.test(name) || /[\r\n\0]/.test(v)) throw xhrErr('SyntaxError', "Invalid header name or value");
+    var lower = name.toLowerCase();
+    if (isForbiddenRequestHeader(lower, v)) return;
+    for (var i = 0; i < this._reqHeaders.length; i++) {
+      if (this._reqHeaders[i][0] === lower) { this._reqHeaders[i][1] += ", " + v; return; }
+    }
+    this._reqHeaders.push([lower, v]);
+  };
+
+  XMLHttpRequest.prototype.overrideMimeType = function(mime) {
+    if (this._state === XL || this._state === XD)
+      throw xhrErr('InvalidStateError', "overrideMimeType: the request is LOADING or DONE");
+    var m = parseMime(String(mime));
+    if (!m) throw xhrErr('SyntaxError', "Invalid MIME type");
+    this._override = m;
+  };
+
+  XMLHttpRequest.prototype.abort = function() {
+    this._terminate();
+    var s = this._state;
+    if ((s === XO && this._sendFlag) || s === XH || s === XL) xhrRequestError(this, 'abort', false);
+    if (this._state === XD) {
+      this._state = XU; this._resp = null; this._bytes = null; this._respObj = undefined;
+    }
+  };
+
+  XMLHttpRequest.prototype.send = function(body) {
+    if (this._state !== XO) throw xhrErr('InvalidStateError', "send: the request is not OPENED");
+    if (this._sendFlag) throw xhrErr('InvalidStateError', "send: the request has already been sent");
+    if (this._method === 'GET' || this._method === 'HEAD') body = null;
+    var eb = (body == null) ? { bytes: null, stream: null, type: null } : extractBody(body);
+    var headers = new Headers();
+    for (var i = 0; i < this._reqHeaders.length; i++) headers.append(this._reqHeaders[i][0], this._reqHeaders[i][1]);
+    if (eb.type && !headers.has('content-type')) headers.set('content-type', eb.type);
+    var bodyBytes = eb.bytes;
+    var total = bodyBytes ? bodyBytes.length : 0;
+
+    this._uploadComplete = (bodyBytes == null);
+    this._uploadListener = !this._sync && hasAnyListener(this.upload);
+    this._sendFlag = true;
+    this._timedOut = false;
+    this._resp = null; this._bytes = null; this._respObj = undefined;
+    this._sendTime = Date.now();
+
+    if (this._sync) return xhrSendSync(this, headers, bodyBytes);
+
+    var self = this;
+    xhrProgress(this, 'loadstart', 0, 0, false);
+    if (!this._uploadComplete && this._uploadListener) xhrProgress(this.upload, 'loadstart', 0, total, true);
+    if (!this._sendFlag) return;   // a loadstart listener aborted us
+
+    var ctl = new AbortController();
+    this._ctl = ctl;
+    var init = {
+      method: this._method, headers: headers, signal: ctl.signal, mode: 'cors',
+      credentials: this._withCred ? 'include' : 'same-origin'
+    };
+    if (bodyBytes != null) init.body = bodyBytes;
+    xhrArmTimeout(this);
+
+    fetch(this._url, init).then(function(res) {
+      if (!self._sendFlag) return;
+      if (!self._uploadComplete) {
+        self._uploadComplete = true;
+        if (self._uploadListener) {
+          xhrProgress(self.upload, 'progress', total, total, true);
+          xhrProgress(self.upload, 'load', total, total, true);
+          xhrProgress(self.upload, 'loadend', total, total, true);
+        }
+      }
+      self._resp = res;
+      self._state = XH;
+      xhrFire(self, 'readystatechange');
+      if (!self._sendFlag) return;
+      return res.arrayBuffer().then(function(buf) {
+        if (!self._sendFlag) return;
+        var bytes = new Uint8Array(buf);
+        self._bytes = bytes;
+        var cl = res.headers.get('content-length');
+        var len = cl ? parseInt(cl, 10) : NaN;
+        var computable = !isNaN(len) && len >= 0;
+        if (!computable) len = bytes.length;
+        self._state = XL;
+        xhrFire(self, 'readystatechange');
+        if (!self._sendFlag) return;
+        xhrProgress(self, 'progress', bytes.length, len, computable);
+        if (!self._sendFlag) return;
+        self._state = XD;
+        self._sendFlag = false;
+        xhrClearTimer(self);
+        xhrFire(self, 'readystatechange');
+        xhrProgress(self, 'load', bytes.length, len, computable);
+        xhrProgress(self, 'loadend', bytes.length, len, computable);
+      });
+    }).then(null, function() {
+      if (!self._sendFlag) return;   // abort / timeout already ran the error steps
+      xhrRequestError(self, 'error', false);
+    });
+  };
+
+  // The synchronous path: the host answers in place (a sync FetchHandler, or the
+  // no-handler network error), so send() returns with the response in hand.
+  function xhrSendSync(x, headers, bodyBytes) {
+    var flat = [];
+    if (!headers.has('accept')) { flat.push('accept'); flat.push('*/*'); }
+    for (var i = 0; i < headers._h.length; i++) { flat.push(headers._h[i][0]); flat.push(headers._h[i][1]); }
+    var json = __fetch_sync(x._method, x._url, flat.join('\n'),
+                            bodyBytes != null ? bytesToBinaryString(bodyBytes) : '',
+                            'default', 'follow', 'cors', xhrDocHref(), '',
+                            x._withCred ? 'include' : 'same-origin', '');
+    var o = json ? JSON.parse(json) : { networkError: true };
+    if (o.networkError) { xhrRequestError(x, 'error', true); return; }
+    var res = responseFromOutcome(o);
+    x._resp = res;
+    x._bytes = res.__bytes || new Uint8Array(0);
+    x._state = XD;
+    x._sendFlag = false;
+    xhrFire(x, 'readystatechange');
+    var n = x._bytes.length;
+    xhrProgress(x, 'load', n, n, true);
+    xhrProgress(x, 'loadend', n, n, true);
+  }
+
+  XMLHttpRequest.prototype.getResponseHeader = function(name) {
+    if (!this._resp) return null;
+    try { return this._resp.headers.get(String(name)); } catch (e) { return null; }
+  };
+  XMLHttpRequest.prototype.getAllResponseHeaders = function() {
+    if (!this._resp) return '';
+    var s = this._resp.headers._sorted(), out = '';
+    for (var i = 0; i < s.length; i++) {
+      if (isForbiddenResponseHeader(s[i][0])) continue;
+      out += s[i][0] + ': ' + s[i][1] + '\r\n';
+    }
+    return out;
+  };
+
+  // The final MIME type: the override if one was set, else the response's
+  // Content-Type. The override's charset wins only when it has one.
+  function xhrMime(x) {
+    var ct = x._resp ? x._resp.headers.get('content-type') : null;
+    var m = ct ? parseMime(ct) : null;
+    if (x._override) return { essence: x._override.essence, charset: x._override.charset || (m ? m.charset : '') };
+    return { essence: m ? m.essence : '', charset: m ? m.charset : '' };
+  }
+  function xhrText(x) {
+    if (!x._bytes || x._bytes.length === 0) return '';
+    var cs = xhrMime(x).charset;
+    return XHR_LATIN1[cs] ? latin1Decode(x._bytes) : utf8Decode(x._bytes);
+  }
+
+  function xhrGetter(name, fn) {
+    Object.defineProperty(XMLHttpRequest.prototype, name, { configurable: true, enumerable: true, get: fn });
+  }
+  xhrGetter('readyState', function() { return this._state; });
+  xhrGetter('status', function() { return this._resp ? this._resp.status : 0; });
+  xhrGetter('statusText', function() { return this._resp ? this._resp.statusText : ''; });
+  xhrGetter('responseURL', function() {
+    var u = this._resp ? (this._resp.url || '') : '';
+    var h = u.indexOf('#');
+    return h < 0 ? u : u.slice(0, h);
+  });
+  xhrGetter('responseText', function() {
+    if (this._respType !== '' && this._respType !== 'text')
+      throw xhrErr('InvalidStateError', 'responseText requires responseType "" or "text"');
+    if (this._state !== XL && this._state !== XD) return '';
+    return xhrText(this);
+  });
+  // responseXML is always null: the scripted tier has no XML/HTML parser to build
+  // a document response from (there is no DOMParser either).
+  xhrGetter('responseXML', function() {
+    if (this._respType !== '' && this._respType !== 'document')
+      throw xhrErr('InvalidStateError', 'responseXML requires responseType "" or "document"');
+    if (this._state !== XD) return null;
+    return null;
+  });
+  xhrGetter('response', function() {
+    var t = this._respType;
+    if (t === '' || t === 'text') {
+      if (this._state !== XL && this._state !== XD) return '';
+      return xhrText(this);
+    }
+    if (this._state !== XD || !this._resp) return null;
+    if (this._respObj !== undefined) return this._respObj;
+    var bytes = this._bytes || new Uint8Array(0);
+    var v = null;
+    if (t === 'arraybuffer') v = bytes.slice(0).buffer;
+    else if (t === 'blob') v = new Blob([bytes], { type: xhrMime(this).essence || '' });
+    else if (t === 'json') { try { v = JSON.parse(utf8Decode(bytes)); } catch (e) { v = null; } }
+    this._respObj = v;
+    return v;
+  });
+
+  Object.defineProperty(XMLHttpRequest.prototype, 'responseType', {
+    configurable: true, enumerable: true,
+    get: function() { return this._respType; },
+    set: function(v) {
+      var s = String(v);
+      if (!XHR_TYPES[s] && s !== '') return;   // an invalid enum value is ignored
+      if (this._state === XL || this._state === XD)
+        throw xhrErr('InvalidStateError', 'responseType cannot be set while LOADING or DONE');
+      if (this._sync) throw xhrErr('InvalidAccessError', 'responseType on a synchronous request');
+      this._respType = s;
+    }
+  });
+  Object.defineProperty(XMLHttpRequest.prototype, 'timeout', {
+    configurable: true, enumerable: true,
+    get: function() { return this._timeout; },
+    set: function(v) {
+      if (this._sync) throw xhrErr('InvalidAccessError', 'timeout on a synchronous request');
+      var n = Number(v);
+      this._timeout = (isNaN(n) || n < 0) ? 0 : (n >>> 0);
+      if (this._sendFlag) xhrArmTimeout(this);
+    }
+  });
+  Object.defineProperty(XMLHttpRequest.prototype, 'withCredentials', {
+    configurable: true, enumerable: true,
+    get: function() { return this._withCred; },
+    set: function(v) {
+      if (this._state !== XU && this._state !== XO)
+        throw xhrErr('InvalidStateError', 'withCredentials requires UNSENT or OPENED');
+      if (this._sendFlag) throw xhrErr('InvalidStateError', 'withCredentials after send()');
+      this._withCred = !!v;
+    }
+  });
+
+  var XHR_STATES = { UNSENT: XU, OPENED: XO, HEADERS_RECEIVED: XH, LOADING: XL, DONE: XD };
+  for (var xk in XHR_STATES) {
+    Object.defineProperty(XMLHttpRequest, xk, { value: XHR_STATES[xk], enumerable: true });
+    Object.defineProperty(XMLHttpRequest.prototype, xk, { value: XHR_STATES[xk], enumerable: true });
+  }
+  defineInterface('XMLHttpRequest', XMLHttpRequest, 0);
 })();
 "#;

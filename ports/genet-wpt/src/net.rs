@@ -154,6 +154,10 @@ fn page_origin() -> Option<url::Origin> {
 
 /// A globally-unique abort key (the JS `id` is per-test, so it cannot key the
 /// shared worker's abort map).
+/// Ceiling on one blocking (synchronous XHR) fetch. It holds the engine thread,
+/// so it must not outlive the per-test drive deadline by much.
+const SYNC_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 fn next_key() -> u64 {
     static KEY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     KEY.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -428,6 +432,50 @@ impl FetchHandler for NetFetchHandler {
     fn cancel(&self, id: u64) {
         if let Some(key) = self.keys.borrow_mut().remove(&id) {
             let _ = worker_jobs().send(Job::Cancel(key));
+        }
+    }
+    fn fetch_blocking(&self, request: FetchRequest) -> FetchOutcome {
+        // Synchronous XMLHttpRequest: the whole response must be in hand before
+        // send() returns, so this drives the same worker job to Close on its own
+        // private channel instead of leaving it to the drive loop. The routing id
+        // is lifted out of the JS id space so a pull credit cannot land on a
+        // deferred fetch that is still registered.
+        let key = next_key();
+        let id = key | (1u64 << 40);
+        let (tx, rx) = std::sync::mpsc::channel::<FetchEvent>();
+        if worker_jobs()
+            .send(Job::Fetch(key, id, request, tx))
+            .is_err()
+        {
+            return FetchOutcome::network_error();
+        }
+        let deadline = std::time::Instant::now() + SYNC_FETCH_TIMEOUT;
+        let mut out: Option<FetchOutcome> = None;
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                let _ = worker_jobs().send(Job::Cancel(key));
+                return FetchOutcome::network_error();
+            }
+            match rx.recv_timeout(left) {
+                Ok(FetchEvent::StartStream(_, meta)) => {
+                    out = Some(meta);
+                    let _ = worker_jobs().send(Job::Pull(id));
+                },
+                Ok(FetchEvent::Chunk(_, bytes)) => {
+                    if let Some(o) = out.as_mut() {
+                        o.body.extend_from_slice(&bytes);
+                    }
+                    let _ = worker_jobs().send(Job::Pull(id));
+                },
+                Ok(FetchEvent::Close(_)) => {
+                    return out.unwrap_or_else(FetchOutcome::network_error);
+                },
+                Ok(FetchEvent::Error(_)) | Ok(FetchEvent::Fail(_, _)) | Err(_) => {
+                    let _ = worker_jobs().send(Job::Cancel(key));
+                    return FetchOutcome::network_error();
+                },
+            }
         }
     }
     fn request_chunk(&self, id: u64) {

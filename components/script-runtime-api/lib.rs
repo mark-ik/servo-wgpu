@@ -1179,8 +1179,13 @@ const EVENT_LOOP_BOOTSTRAP: &str = r#"
     if (realtime && nowMs > vnow) vnow = nowMs;
     var fired = 0;
     while (fired < budget) {
+      // Cooperative mode fires by delay order, ignoring real time, so an
+      // in-flight fetch must hold the queue or the far-future harness timeout
+      // runs first. Real-time mode has the `at > vnow` gate for that, and a due
+      // timer must still fire while a fetch is outstanding — an XHR `timeout`
+      // and `AbortSignal.timeout` exist precisely to interrupt one.
       var pending = globalThis.__pending;
-      if (pending && Object.keys(pending).length > 0) break;
+      if (!realtime && pending && Object.keys(pending).length > 0) break;
       var idx = -1, bestKey = 0, bestSeq = 0;
       for (var i = 0; i < timers.length; i++) {
         var t = timers[i];
