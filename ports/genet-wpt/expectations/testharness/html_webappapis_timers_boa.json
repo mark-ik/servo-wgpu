@@ -1,35 +1,157 @@
 {
   "command": "testharness",
   "engine": "boa",
+  "manifest_sha256": "d5ec5be9bf1a75ed00d7e7ab28afe8a694a55e11682ba74305874d70b18dd422",
+  "policy": "exact",
   "renderer": "livery",
+  "runner_sha256": "c554f89a5ab1e7582dcb4d7c97a656750b49ca466a3ea67b7a9885666f06aab0",
+  "subset": "html/webappapis/timers",
   "tests": {
     "html/webappapis/timers/clearinterval-from-callback.any.html": {
       "status": "pass",
+      "subtests": [
+        {
+          "name": "Clearing an interval from the callback should still clear it.",
+          "status": "pass"
+        }
+      ],
+      "subtests_passed": 1,
+      "subtests_total": 1
+    },
+    "html/webappapis/timers/clearinterval-from-callback.any.worker.html": {
+      "status": "pass",
+      "subtests": [
+        {
+          "name": "Clearing an interval from the callback should still clear it.",
+          "status": "pass"
+        }
+      ],
       "subtests_passed": 1,
       "subtests_total": 1
     },
     "html/webappapis/timers/cleartimeout-clearinterval.any.html": {
       "status": "pass",
+      "subtests": [
+        {
+          "name": "Clear timeout with clearInterval",
+          "status": "pass"
+        },
+        {
+          "name": "Clear interval with clearTimeout",
+          "status": "pass"
+        }
+      ],
+      "subtests_passed": 2,
+      "subtests_total": 2
+    },
+    "html/webappapis/timers/cleartimeout-clearinterval.any.worker.html": {
+      "status": "pass",
+      "subtests": [
+        {
+          "name": "Clear timeout with clearInterval",
+          "status": "pass"
+        },
+        {
+          "name": "Clear interval with clearTimeout",
+          "status": "pass"
+        }
+      ],
       "subtests_passed": 2,
       "subtests_total": 2
     },
     "html/webappapis/timers/evil-spec-example.any.html": {
       "status": "fail",
+      "subtests": [
+        {
+          "name": "Interaction of setTimeout and WebIDL",
+          "status": "not-run"
+        }
+      ],
+      "subtests_passed": 0,
+      "subtests_total": 1
+    },
+    "html/webappapis/timers/evil-spec-example.any.worker.html": {
+      "status": "fail",
+      "subtests": [
+        {
+          "name": "Interaction of setTimeout and WebIDL",
+          "status": "not-run"
+        }
+      ],
       "subtests_passed": 0,
       "subtests_total": 1
     },
     "html/webappapis/timers/missing-timeout-setinterval.any.html": {
       "status": "pass",
+      "subtests": [
+        {
+          "name": "Calling setInterval with no interval should be the same as if called with 0 interval",
+          "status": "pass"
+        },
+        {
+          "name": "Calling setInterval with undefined interval should be the same as if called with 0 interval",
+          "status": "pass"
+        }
+      ],
+      "subtests_passed": 2,
+      "subtests_total": 2
+    },
+    "html/webappapis/timers/missing-timeout-setinterval.any.worker.html": {
+      "status": "pass",
+      "subtests": [
+        {
+          "name": "Calling setInterval with no interval should be the same as if called with 0 interval",
+          "status": "pass"
+        },
+        {
+          "name": "Calling setInterval with undefined interval should be the same as if called with 0 interval",
+          "status": "pass"
+        }
+      ],
       "subtests_passed": 2,
       "subtests_total": 2
     },
     "html/webappapis/timers/negative-setinterval.any.html": {
       "status": "pass",
+      "subtests": [
+        {
+          "name": "negative-setinterval",
+          "status": "pass"
+        }
+      ],
+      "subtests_passed": 1,
+      "subtests_total": 1
+    },
+    "html/webappapis/timers/negative-setinterval.any.worker.html": {
+      "status": "pass",
+      "subtests": [
+        {
+          "name": "",
+          "status": "pass"
+        }
+      ],
       "subtests_passed": 1,
       "subtests_total": 1
     },
     "html/webappapis/timers/negative-settimeout.any.html": {
       "status": "pass",
+      "subtests": [
+        {
+          "name": "negative-settimeout",
+          "status": "pass"
+        }
+      ],
+      "subtests_passed": 1,
+      "subtests_total": 1
+    },
+    "html/webappapis/timers/negative-settimeout.any.worker.html": {
+      "status": "pass",
+      "subtests": [
+        {
+          "name": "",
+          "status": "pass"
+        }
+      ],
       "subtests_passed": 1,
       "subtests_total": 1
     },
@@ -39,6 +161,16 @@
     },
     "html/webappapis/timers/setinterval-settimeout-clamping.html": {
       "status": "pass",
+      "subtests": [
+        {
+          "name": "setInterval(0) before setTimeout(0)",
+          "status": "pass"
+        },
+        {
+          "name": "setTimeout(0) before setInterval(0)",
+          "status": "pass"
+        }
+      ],
       "subtests_passed": 2,
       "subtests_total": 2
     },
@@ -47,18 +179,62 @@
       "status": "error"
     },
     "html/webappapis/timers/timer-nesting-not-inherited-in-microtask.html": {
-      "status": "fail",
-      "subtests_passed": 0,
+      "status": "pass",
+      "subtests": [
+        {
+          "name": "Test requires performance.now() to measure approximate timing of callbacks.",
+          "status": "pass"
+        },
+        {
+          "name": "Test that a timer scheduled during a microtask checkpoint does not inherit the timer nesting level of the task that just ran.",
+          "status": "pass"
+        }
+      ],
+      "subtests_passed": 2,
       "subtests_total": 2
     },
     "html/webappapis/timers/type-long-setinterval.any.html": {
       "status": "fail",
+      "subtests": [
+        {
+          "name": "type-long-setinterval",
+          "status": "not-run"
+        }
+      ],
       "subtests_passed": 0,
+      "subtests_total": 1
+    },
+    "html/webappapis/timers/type-long-setinterval.any.worker.html": {
+      "status": "pass",
+      "subtests": [
+        {
+          "name": "",
+          "status": "pass"
+        }
+      ],
+      "subtests_passed": 1,
       "subtests_total": 1
     },
     "html/webappapis/timers/type-long-settimeout.any.html": {
       "status": "fail",
+      "subtests": [
+        {
+          "name": "type-long-settimeout",
+          "status": "not-run"
+        }
+      ],
       "subtests_passed": 0,
+      "subtests_total": 1
+    },
+    "html/webappapis/timers/type-long-settimeout.any.worker.html": {
+      "status": "pass",
+      "subtests": [
+        {
+          "name": "",
+          "status": "pass"
+        }
+      ],
+      "subtests_passed": 1,
       "subtests_total": 1
     }
   },

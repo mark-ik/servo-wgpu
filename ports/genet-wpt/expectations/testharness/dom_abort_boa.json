@@ -1,10 +1,39 @@
 {
   "command": "testharness",
   "engine": "boa",
+  "manifest_sha256": "d5ec5be9bf1a75ed00d7e7ab28afe8a694a55e11682ba74305874d70b18dd422",
+  "policy": "exact",
   "renderer": "livery",
+  "runner_sha256": "c554f89a5ab1e7582dcb4d7c97a656750b49ca466a3ea67b7a9885666f06aab0",
+  "subset": "dom/abort",
   "tests": {
     "dom/abort/AbortSignal.any.html": {
       "status": "pass",
+      "subtests": [
+        {
+          "name": "the AbortSignal.abort() static returns an already aborted signal",
+          "status": "pass"
+        },
+        {
+          "name": "signal returned by AbortSignal.abort() should not fire abort event",
+          "status": "pass"
+        }
+      ],
+      "subtests_passed": 2,
+      "subtests_total": 2
+    },
+    "dom/abort/AbortSignal.any.worker.html": {
+      "status": "pass",
+      "subtests": [
+        {
+          "name": "the AbortSignal.abort() static returns an already aborted signal",
+          "status": "pass"
+        },
+        {
+          "name": "signal returned by AbortSignal.abort() should not fire abort event",
+          "status": "pass"
+        }
+      ],
       "subtests_passed": 2,
       "subtests_total": 2
     },
@@ -14,11 +43,138 @@
     },
     "dom/abort/abort-signal-any.any.html": {
       "status": "fail",
+      "subtests": [
+        {
+          "name": "AbortSignal.any() works with an empty array of signals",
+          "status": "pass"
+        },
+        {
+          "name": "AbortSignal.any() follows a single signal (using AbortController)",
+          "status": "fail"
+        },
+        {
+          "name": "AbortSignal.any() follows multiple signals (using AbortController)",
+          "status": "fail"
+        },
+        {
+          "name": "AbortSignal.any() returns an aborted signal if passed an aborted signal (using AbortController)",
+          "status": "pass"
+        },
+        {
+          "name": "AbortSignal.any() can be passed the same signal more than once (using AbortController)",
+          "status": "pass"
+        },
+        {
+          "name": "AbortSignal.any() uses the first instance of a duplicate signal (using AbortController)",
+          "status": "pass"
+        },
+        {
+          "name": "AbortSignal.any() signals are composable (using AbortController)",
+          "status": "pass"
+        },
+        {
+          "name": "AbortSignal.any() works with signals returned by AbortSignal.timeout() (using AbortController)",
+          "status": "pass"
+        },
+        {
+          "name": "AbortSignal.any() works with intermediate signals (using AbortController)",
+          "status": "pass"
+        },
+        {
+          "name": "Abort events for AbortSignal.any() signals fire in the right order (using AbortController)",
+          "status": "fail"
+        },
+        {
+          "name": "Dependent signals for AbortSignal.any() are marked aborted before abort events fire (using AbortController)",
+          "status": "fail"
+        },
+        {
+          "name": "Dependent signals for AbortSignal.any() are aborted correctly for reentrant aborts (using AbortController)",
+          "status": "fail"
+        },
+        {
+          "name": "Dependent signals for AbortSignal.any() should use the same DOMException instance from the already aborted source signal (using AbortController)",
+          "status": "pass"
+        },
+        {
+          "name": "Dependent signals for AbortSignal.any() should use the same DOMException instance from the source signal being aborted later (using AbortController)",
+          "status": "pass"
+        }
+      ],
+      "subtests_passed": 9,
+      "subtests_total": 14
+    },
+    "dom/abort/abort-signal-any.any.worker.html": {
+      "status": "fail",
+      "subtests": [
+        {
+          "name": "AbortSignal.any() works with an empty array of signals",
+          "status": "pass"
+        },
+        {
+          "name": "AbortSignal.any() follows a single signal (using AbortController)",
+          "status": "fail"
+        },
+        {
+          "name": "AbortSignal.any() follows multiple signals (using AbortController)",
+          "status": "fail"
+        },
+        {
+          "name": "AbortSignal.any() returns an aborted signal if passed an aborted signal (using AbortController)",
+          "status": "pass"
+        },
+        {
+          "name": "AbortSignal.any() can be passed the same signal more than once (using AbortController)",
+          "status": "pass"
+        },
+        {
+          "name": "AbortSignal.any() uses the first instance of a duplicate signal (using AbortController)",
+          "status": "pass"
+        },
+        {
+          "name": "AbortSignal.any() signals are composable (using AbortController)",
+          "status": "pass"
+        },
+        {
+          "name": "AbortSignal.any() works with signals returned by AbortSignal.timeout() (using AbortController)",
+          "status": "pass"
+        },
+        {
+          "name": "AbortSignal.any() works with intermediate signals (using AbortController)",
+          "status": "pass"
+        },
+        {
+          "name": "Abort events for AbortSignal.any() signals fire in the right order (using AbortController)",
+          "status": "fail"
+        },
+        {
+          "name": "Dependent signals for AbortSignal.any() are marked aborted before abort events fire (using AbortController)",
+          "status": "fail"
+        },
+        {
+          "name": "Dependent signals for AbortSignal.any() are aborted correctly for reentrant aborts (using AbortController)",
+          "status": "fail"
+        },
+        {
+          "name": "Dependent signals for AbortSignal.any() should use the same DOMException instance from the already aborted source signal (using AbortController)",
+          "status": "pass"
+        },
+        {
+          "name": "Dependent signals for AbortSignal.any() should use the same DOMException instance from the source signal being aborted later (using AbortController)",
+          "status": "pass"
+        }
+      ],
       "subtests_passed": 9,
       "subtests_total": 14
     },
     "dom/abort/abort-signal-timeout.html": {
       "status": "fail",
+      "subtests": [
+        {
+          "name": "Signal returned by AbortSignal.timeout() is not aborted after frame detach",
+          "status": "fail"
+        }
+      ],
       "subtests_passed": 0,
       "subtests_total": 1
     },
@@ -32,16 +188,192 @@
     },
     "dom/abort/event.any.html": {
       "status": "fail",
+      "subtests": [
+        {
+          "name": "AbortController abort() should fire event synchronously",
+          "status": "pass"
+        },
+        {
+          "name": "controller.signal should always return the same object",
+          "status": "pass"
+        },
+        {
+          "name": "controller.abort() should do nothing the second time it is called",
+          "status": "pass"
+        },
+        {
+          "name": "event handler should not be called if added after controller.abort()",
+          "status": "pass"
+        },
+        {
+          "name": "the abort event should have the right properties",
+          "status": "fail"
+        },
+        {
+          "name": "AbortController abort(reason) should set signal.reason",
+          "status": "pass"
+        },
+        {
+          "name": "aborting AbortController without reason creates an \"AbortError\" DOMException",
+          "status": "pass"
+        },
+        {
+          "name": "AbortController abort(undefined) creates an \"AbortError\" DOMException",
+          "status": "pass"
+        },
+        {
+          "name": "AbortController abort(null) should set signal.reason",
+          "status": "pass"
+        },
+        {
+          "name": "static aborting signal should have right properties",
+          "status": "pass"
+        },
+        {
+          "name": "static aborting signal with reason should set signal.reason",
+          "status": "pass"
+        },
+        {
+          "name": "throwIfAborted() should throw abort.reason if signal aborted",
+          "status": "pass"
+        },
+        {
+          "name": "throwIfAborted() should throw primitive abort.reason if signal aborted",
+          "status": "pass"
+        },
+        {
+          "name": "throwIfAborted() should not throw if signal not aborted",
+          "status": "pass"
+        },
+        {
+          "name": "AbortSignal.reason returns the same DOMException",
+          "status": "pass"
+        },
+        {
+          "name": "AbortController.signal.reason returns the same DOMException",
+          "status": "pass"
+        }
+      ],
+      "subtests_passed": 15,
+      "subtests_total": 16
+    },
+    "dom/abort/event.any.worker.html": {
+      "status": "fail",
+      "subtests": [
+        {
+          "name": "AbortController abort() should fire event synchronously",
+          "status": "pass"
+        },
+        {
+          "name": "controller.signal should always return the same object",
+          "status": "pass"
+        },
+        {
+          "name": "controller.abort() should do nothing the second time it is called",
+          "status": "pass"
+        },
+        {
+          "name": "event handler should not be called if added after controller.abort()",
+          "status": "pass"
+        },
+        {
+          "name": "the abort event should have the right properties",
+          "status": "fail"
+        },
+        {
+          "name": "AbortController abort(reason) should set signal.reason",
+          "status": "pass"
+        },
+        {
+          "name": "aborting AbortController without reason creates an \"AbortError\" DOMException",
+          "status": "pass"
+        },
+        {
+          "name": "AbortController abort(undefined) creates an \"AbortError\" DOMException",
+          "status": "pass"
+        },
+        {
+          "name": "AbortController abort(null) should set signal.reason",
+          "status": "pass"
+        },
+        {
+          "name": "static aborting signal should have right properties",
+          "status": "pass"
+        },
+        {
+          "name": "static aborting signal with reason should set signal.reason",
+          "status": "pass"
+        },
+        {
+          "name": "throwIfAborted() should throw abort.reason if signal aborted",
+          "status": "pass"
+        },
+        {
+          "name": "throwIfAborted() should throw primitive abort.reason if signal aborted",
+          "status": "pass"
+        },
+        {
+          "name": "throwIfAborted() should not throw if signal not aborted",
+          "status": "pass"
+        },
+        {
+          "name": "AbortSignal.reason returns the same DOMException",
+          "status": "pass"
+        },
+        {
+          "name": "AbortController.signal.reason returns the same DOMException",
+          "status": "pass"
+        }
+      ],
       "subtests_passed": 15,
       "subtests_total": 16
     },
     "dom/abort/reason-constructor.html": {
       "status": "fail",
+      "subtests": [
+        {
+          "name": "AbortSignal.reason.constructor should be from iframe",
+          "status": "fail"
+        }
+      ],
       "subtests_passed": 0,
       "subtests_total": 1
     },
     "dom/abort/timeout.any.html": {
       "status": "pass",
+      "subtests": [
+        {
+          "name": "AbortSignal.timeout() returns a non-aborted signal",
+          "status": "pass"
+        },
+        {
+          "name": "Signal returned by AbortSignal.timeout() times out",
+          "status": "pass"
+        },
+        {
+          "name": "AbortSignal timeouts fire in order",
+          "status": "pass"
+        }
+      ],
+      "subtests_passed": 3,
+      "subtests_total": 3
+    },
+    "dom/abort/timeout.any.worker.html": {
+      "status": "pass",
+      "subtests": [
+        {
+          "name": "AbortSignal.timeout() returns a non-aborted signal",
+          "status": "pass"
+        },
+        {
+          "name": "Signal returned by AbortSignal.timeout() times out",
+          "status": "pass"
+        },
+        {
+          "name": "AbortSignal timeouts fire in order",
+          "status": "pass"
+        }
+      ],
       "subtests_passed": 3,
       "subtests_total": 3
     }

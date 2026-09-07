@@ -1,30 +1,160 @@
 {
   "command": "testharness",
   "engine": "boa",
+  "manifest_sha256": "d5ec5be9bf1a75ed00d7e7ab28afe8a694a55e11682ba74305874d70b18dd422",
+  "policy": "exact",
   "renderer": "livery",
+  "runner_sha256": "c554f89a5ab1e7582dcb4d7c97a656750b49ca466a3ea67b7a9885666f06aab0",
+  "subset": "css/css-values/tree-counting",
   "tests": {
     "css/css-values/tree-counting/calc-sibling-function-in-shadow-dom.html": {
       "status": "fail",
+      "subtests": [
+        {
+          "name": "Host children have sibling-index() and sibling-count() based on the DOM tree order",
+          "status": "fail"
+        }
+      ],
       "subtests_passed": 0,
       "subtests_total": 1
     },
     "css/css-values/tree-counting/calc-sibling-function-parsing.html": {
       "status": "pass",
+      "subtests": [
+        {
+          "name": "e.style['left'] = \"calc(1px * sibling-index())\" should set the property value",
+          "status": "pass"
+        },
+        {
+          "name": "e.style['left'] = \"calc(1px * sibling-index( ))\" should set the property value",
+          "status": "pass"
+        },
+        {
+          "name": "e.style['z-index'] = \"sibling-index()\" should set the property value",
+          "status": "pass"
+        },
+        {
+          "name": "e.style['left'] = \"calc(1px * sibling-index(100px))\" should not set the property value",
+          "status": "pass"
+        },
+        {
+          "name": "e.style['left'] = \"calc(1px * sibling-index(1))\" should not set the property value",
+          "status": "pass"
+        },
+        {
+          "name": "e.style['left'] = \"calc(1px * sibling-count())\" should set the property value",
+          "status": "pass"
+        },
+        {
+          "name": "e.style['left'] = \"calc(1px * sibling-count( ))\" should set the property value",
+          "status": "pass"
+        },
+        {
+          "name": "e.style['z-index'] = \"sibling-count()\" should set the property value",
+          "status": "pass"
+        },
+        {
+          "name": "e.style['left'] = \"calc(1px * sibling-count(100px))\" should not set the property value",
+          "status": "pass"
+        },
+        {
+          "name": "e.style['left'] = \"calc(1px * sibling-count(1))\" should not set the property value",
+          "status": "pass"
+        }
+      ],
       "subtests_passed": 10,
       "subtests_total": 10
     },
     "css/css-values/tree-counting/calc-sibling-function.html": {
       "status": "fail",
-      "subtests_passed": 2,
+      "subtests": [
+        {
+          "name": "basic sibling-index() test",
+          "status": "pass"
+        },
+        {
+          "name": "basic sibling-count() test",
+          "status": "fail"
+        },
+        {
+          "name": "sibling-index() in calc() with percentage",
+          "status": "fail"
+        },
+        {
+          "name": "sibling-count() on pseudo-element",
+          "status": "fail"
+        },
+        {
+          "name": "sibling-index() on root",
+          "status": "pass"
+        },
+        {
+          "name": "sibling-count() on root",
+          "status": "pass"
+        }
+      ],
+      "subtests_passed": 3,
       "subtests_total": 6
     },
     "css/css-values/tree-counting/sibling-function-container-query-invalidation.html": {
       "status": "fail",
+      "subtests": [
+        {
+          "name": "sibling-index() in @container width query initially not matching",
+          "status": "pass"
+        },
+        {
+          "name": "sibling-count() in @container width query initially not matching",
+          "status": "pass"
+        },
+        {
+          "name": "sibling-index() in @container style() query initially not matching",
+          "status": "pass"
+        },
+        {
+          "name": "sibling-count() in @container style() query initially not matching",
+          "status": "pass"
+        },
+        {
+          "name": "sibling-index() in @container width query matching after removal",
+          "status": "fail"
+        },
+        {
+          "name": "sibling-count() in @container width query matching after removal",
+          "status": "fail"
+        },
+        {
+          "name": "sibling-index() in @container style() query matching after removal",
+          "status": "fail"
+        },
+        {
+          "name": "sibling-count() in @container style() query matching after removal",
+          "status": "fail"
+        }
+      ],
       "subtests_passed": 4,
       "subtests_total": 8
     },
     "css/css-values/tree-counting/sibling-function-container-query.html": {
       "status": "fail",
+      "subtests": [
+        {
+          "name": "sibling-index() in @container width query",
+          "status": "fail"
+        },
+        {
+          "name": "sibling-count() in @container width query",
+          "status": "fail"
+        },
+        {
+          "name": "sibling-index() in @container style() query",
+          "status": "fail"
+        },
+        {
+          "name": "sibling-count() in @container style() query",
+          "status": "fail"
+        }
+      ],
       "subtests_passed": 0,
       "subtests_total": 4
     },
@@ -34,76 +164,318 @@
     },
     "css/css-values/tree-counting/sibling-function-invalidation.html": {
       "status": "fail",
+      "subtests": [
+        {
+          "name": "Initially 6th sibling",
+          "status": "fail"
+        },
+        {
+          "name": "5th sibling after removal",
+          "status": "fail"
+        },
+        {
+          "name": "Initially 6 siblings",
+          "status": "fail"
+        },
+        {
+          "name": "5 siblings after removal",
+          "status": "fail"
+        }
+      ],
       "subtests_passed": 0,
       "subtests_total": 4
     },
     "css/css-values/tree-counting/sibling-function-media-query.tentative.html": {
       "status": "fail",
+      "subtests": [
+        {
+          "name": "Should be parseable: '(width > calc(0px * sibling-index()))'",
+          "status": "fail"
+        },
+        {
+          "name": "Should be unknown: '(width > calc(0px * sibling-index()))'",
+          "status": "pass"
+        },
+        {
+          "name": "Should be parseable: '(width > calc(0px * sibling-count()))'",
+          "status": "fail"
+        },
+        {
+          "name": "Should be unknown: '(width > calc(0px * sibling-count()))'",
+          "status": "pass"
+        }
+      ],
       "subtests_passed": 2,
       "subtests_total": 4
     },
     "css/css-values/tree-counting/sibling-index-keyframe-font-style-dynamic.html": {
       "status": "fail",
+      "subtests": [
+        {
+          "name": "Initially, the sibling-index() is 3 for #target",
+          "status": "fail"
+        },
+        {
+          "name": "Removing a preceding sibling of #target reduces the sibling-index()",
+          "status": "fail"
+        }
+      ],
       "subtests_passed": 0,
       "subtests_total": 2
     },
     "css/css-values/tree-counting/sibling-index-keyframe-font-variation-settings-dynamic.html": {
       "status": "fail",
+      "subtests": [
+        {
+          "name": "Initially, the sibling-index() is 3 for #target",
+          "status": "fail"
+        },
+        {
+          "name": "Removing a preceding sibling of #target reduces the sibling-index()",
+          "status": "fail"
+        }
+      ],
       "subtests_passed": 0,
       "subtests_total": 2
     },
     "css/css-values/tree-counting/sibling-index-keyframe-font-weight-dynamic.html": {
       "status": "fail",
+      "subtests": [
+        {
+          "name": "Initially, the sibling-index() is 3 for #target",
+          "status": "fail"
+        },
+        {
+          "name": "Removing a preceding sibling of #target reduces the sibling-index()",
+          "status": "fail"
+        }
+      ],
       "subtests_passed": 0,
       "subtests_total": 2
     },
     "css/css-values/tree-counting/sibling-index-keyframe-length-value-dynamic.html": {
       "status": "fail",
+      "subtests": [
+        {
+          "name": "Initially, the sibling-index() is 2 for #target",
+          "status": "fail"
+        },
+        {
+          "name": "Removing a preceding sibling of #target reduces the sibling-index()",
+          "status": "fail"
+        }
+      ],
       "subtests_passed": 0,
       "subtests_total": 2
     },
     "css/css-values/tree-counting/sibling-index-keyframe-palette-mix-dynamic.html": {
       "status": "fail",
+      "subtests": [
+        {
+          "name": "Initially, the sibling-index() is 4 for #target",
+          "status": "fail"
+        },
+        {
+          "name": "Removing a preceding sibling of #target reduces the sibling-index()",
+          "status": "fail"
+        }
+      ],
       "subtests_passed": 0,
       "subtests_total": 2
     },
     "css/css-values/tree-counting/sibling-index-keyframe-percent-dynamic.html": {
       "status": "fail",
+      "subtests": [
+        {
+          "name": "Initially, the sibling-index() is 3 for #target",
+          "status": "fail"
+        },
+        {
+          "name": "Removing a preceding sibling of #target reduces the sibling-index()",
+          "status": "fail"
+        }
+      ],
       "subtests_passed": 0,
       "subtests_total": 2
     },
     "css/css-values/tree-counting/sibling-index-keyframe-registered-properties-dynamic.html": {
       "status": "fail",
+      "subtests": [
+        {
+          "name": "Initially, the sibling-index() is 3 for --time",
+          "status": "fail"
+        },
+        {
+          "name": "Initially, the sibling-index() is 3 for --angle",
+          "status": "fail"
+        },
+        {
+          "name": "Initially, the sibling-index() is 3 for --resolution",
+          "status": "fail"
+        },
+        {
+          "name": "Initially, the sibling-index() is 3 for --percentage",
+          "status": "fail"
+        },
+        {
+          "name": "Initially, the sibling-index() is 3 for --number",
+          "status": "fail"
+        },
+        {
+          "name": "Initially, the sibling-index() is 3 for --integer",
+          "status": "fail"
+        },
+        {
+          "name": "Initially, the sibling-index() is 3 for --length",
+          "status": "fail"
+        },
+        {
+          "name": "Initially, the sibling-index() is 3 for --length-percentage",
+          "status": "fail"
+        },
+        {
+          "name": "Initially, the sibling-index() is 3 for --color",
+          "status": "fail"
+        },
+        {
+          "name": "Initially, the sibling-index() is 3 for --list",
+          "status": "fail"
+        },
+        {
+          "name": "Removing a preceding sibling of #target reduces the sibling-index() for --time",
+          "status": "fail"
+        },
+        {
+          "name": "Removing a preceding sibling of #target reduces the sibling-index() for --angle",
+          "status": "fail"
+        },
+        {
+          "name": "Removing a preceding sibling of #target reduces the sibling-index() for --resolution",
+          "status": "fail"
+        },
+        {
+          "name": "Removing a preceding sibling of #target reduces the sibling-index() for --percentage",
+          "status": "fail"
+        },
+        {
+          "name": "Removing a preceding sibling of #target reduces the sibling-index() for --number",
+          "status": "fail"
+        },
+        {
+          "name": "Removing a preceding sibling of #target reduces the sibling-index() for --integer",
+          "status": "fail"
+        },
+        {
+          "name": "Removing a preceding sibling of #target reduces the sibling-index() for --length",
+          "status": "fail"
+        },
+        {
+          "name": "Removing a preceding sibling of #target reduces the sibling-index() for --length-percentage",
+          "status": "fail"
+        },
+        {
+          "name": "Removing a preceding sibling of #target reduces the sibling-index() for --color",
+          "status": "fail"
+        },
+        {
+          "name": "Removing a preceding sibling of #target reduces the sibling-index() for --list",
+          "status": "fail"
+        }
+      ],
       "subtests_passed": 0,
       "subtests_total": 20
     },
     "css/css-values/tree-counting/sibling-index-keyframe-rotate-dynamic.html": {
       "status": "fail",
+      "subtests": [
+        {
+          "name": "Initially, the sibling-index() is 3 for #target",
+          "status": "fail"
+        },
+        {
+          "name": "Removing a preceding sibling of #target reduces the sibling-index()",
+          "status": "fail"
+        }
+      ],
       "subtests_passed": 0,
       "subtests_total": 2
     },
     "css/css-values/tree-counting/sibling-index-keyframe-scale-dynamic.html": {
       "status": "fail",
+      "subtests": [
+        {
+          "name": "Initially, the sibling-index() is 3 for #target",
+          "status": "fail"
+        },
+        {
+          "name": "Removing a preceding sibling of #target reduces the sibling-index()",
+          "status": "fail"
+        }
+      ],
       "subtests_passed": 0,
       "subtests_total": 2
     },
     "css/css-values/tree-counting/sibling-index-keyframe-transform-dynamic.html": {
       "status": "fail",
+      "subtests": [
+        {
+          "name": "Initially, the sibling-index() is 3 for #target",
+          "status": "fail"
+        },
+        {
+          "name": "Removing a preceding sibling of #target reduces the sibling-index()",
+          "status": "fail"
+        }
+      ],
       "subtests_passed": 0,
       "subtests_total": 2
     },
     "css/css-values/tree-counting/sibling-index-keyframe-value-dynamic.html": {
       "status": "fail",
+      "subtests": [
+        {
+          "name": "Initially, the sibling-index() is 3 for #target",
+          "status": "fail"
+        },
+        {
+          "name": "Removing a preceding sibling of #target reduces the sibling-index()",
+          "status": "fail"
+        }
+      ],
       "subtests_passed": 0,
       "subtests_total": 2
     },
     "css/css-values/tree-counting/sibling-index-linear-gradient-gcs.html": {
       "status": "fail",
+      "subtests": [
+        {
+          "name": "Check that sibling-index() is resolved in serialization of computed value of linear-gradient()",
+          "status": "fail"
+        },
+        {
+          "name": "Check that sibling-index() is resolved in serialization of computed value of linear-gradient() inside cross-fade()",
+          "status": "fail"
+        },
+        {
+          "name": "Check that sibling-index() is resolved in serialization of computed value of linear-gradient() inside image-set()",
+          "status": "fail"
+        }
+      ],
       "subtests_passed": 0,
       "subtests_total": 3
     },
     "css/css-values/tree-counting/tree-scoped-sibling-function.html": {
       "status": "fail",
+      "subtests": [
+        {
+          "name": "sibling-index() and sibling-count() evaluates to 0 from outer tree with ::part",
+          "status": "fail"
+        },
+        {
+          "name": "sibling-index() and sibling-count() evaluate as normal from inner tree",
+          "status": "fail"
+        }
+      ],
       "subtests_passed": 0,
       "subtests_total": 2
     }
