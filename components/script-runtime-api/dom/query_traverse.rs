@@ -18,7 +18,12 @@ impl<E: ScriptEngine> NativeFn<E> for RemoveAttribute {
         let name_v = cx.arg(1);
         let name = cx.value_to_string(&name_v)?;
         with_dom::<E, _>(cx, |dom| {
-            dom.remove_attribute(NodeId::from_raw(id as usize), attr_qual(&name))
+            let node = NodeId::from_raw(id as usize);
+            // `removeAttribute` matches on the **qualified** name, so a namespaced
+            // attribute is reachable by `prefix:local` too.
+            if let Some(qual) = dom.attribute_qual_name(node, &name) {
+                dom.remove_attribute(node, qual);
+            }
         });
         Ok(cx.undefined())
     }
@@ -216,14 +221,27 @@ impl<E: ScriptEngine> NativeFn<E> for NodeName {
         let name = with_dom::<E, _>(cx, |dom| {
             let n = NodeId::from_raw(id as usize);
             match dom.kind(n) {
+                // The qualified name, upper-cased only for HTML elements (as
+                // `tagName` does) — an XML document's names keep their case.
                 NodeKind::Element => dom
                     .element_name(n)
-                    .map(|q| q.local.as_ref().to_ascii_uppercase())
+                    .map(|q| {
+                        let qualified = match q.prefix.as_ref() {
+                            Some(p) => format!("{}:{}", p.as_ref(), q.local.as_ref()),
+                            None => q.local.as_ref().to_string(),
+                        };
+                        if q.ns.as_ref() == XHTML_NS {
+                            qualified.to_ascii_uppercase()
+                        } else {
+                            qualified
+                        }
+                    })
                     .unwrap_or_default(),
                 NodeKind::Text => "#text".to_string(),
                 NodeKind::Comment => "#comment".to_string(),
                 NodeKind::Document => "#document".to_string(),
-                NodeKind::Doctype => "html".to_string(),
+                NodeKind::CdataSection => "#cdata-section".to_string(),
+                NodeKind::Doctype => dom.text(n).unwrap_or("html").to_string(),
                 // A PI's node name is its target.
                 NodeKind::ProcessingInstruction => dom
                     .element_name(n)
@@ -248,7 +266,10 @@ impl<E: ScriptEngine> NativeFn<E> for NodeValue {
         let value = with_dom::<E, _>(cx, |dom| {
             let n = NodeId::from_raw(id as usize);
             match dom.kind(n) {
-                NodeKind::Text | NodeKind::Comment => Some(dom.text(n).unwrap_or("").to_string()),
+                NodeKind::Text
+                | NodeKind::Comment
+                | NodeKind::CdataSection
+                | NodeKind::ProcessingInstruction => Some(dom.text(n).unwrap_or("").to_string()),
                 _ => None,
             }
         })
@@ -430,5 +451,109 @@ impl<E: ScriptEngine> NativeFn<E> for AttributeNames {
         })
         .unwrap_or_default();
         cx.make_string(&names)
+    }
+}
+
+/// `__attributeRecords(element)` → one record per attribute, `namespace`,
+/// `prefix` and `local name` separated by U+001F, records separated by U+001E.
+/// Neither separator can occur in a name, so the JS side splits without escaping;
+/// values are read back with `__getAttributeNS`, keeping arbitrary text out of
+/// this record. Backs the live `NamedNodeMap`.
+pub(crate) struct AttributeRecords;
+impl<E: ScriptEngine> NativeFn<E> for AttributeRecords {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let el = cx.arg(0);
+        let Some(id) = cx.reflector_data(&el) else {
+            return cx.make_string("");
+        };
+        let records = with_dom::<E, _>(cx, |dom| {
+            dom.attribute_names(NodeId::from_raw(id as usize))
+                .into_iter()
+                .map(|(ns, prefix, local)| format!("{ns}\u{1f}{prefix}\u{1f}{local}"))
+                .collect::<Vec<_>>()
+                .join("\u{1e}")
+        })
+        .unwrap_or_default();
+        cx.make_string(&records)
+    }
+}
+
+/// `__setAttributeNS(element, ns, qualifiedName, value)` — the namespace-aware
+/// attribute write. An empty `ns` is the null namespace.
+pub(crate) struct SetAttributeNS;
+impl<E: ScriptEngine> NativeFn<E> for SetAttributeNS {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let el = cx.arg(0);
+        let Some(id) = cx.reflector_data(&el) else {
+            return Ok(cx.undefined());
+        };
+        let ns_v = cx.arg(1);
+        let qname_v = cx.arg(2);
+        let value_v = cx.arg(3);
+        let ns = cx.value_to_string(&ns_v)?;
+        let qname = cx.value_to_string(&qname_v)?;
+        let value = cx.value_to_string(&value_v)?;
+        with_dom::<E, _>(cx, |dom| {
+            dom.set_attribute(
+                NodeId::from_raw(id as usize),
+                ns_attr_qual(&ns, &qname),
+                &value,
+            )
+        });
+        Ok(cx.undefined())
+    }
+}
+
+/// `__getAttributeNS(element, ns, localName)` → the value, or `null`.
+pub(crate) struct GetAttributeNS;
+impl<E: ScriptEngine> NativeFn<E> for GetAttributeNS {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let el = cx.arg(0);
+        let Some(id) = cx.reflector_data(&el) else {
+            return Ok(cx.make_null());
+        };
+        let ns_v = cx.arg(1);
+        let local_v = cx.arg(2);
+        let ns = cx.value_to_string(&ns_v)?;
+        let local = cx.value_to_string(&local_v)?;
+        let value = with_dom::<E, _>(cx, |dom| {
+            dom.attribute(
+                NodeId::from_raw(id as usize),
+                &Namespace::from(ns.as_str()),
+                &LocalName::from(local.as_str()),
+            )
+            .map(str::to_string)
+        })
+        .flatten();
+        match value {
+            Some(s) => cx.make_string(&s),
+            None => Ok(cx.make_null()),
+        }
+    }
+}
+
+/// `__removeAttributeNS(element, ns, localName)`.
+pub(crate) struct RemoveAttributeNS;
+impl<E: ScriptEngine> NativeFn<E> for RemoveAttributeNS {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let el = cx.arg(0);
+        let Some(id) = cx.reflector_data(&el) else {
+            return Ok(cx.undefined());
+        };
+        let ns_v = cx.arg(1);
+        let local_v = cx.arg(2);
+        let ns = cx.value_to_string(&ns_v)?;
+        let local = cx.value_to_string(&local_v)?;
+        with_dom::<E, _>(cx, |dom| {
+            dom.remove_attribute(
+                NodeId::from_raw(id as usize),
+                QualName::new(
+                    None,
+                    Namespace::from(ns.as_str()),
+                    LocalName::from(local.as_str()),
+                ),
+            )
+        });
+        Ok(cx.undefined())
     }
 }

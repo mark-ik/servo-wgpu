@@ -1907,7 +1907,7 @@ const FETCH_BOOTSTRAP: &str = r#"
   function xhrRequestError(x, type, allowThrow) {
     x._state = XD;
     x._sendFlag = false;
-    x._resp = null; x._bytes = null; x._respObj = undefined;
+    x._resp = null; x._bytes = null; x._respObj = undefined; x._respDoc = undefined;
     xhrClearTimer(x);
     if (x._sync && allowThrow) {
       throw xhrErr(type === 'timeout' ? 'TimeoutError' : type === 'abort' ? 'AbortError' : 'NetworkError',
@@ -1931,7 +1931,7 @@ const FETCH_BOOTSTRAP: &str = r#"
     this._sendFlag = false; this._uploadListener = false; this._uploadComplete = false;
     this._timedOut = false;
     this._method = ''; this._url = ''; this._reqHeaders = []; this._override = null;
-    this._resp = null; this._bytes = null; this._respObj = undefined;
+    this._resp = null; this._bytes = null; this._respObj = undefined; this._respDoc = undefined;
     this._ctl = null;
     this.upload = new XMLHttpRequestUpload();
   }
@@ -1961,7 +1961,7 @@ const FETCH_BOOTSTRAP: &str = r#"
     this._method = method; this._url = href;
     this._reqHeaders = []; this._override = null;
     this._sendFlag = false; this._uploadListener = false; this._uploadComplete = false;
-    this._resp = null; this._bytes = null; this._respObj = undefined;
+    this._resp = null; this._bytes = null; this._respObj = undefined; this._respDoc = undefined;
     this._timedOut = false;
     // Only a state that was not already OPENED fires readystatechange.
     if (this._state !== XO) { this._state = XO; xhrFire(this, 'readystatechange'); }
@@ -1994,7 +1994,7 @@ const FETCH_BOOTSTRAP: &str = r#"
     var s = this._state;
     if ((s === XO && this._sendFlag) || s === XH || s === XL) xhrRequestError(this, 'abort', false);
     if (this._state === XD) {
-      this._state = XU; this._resp = null; this._bytes = null; this._respObj = undefined;
+      this._state = XU; this._resp = null; this._bytes = null; this._respObj = undefined; this._respDoc = undefined;
     }
   };
 
@@ -2013,7 +2013,7 @@ const FETCH_BOOTSTRAP: &str = r#"
     this._uploadListener = !this._sync && hasAnyListener(this.upload);
     this._sendFlag = true;
     this._timedOut = false;
-    this._resp = null; this._bytes = null; this._respObj = undefined;
+    this._resp = null; this._bytes = null; this._respObj = undefined; this._respDoc = undefined;
     this._sendTime = Date.now();
 
     if (this._sync) return xhrSendSync(this, headers, bodyBytes);
@@ -2140,13 +2140,30 @@ const FETCH_BOOTSTRAP: &str = r#"
     if (this._state !== XL && this._state !== XD) return '';
     return xhrText(this);
   });
-  // responseXML is always null: the scripted tier has no XML/HTML parser to build
-  // a document response from (there is no DOMParser either).
+  // XHR "response document": HTML and the XML essences parse through DOMParser
+  // (the same host parsers), anything else is null. Parsed once and cached.
+  var XHR_XML_ESSENCE = {
+    'text/xml': 1, 'application/xml': 1, 'application/xhtml+xml': 1, 'image/svg+xml': 1
+  };
   xhrGetter('responseXML', function() {
     if (this._respType !== '' && this._respType !== 'document')
       throw xhrErr('InvalidStateError', 'responseXML requires responseType "" or "document"');
     if (this._state !== XD) return null;
-    return null;
+    if (this._respDoc !== undefined) return this._respDoc;
+    var essence = xhrMime(this).essence;
+    var isXml = !!XHR_XML_ESSENCE[essence] || /\+xml$/.test(essence);
+    var doc = null;
+    if ((essence === 'text/html' || isXml) && globalThis.DOMParser) {
+      try {
+        doc = new DOMParser().parseFromString(xhrText(this),
+          essence === 'text/html' ? 'text/html' : 'application/xml');
+        // A failed XML parse is a null response document, not a parsererror one.
+        if (isXml && doc.documentElement &&
+            doc.documentElement.localName === 'parsererror') doc = null;
+      } catch (e) { doc = null; }
+    }
+    this._respDoc = doc;
+    return doc;
   });
   xhrGetter('response', function() {
     var t = this._respType;

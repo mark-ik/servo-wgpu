@@ -63,10 +63,11 @@ use crate::HostState;
 const XHTML_NS: &str = "http://www.w3.org/1999/xhtml";
 
 /// Clone `src`'s tree (elements with attributes + text) under `dst_parent` in the
-/// scripted DOM, recursively. Backs [`crate::Runtime::load_dom`]: a test's parsed
-/// HTML (any [`LayoutDom`]) becomes the live document scripts query. Comments /
-/// doctypes / PIs are dropped (scripts rarely query them; the `Comment` node type
-/// is later breadth).
+/// scripted DOM, recursively. Backs [`crate::Runtime::load_dom`] and
+/// `DOMParser.parseFromString`: a parsed document (any [`LayoutDom`]) becomes a
+/// live document scripts query. Every node kind survives — comments, processing
+/// instructions, CDATA sections and the doctype included, so `document.doctype`
+/// and a `MutationObserver` on a parsed comment have something to name.
 pub(crate) fn clone_into<D: LayoutDom>(
     src: &D,
     src_node: D::NodeId,
@@ -90,7 +91,29 @@ pub(crate) fn clone_into<D: LayoutDom>(
                 let t = dst.create_text(src.text(child).unwrap_or(""));
                 dst.append_child(dst_parent, t);
             },
-            _ => {},
+            NodeKind::CdataSection => {
+                let t = dst.create_cdata_section(src.text(child).unwrap_or(""));
+                dst.append_child(dst_parent, t);
+            },
+            NodeKind::Comment => {
+                let c = dst.create_comment(src.text(child).unwrap_or(""));
+                dst.append_child(dst_parent, c);
+            },
+            NodeKind::ProcessingInstruction => {
+                let target = src
+                    .element_name(child)
+                    .map_or(String::new(), |q| q.local.as_ref().to_string());
+                let pi = dst.create_processing_instruction(&target, src.text(child).unwrap_or(""));
+                dst.append_child(dst_parent, pi);
+            },
+            NodeKind::Doctype => {
+                let d = match src.doctype_data(child) {
+                    Some(d) => dst.create_doctype(d.name, d.public_id, d.system_id),
+                    None => dst.create_doctype("html", "", ""),
+                };
+                dst.append_child(dst_parent, d);
+            },
+            NodeKind::Document | NodeKind::DocumentFragment => {},
         }
     }
 }
@@ -129,6 +152,16 @@ pub(crate) fn install_dom_surface<E: ScriptEngine>(engine: &mut E) -> Result<(),
     engine.set_function::<CreateComment>("__createComment", 1)?;
     engine.set_function::<CreateFragment>("__createFragment", 0)?;
     engine.set_function::<CreateProcessingInstruction>("__createProcessingInstruction", 2)?;
+    engine.set_function::<CreateCdataSection>("__createCDATASection", 1)?;
+    engine.set_function::<CreateDoctype>("__createDoctype", 3)?;
+    engine.set_function::<DoctypeField>("__doctypeField", 2)?;
+    engine.set_function::<DocumentDoctype>("__documentDoctype", 1)?;
+    engine.set_function::<GetOuterHtml>("__getOuterHtml", 1)?;
+    engine.set_function::<ParseDocument>("__parseDocument", 2)?;
+    engine.set_function::<AttributeRecords>("__attributeRecords", 1)?;
+    engine.set_function::<SetAttributeNS>("__setAttributeNS", 4)?;
+    engine.set_function::<GetAttributeNS>("__getAttributeNS", 3)?;
+    engine.set_function::<RemoveAttributeNS>("__removeAttributeNS", 3)?;
     engine.set_function::<NodeType>("__nodeType", 1)?;
     engine.set_function::<NodeRawId>("__nodeRawId", 1)?;
     engine.set_function::<RemoveAttribute>("__removeAttribute", 2)?;
@@ -203,6 +236,16 @@ fn html_qual(local: &str) -> QualName {
 /// A null-namespace attribute name (the common case: `id`, `class`, …).
 fn attr_qual(local: &str) -> QualName {
     QualName::new(None, Namespace::from(""), LocalName::from(local))
+}
+
+/// A namespaced attribute name from a namespace and a qualified name, splitting
+/// `prefix:local` the way `createElementNS` does. An empty namespace is null.
+fn ns_attr_qual(ns: &str, qname: &str) -> QualName {
+    let (prefix, local) = match qname.split_once(':') {
+        Some((p, l)) => (Some(Prefix::from(p)), l),
+        None => (None, qname),
+    };
+    QualName::new(prefix, Namespace::from(ns), LocalName::from(local))
 }
 
 /// Run `f` against the host's [`ScriptedDom`], recovered from the engine host-data

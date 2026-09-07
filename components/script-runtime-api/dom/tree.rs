@@ -176,12 +176,13 @@ impl<E: ScriptEngine> NativeFn<E> for GetAttribute {
         let name_v = cx.arg(1);
         let name = cx.value_to_string(&name_v)?;
         let value = with_dom::<E, _>(cx, |dom| {
-            dom.attribute(
-                NodeId::from_raw(id as usize),
-                &Namespace::from(""),
-                &LocalName::from(name.as_str()),
-            )
-            .map(str::to_string)
+            // `getAttribute` matches on the **qualified** name (DOM "get an
+            // attribute by name"), which for the common null-namespace case is
+            // just the local name.
+            let node = NodeId::from_raw(id as usize);
+            let qual = dom.attribute_qual_name(node, &name)?;
+            dom.attribute(node, &qual.ns, &qual.local)
+                .map(str::to_string)
         })
         .flatten();
         match value {
@@ -488,6 +489,7 @@ impl<E: ScriptEngine> NativeFn<E> for NodeType {
         let n = with_dom::<E, _>(cx, |dom| match dom.kind(NodeId::from_raw(id as usize)) {
             NodeKind::Element => 1,
             NodeKind::Text => 3,
+            NodeKind::CdataSection => 4,
             NodeKind::ProcessingInstruction => 7,
             NodeKind::Comment => 8,
             NodeKind::Document => 9,
@@ -496,5 +498,131 @@ impl<E: ScriptEngine> NativeFn<E> for NodeType {
         })
         .unwrap_or(0);
         cx.make_string(&n.to_string())
+    }
+}
+
+/// `__createCDATASection(data)` → a reflector for a fresh detached
+/// `CDATASection`. The HTML-document rejection is the caller's (DOM says
+/// `createCDATASection` throws `NotSupportedError` on an HTML document).
+pub(crate) struct CreateCdataSection;
+impl<E: ScriptEngine> NativeFn<E> for CreateCdataSection {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let arg = cx.arg(0);
+        let data = cx.value_to_string(&arg)?;
+        match with_dom::<E, _>(cx, |dom| dom.create_cdata_section(&data)) {
+            Some(node) => reflect_pinned::<E>(cx, node.raw() as u64),
+            None => Ok(cx.undefined()),
+        }
+    }
+}
+
+/// `__createDoctype(name, publicId, systemId)` → a reflector for a fresh detached
+/// `DocumentType`.
+pub(crate) struct CreateDoctype;
+impl<E: ScriptEngine> NativeFn<E> for CreateDoctype {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let name_v = cx.arg(0);
+        let public_v = cx.arg(1);
+        let system_v = cx.arg(2);
+        let name = cx.value_to_string(&name_v)?;
+        let public_id = cx.value_to_string(&public_v)?;
+        let system_id = cx.value_to_string(&system_v)?;
+        match with_dom::<E, _>(cx, |dom| dom.create_doctype(&name, &public_id, &system_id)) {
+            Some(node) => reflect_pinned::<E>(cx, node.raw() as u64),
+            None => Ok(cx.undefined()),
+        }
+    }
+}
+
+/// `__doctypeField(node, which)` → `"name"` / `"publicId"` / `"systemId"` of a
+/// doctype node, or `null` for anything else.
+pub(crate) struct DoctypeField;
+impl<E: ScriptEngine> NativeFn<E> for DoctypeField {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let node = cx.arg(0);
+        let Some(id) = cx.reflector_data(&node) else {
+            return Ok(cx.make_null());
+        };
+        let which_v = cx.arg(1);
+        let which = cx.value_to_string(&which_v)?;
+        let value = with_dom::<E, _>(cx, |dom| {
+            dom.doctype_data(NodeId::from_raw(id as usize))
+                .map(|d| match which.as_str() {
+                    "publicId" => d.public_id.to_string(),
+                    "systemId" => d.system_id.to_string(),
+                    _ => d.name.to_string(),
+                })
+        })
+        .flatten();
+        match value {
+            Some(s) => cx.make_string(&s),
+            None => Ok(cx.make_null()),
+        }
+    }
+}
+
+/// `__documentDoctype(document)` → the document's doctype child, or `undefined`.
+pub(crate) struct DocumentDoctype;
+impl<E: ScriptEngine> NativeFn<E> for DocumentDoctype {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let scope = cx.arg(0);
+        let Some(root) = cx.reflector_data(&scope) else {
+            return Ok(cx.undefined());
+        };
+        match with_dom::<E, _>(cx, |dom| {
+            dom.dom_children(NodeId::from_raw(root as usize))
+                .find(|&c| dom.kind(c) == NodeKind::Doctype)
+        })
+        .flatten()
+        {
+            Some(node) => reflect_pinned::<E>(cx, node.raw() as u64),
+            None => Ok(cx.undefined()),
+        }
+    }
+}
+
+/// `__getOuterHtml(node)` serializes the node itself and its subtree.
+pub(crate) struct GetOuterHtml;
+impl<E: ScriptEngine> NativeFn<E> for GetOuterHtml {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let node = cx.arg(0);
+        let Some(id) = cx.reflector_data(&node) else {
+            return cx.make_string("");
+        };
+        let html = with_dom::<E, _>(cx, |dom| dom.outer_html(NodeId::from_raw(id as usize)))
+            .unwrap_or_default();
+        cx.make_string(&html)
+    }
+}
+
+/// `__parseDocument(source, kind)` → a reflector for a **new** `Document` in the
+/// same arena, built by the HTML parser (`kind == "html"`) or the XML parser
+/// (anything else) — the `DOMParser.parseFromString` sink. Returns `undefined`
+/// when the XML parser produced no root element, which is how the JS side knows
+/// to build the spec's `parsererror` document.
+pub(crate) struct ParseDocument;
+impl<E: ScriptEngine> NativeFn<E> for ParseDocument {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let source_v = cx.arg(0);
+        let kind_v = cx.arg(1);
+        let source = cx.value_to_string(&source_v)?;
+        let kind = cx.value_to_string(&kind_v)?;
+        let parsed = if kind == "html" {
+            genet_static_dom::StaticDocument::parse(&source)
+        } else {
+            genet_static_dom::StaticDocument::parse_xml(&source)
+        };
+        let has_root = parsed.document_element().is_some();
+        if !has_root {
+            return Ok(cx.undefined());
+        }
+        match with_dom::<E, _>(cx, |dom| {
+            let doc = dom.create_document();
+            clone_into(&parsed, parsed.document(), dom, doc);
+            doc
+        }) {
+            Some(node) => reflect_pinned::<E>(cx, node.raw() as u64),
+            None => Ok(cx.undefined()),
+        }
     }
 }

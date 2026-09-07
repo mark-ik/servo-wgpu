@@ -14,7 +14,7 @@ use html5ever::interface::ElemName;
 use html5ever::interface::tree_builder::{ElementFlags, NodeOrText, QuirksMode, TreeSink};
 use html5ever::tendril::{StrTendril, TendrilSink};
 use html5ever::{Attribute, LocalName, Namespace, QualName, parse_document};
-use layout_dom_api::{AttributeView, LayoutDom, NodeKind as LayoutDomNodeKind};
+use layout_dom_api::{AttributeView, DoctypeView, LayoutDom, NodeKind as LayoutDomNodeKind};
 
 /// Stable identifier for a node in a [`StaticDocument`].
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -263,6 +263,21 @@ impl LayoutDom for StaticDocument {
     fn text(&self, id: StaticNodeId) -> Option<&str> {
         match &self.nodes[id.0].kind {
             StaticNodeKind::Text(s) | StaticNodeKind::Comment(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    fn doctype_data(&self, id: StaticNodeId) -> Option<DoctypeView<'_>> {
+        match &self.nodes[id.0].kind {
+            StaticNodeKind::Doctype {
+                name,
+                public_id,
+                system_id,
+            } => Some(DoctypeView {
+                name,
+                public_id,
+                system_id,
+            }),
             _ => None,
         }
     }

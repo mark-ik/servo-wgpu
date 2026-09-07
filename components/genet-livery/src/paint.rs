@@ -1627,7 +1627,10 @@ where
     D::NodeId: Copy + Eq + Hash,
 {
     match dom.kind(id) {
-        NodeKind::Text => dom.text(id).is_some_and(|text| !text.trim().is_empty()),
+        // A CDATA section is character data like a text node.
+        NodeKind::Text | NodeKind::CdataSection => {
+            dom.text(id).is_some_and(|text| !text.trim().is_empty())
+        },
         NodeKind::Element => {
             let Some(style) = styles.get(id) else {
                 return false;

@@ -78,13 +78,21 @@ impl Serialize for SerializableNode<'_> {
                 NodeKind::Doctype => {
                     serializer.write_doctype(node.text.as_deref().unwrap_or("html"))?;
                 },
+                // HTML has no CDATA sections; serializing an XML subtree as HTML
+                // emits the character data, which is what the round trip means.
+                NodeKind::CdataSection => {
+                    if let Some(text) = &node.text {
+                        serializer.write_text(text)?;
+                    }
+                },
                 NodeKind::Document | NodeKind::DocumentFragment => {
                     self.serialize_children(serializer)?;
                 },
-                // Processing instructions are not valid HTML (html5ever parses them
-                // as bogus comments); the scripted DOM never holds one, so emit
-                // nothing rather than invalid markup.
-                NodeKind::ProcessingInstruction => {},
+                NodeKind::ProcessingInstruction => {
+                    let target = node.name.as_ref().map_or("", |n| n.local.as_ref());
+                    serializer
+                        .write_processing_instruction(target, node.text.as_deref().unwrap_or(""))?;
+                },
             },
             TraversalScope::ChildrenOnly(_) => self.serialize_children(serializer)?,
         }

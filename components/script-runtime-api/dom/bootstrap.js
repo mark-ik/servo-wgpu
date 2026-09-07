@@ -109,8 +109,10 @@
     } else {
       proto = nt === 9 ? Document.prototype
             : nt === 3 ? Text.prototype
+            : nt === 4 ? CDATASection.prototype
             : nt === 8 ? Comment.prototype
             : nt === 7 ? ProcessingInstruction.prototype
+            : nt === 10 ? DocumentType.prototype
             : nt === 11 ? DocumentFragment.prototype
             : Node.prototype;
     }
@@ -251,11 +253,35 @@
     }
     for (var j = 0; j < move.roots.length; j++) connectCustomElementTree(move.roots[j]);
   }
+  // DOM "insert a node into a parent before a child": a DocumentFragment
+  // contributes its **children**, not itself. The children leave the fragment
+  // first (one childList record naming all of them) and land under the parent as
+  // one group (one record there), which is the record shape the spec's insertion
+  // steps produce. `ref === undefined` means append.
+  function insertNodeInto(parent, node, ref) {
+    if (node.nodeType !== 11) {
+      if (ref === undefined) moAppendChild(parent.__ref, node.__ref);
+      else moInsertBefore(parent.__ref, node.__ref, ref);
+      return;
+    }
+    var kids = rawChildNodes(node);
+    if (!kids.length) return; // spec: count 0, return before any record
+    moBeginGroup();
+    try {
+      for (var i = 0; i < kids.length; i++) moRemoveChild(node.__ref, kids[i].__ref);
+      for (var j = 0; j < kids.length; j++) {
+        if (ref === undefined) moAppendChild(parent.__ref, kids[j].__ref);
+        else moInsertBefore(parent.__ref, kids[j].__ref, ref);
+      }
+    } finally {
+      moEndGroup();
+    }
+  }
   Node.prototype.appendChild = function(child) {
     ensureInsertable(this, child);
     var move = prepareNodeMove(this, child);
     if (move.oldDoc !== move.newDoc) disconnectMovedRoots(move);
-    moAppendChild(this.__ref, child.__ref);
+    insertNodeInto(this, child, undefined);
     finalizeNodeMove(move);
     return child;
   };
@@ -315,6 +341,22 @@
       return n.nodeType === 9;
     }
   });
+  // `baseURI` is the node document's base URL: the document URL, overridden by
+  // the first `<base href>` in the tree (HTML "document base URL"). It is the
+  // same value for every node in a document, attributes included.
+  Object.defineProperty(Node.prototype, 'baseURI', {
+    configurable: true, get: function() { return documentBaseURI(); }
+  });
+  function documentBaseURI() {
+    var url = globalThis.document ? globalThis.document.URL : undefined;
+    if (url === undefined || url === null) return '';
+    var bases = globalThis.document.getElementsByTagName('base');
+    for (var i = 0; i < bases.length; i++) {
+      var href = bases[i].getAttribute('href');
+      if (href !== null) return String(__resolve_url(href));
+    }
+    return String(url);
+  }
   Node.prototype.isSameNode = function(other) { return other === this; };
   Node.prototype.getRootNode = function() {
     var n = this; while (n.parentNode) n = n.parentNode; return n;
@@ -372,6 +414,25 @@
     for (var c = 0; c < ac.length; c++) { if (!ac[c].isEqualNode(bc[c])) return false; }
     return true;
   };
+  // DOM `normalize()`: drop empty exclusive Text nodes and merge each run of
+  // contiguous ones into its first node. The merge goes through `appendData` and
+  // the removal through `removeChild`, so the live-range steps at the mutation
+  // funnel see a real replace-data and a real removal.
+  Node.prototype.normalize = function() {
+    // Walked live, not over a snapshot: the merge removes siblings as it goes.
+    var node = this.firstChild;
+    while (node) {
+      var after = node.nextSibling;
+      if (node.nodeType !== 3) { node.normalize(); node = after; continue; }
+      if (node.data.length === 0) { this.removeChild(node); node = after; continue; }
+      while (node.nextSibling && node.nextSibling.nodeType === 3) {
+        var next = node.nextSibling;
+        if (next.data.length) node.appendData(next.data);
+        this.removeChild(next);
+      }
+      node = node.nextSibling;
+    }
+  };
   Node.prototype.cloneNode = function(deep) {
     // Shallow copy of this node by type, then (deep) recurse over children. Pure JS
     // over the existing create* / setAttribute primitives.
@@ -382,16 +443,21 @@
         copy = this.namespaceURI
           ? copyDocument.createElementNS(this.namespaceURI, this.prefix ? this.prefix + ':' + this.localName : this.localName)
           : copyDocument.createElement(this.localName);
-        var names = this.__ref !== undefined ? __attributeNames(this.__ref) : '';
-        if (names) {
-          var parts = names.split(' ');
-          for (var i = 0; i < parts.length; i++) {
-            if (parts[i]) copy.setAttribute(parts[i], this.getAttribute(parts[i]));
-          }
+        var recs = this.__ref !== undefined ? attributeRecords(this) : [];
+        for (var i = 0; i < recs.length; i++) {
+          copy.setAttributeNS(recs[i].ns, recs[i].qname,
+                              __getAttributeNS(this.__ref, recs[i].ns || '', recs[i].local));
         }
         break;
       case 3: copy = copyDocument.createTextNode(this.data); break;
+      case 4: copy = wrapNode(__createCDATASection(this.data)); break;
+      case 7:
+        copy = copyDocument.createProcessingInstruction(this.target, this.data);
+        break;
       case 8: copy = copyDocument.createComment(this.data); break;
+      case 10:
+        copy = wrapNode(__createDoctype(this.name, this.publicId, this.systemId));
+        break;
       case 11: copy = copyDocument.createDocumentFragment(); break;
       case 9: copy = document.implementation.createHTMLDocument(); break;
       default: copy = copyDocument.createTextNode('');
@@ -417,7 +483,7 @@
     }
     var move = prepareNodeMove(this, node);
     if (move.oldDoc !== move.newDoc) disconnectMovedRoots(move);
-    moInsertBefore(this.__ref, node.__ref, ref ? ref.__ref : undefined);
+    insertNodeInto(this, node, ref ? ref.__ref : undefined);
     finalizeNodeMove(move);
     return node;
   };
@@ -725,6 +791,36 @@
   Comment.prototype = Object.create(CharacterData.prototype);
   globalThis.Comment = Comment;
 
+  // CDATASection : Text (nodeType 4). XML-only; `createCDATASection` mints it.
+  function CDATASection() { throw new TypeError('Illegal constructor'); }
+  CDATASection.prototype = Object.create(Text.prototype);
+  Object.defineProperty(CDATASection.prototype, 'constructor', {
+    configurable: true, writable: true, value: CDATASection
+  });
+  globalThis.CDATASection = CDATASection;
+
+  // DocumentType : Node (nodeType 10). A real arena node now, so
+  // `document.doctype`, `createDocumentType` and cloning all name the same thing.
+  // Its three strings live host-side; `nodeValue` / `textContent` are null.
+  function DocumentType() { throw new TypeError('Illegal constructor'); }
+  DocumentType.prototype = Object.create(Node.prototype);
+  Object.defineProperty(DocumentType.prototype, 'constructor', {
+    configurable: true, writable: true, value: DocumentType
+  });
+  Object.defineProperty(DocumentType.prototype, 'name', {
+    configurable: true, get: function() { return __doctypeField(this.__ref, 'name') || ''; }
+  });
+  Object.defineProperty(DocumentType.prototype, 'publicId', {
+    configurable: true, get: function() { return __doctypeField(this.__ref, 'publicId') || ''; }
+  });
+  Object.defineProperty(DocumentType.prototype, 'systemId', {
+    configurable: true, get: function() { return __doctypeField(this.__ref, 'systemId') || ''; }
+  });
+  Object.defineProperty(DocumentType.prototype, 'textContent', {
+    configurable: true, get: function() { return null; }, set: function() {}
+  });
+  globalThis.DocumentType = DocumentType;
+
   // ProcessingInstruction : CharacterData (nodeType 7). Its `target` is the
   // node name; `data` is the shared character-data slot. Not constructible —
   // `document.createProcessingInstruction` mints it.
@@ -777,23 +873,70 @@
       __refreshNamedProperties();
     }
   });
+  Object.defineProperty(Element.prototype, 'outerHTML', {
+    configurable: true,
+    get: function() { return String(__getOuterHtml(this.__ref)); },
+    set: function(value) {
+      var parent = this.parentNode;
+      if (!parent) {
+        throw new DOMException("outerHTML has no parent to replace into.", "NoModificationAllowedError");
+      }
+      if (parent.nodeType === 9) {
+        throw new DOMException("outerHTML cannot replace the document element's parent.", "NoModificationAllowedError");
+      }
+      // Fragment-parse in the parent's context, then swap this element for the
+      // result in one group so an observer sees a single childList record.
+      var holder = ownerDocumentOf(this).createElement(
+        parent.nodeType === 1 ? parent.localName : 'div');
+      holder.innerHTML = String(value);
+      var kids = rawChildNodes(holder);
+      var fragment = ownerDocumentOf(this).createDocumentFragment();
+      for (var i = 0; i < kids.length; i++) fragment.appendChild(kids[i]);
+      var next = this.nextSibling;
+      moBeginGroup();
+      try {
+        parent.removeChild(this);
+        parent.insertBefore(fragment, next);
+      } finally { moEndGroup(); }
+    }
+  });
   // scrollIntoView: record this element as the host's pending scroll-into-view
   // target (the host resolves it to a viewport scroll after the run). Options
   // (alignToTop / { block, inline, behavior }) are ignored for now: block-start.
   Element.prototype.scrollIntoView = function() { __scrollIntoView(this.__ref); };
+  // Namespaced attributes are stored with a real (namespace, prefix, local)
+  // name, so `setAttributeNS(XLINK, 'xlink:href')` and `getAttribute('xlink:href')`
+  // name the same attribute from opposite directions and a MutationRecord's
+  // `attributeNamespace` is the namespace rather than null.
+  function nsArg(ns) { return (ns === null || ns === undefined || ns === '') ? '' : String(ns); }
   Element.prototype.setAttributeNS = function(ns, qname, value) {
     ns = (ns === null || ns === undefined) ? null : String(ns);
     qname = String(qname); validateNS(ns, qname);
-    // Stored by qualified name (the attribute namespace is not yet modeled
-    // separately; getAttribute(qname) round-trips, which is what the tests read).
-    var oldValue = __getAttribute(this.__ref, qname);
+    var local = qname.indexOf(':') !== -1 ? qname.split(':')[1] : qname;
+    var oldValue = __getAttributeNS(this.__ref, nsArg(ns), local);
     var newValue = String(value);
-    moSetAttribute(this.__ref, qname, newValue);
+    moSetAttributeNS(this.__ref, nsArg(ns), qname, newValue);
     if (qname === 'style') inlineStyleStates.delete(this);
-    customElementAttributeChanged(this, qname, oldValue, newValue);
+    customElementAttributeChanged(this, local, oldValue, newValue);
   };
-  Element.prototype.getAttributeNS = function(ns, local) { return __getAttribute(this.__ref, String(local)); };
+  Element.prototype.getAttributeNS = function(ns, local) {
+    return __getAttributeNS(this.__ref, nsArg(ns), String(local));
+  };
+  Element.prototype.hasAttributeNS = function(ns, local) {
+    return __getAttributeNS(this.__ref, nsArg(ns), String(local)) !== null;
+  };
+  Element.prototype.removeAttributeNS = function(ns, local) {
+    local = String(local);
+    var oldValue = __getAttributeNS(this.__ref, nsArg(ns), local);
+    if (oldValue === null) return;
+    moRemoveAttributeNS(this.__ref, nsArg(ns), local);
+    customElementAttributeChanged(this, local, oldValue, null);
+  };
   Element.prototype.hasAttribute = function(name) { return __getAttribute(this.__ref, String(name)) !== null; };
+  Element.prototype.hasAttributes = function() { return __attributeRecords(this.__ref) !== ''; };
+  Element.prototype.getAttributeNames = function() {
+    return attributeRecords(this).map(function(r) { return r.qname; });
+  };
   Element.prototype.removeAttribute = function(name) {
     name = String(name);
     if (this.namespaceURI === 'http://www.w3.org/1999/xhtml') name = name.toLowerCase();
@@ -1500,25 +1643,315 @@
     get: function() { var n = this.previousSibling; while (n) { if (n.nodeType === 1) return n; n = n.previousSibling; } return null; }
   });
 
-  // ChildNode mixin: remove / before / after / replaceWith. String arguments
-  // become text nodes (per spec).
-  function toNode(arg) { return (typeof arg === 'string') ? document.createTextNode(arg) : arg; }
-  Element.prototype.remove = function() { var p = this.parentNode; if (p) p.removeChild(this); };
-  Element.prototype.before = function() {
-    var p = this.parentNode; if (!p) return;
-    for (var i = 0; i < arguments.length; i++) { p.insertBefore(toNode(arguments[i]), this); }
+  // ChildNode / ParentNode mixins (DOM §4.2.6-7). Every entry point runs the
+  // spec's "convert nodes into a node": a lone node stays itself, a string
+  // becomes a text node, and two or more become one DocumentFragment — which is
+  // why these can be one insert each rather than a loop, now that inserting a
+  // fragment moves its children.
+  function toNode(arg, doc) {
+    return (typeof arg === 'string') ? (doc || document).createTextNode(arg) : arg;
+  }
+  function convertNodes(args, doc) {
+    doc = doc || document;
+    if (args.length === 1) return toNode(args[0], doc);
+    var fragment = doc.createDocumentFragment();
+    for (var i = 0; i < args.length; i++) fragment.appendChild(toNode(args[i], doc));
+    return fragment;
+  }
+  // The spec's "viable previous/next sibling": the nearest sibling that is not
+  // itself one of the nodes being inserted, so `after(this)` and friends behave.
+  function viableSibling(node, args, dir) {
+    var s = dir < 0 ? node.previousSibling : node.nextSibling;
+    while (s) {
+      var found = false;
+      for (var i = 0; i < args.length; i++) { if (args[i] === s) { found = true; break; } }
+      if (!found) return s;
+      s = dir < 0 ? s.previousSibling : s.nextSibling;
+    }
+    return null;
+  }
+  var childNodeMixin = {
+    remove: function() { var p = this.parentNode; if (p) p.removeChild(this); },
+    before: function() {
+      var p = this.parentNode; if (!p || !arguments.length) return;
+      var prev = viableSibling(this, arguments, -1);
+      var node = convertNodes(arguments, ownerDocumentOf(this));
+      p.insertBefore(node, prev ? prev.nextSibling : p.firstChild);
+    },
+    after: function() {
+      var p = this.parentNode; if (!p || !arguments.length) return;
+      var next = viableSibling(this, arguments, 1);
+      p.insertBefore(convertNodes(arguments, ownerDocumentOf(this)), next);
+    },
+    replaceWith: function() {
+      var p = this.parentNode; if (!p) return;
+      var next = viableSibling(this, arguments, 1);
+      var node = arguments.length ? convertNodes(arguments, ownerDocumentOf(this)) : null;
+      if (this.parentNode === p) {
+        if (node) p.replaceChild(node, this); else p.removeChild(this);
+      } else if (node) {
+        p.insertBefore(node, next);
+      }
+    }
   };
-  Element.prototype.after = function() {
-    var p = this.parentNode; if (!p) return;
-    var ref = this.nextSibling;
-    for (var i = 0; i < arguments.length; i++) { p.insertBefore(toNode(arguments[i]), ref); }
+  var parentNodeMixin = {
+    append: function() {
+      if (!arguments.length) return;
+      this.appendChild(convertNodes(arguments, this.nodeType === 9 ? this : ownerDocumentOf(this)));
+    },
+    prepend: function() {
+      if (!arguments.length) return;
+      var doc = this.nodeType === 9 ? this : ownerDocumentOf(this);
+      this.insertBefore(convertNodes(arguments, doc), this.firstChild);
+    },
+    replaceChildren: function() {
+      var doc = this.nodeType === 9 ? this : ownerDocumentOf(this);
+      var node = arguments.length ? convertNodes(arguments, doc) : null;
+      moBeginGroup();
+      try {
+        var kids = rawChildNodes(this);
+        for (var i = 0; i < kids.length; i++) this.removeChild(kids[i]);
+        if (node) this.appendChild(node);
+      } finally { moEndGroup(); }
+    }
   };
-  Element.prototype.replaceWith = function() {
-    var p = this.parentNode; if (!p) return;
-    var ref = this.nextSibling;
-    p.removeChild(this);
-    for (var i = 0; i < arguments.length; i++) { p.insertBefore(toNode(arguments[i]), ref); }
+  function installMixin(proto, mixin) {
+    for (var k in mixin) {
+      if (Object.prototype.hasOwnProperty.call(mixin, k)) {
+        Object.defineProperty(proto, k, {
+          configurable: true, writable: true, enumerable: false, value: mixin[k]
+        });
+      }
+    }
+  }
+  // -- Attr and NamedNodeMap -------------------------------------------------
+  //
+  // An `Attr` is a Node in the DOM, but attributes are stored as a column on
+  // their element rather than as arena nodes, so an `Attr` here is a JS view
+  // bound to (ownerElement, namespace, localName) that reads and writes through
+  // the element -- which is what "live" means for every test that reads
+  // `attr.value` after a `setAttribute`. A detached `Attr` (from
+  // `createAttribute`) owns its own value until `setAttributeNode` binds it.
+  // Views are cached per element so `getAttributeNode('x')` has identity.
+  var attrViews = new WeakMap();
+  var RS = '\u001e', US = '\u001f';
+
+  function attributeRecords(el) {
+    var raw = __attributeRecords(el.__ref);
+    if (!raw) return [];
+    var parts = raw.split(RS);
+    var out = [];
+    for (var i = 0; i < parts.length; i++) {
+      var f = parts[i].split(US);
+      var prefix = f[1] || null;
+      out.push({
+        ns: f[0] || null,
+        prefix: prefix,
+        local: f[2],
+        qname: prefix ? prefix + ':' + f[2] : f[2]
+      });
+    }
+    return out;
+  }
+  function attrKey(ns, local) { return (ns || '') + US + local; }
+
+  function Attr() { throw new TypeError('Illegal constructor'); }
+  Attr.prototype = Object.create(Node.prototype);
+  Object.defineProperty(Attr.prototype, 'constructor', {
+    configurable: true, writable: true, value: Attr
+  });
+  function makeAttr(owner, ns, prefix, local, doc) {
+    var a = Object.create(Attr.prototype);
+    a.nodeType = 2;
+    a.__owner = owner || null;
+    a.__ns = ns || null;
+    a.__prefix = prefix || null;
+    a.__local = String(local);
+    a.__value = '';
+    a.__doc = doc || document;
+    a.__isAttr = true; // the Range boundary guard rejects an Attr container
+    return a;
+  }
+  function attrFor(el, ns, prefix, local) {
+    var byKey = attrViews.get(el);
+    if (!byKey) { byKey = Object.create(null); attrViews.set(el, byKey); }
+    var key = attrKey(ns, local);
+    var existing = byKey[key];
+    if (existing) { existing.__prefix = prefix || null; return existing; }
+    var a = makeAttr(el, ns, prefix, local, ownerDocumentOf(el));
+    byKey[key] = a;
+    return a;
+  }
+  Object.defineProperty(Attr.prototype, 'namespaceURI', {
+    configurable: true, get: function() { return this.__ns; }
+  });
+  Object.defineProperty(Attr.prototype, 'prefix', {
+    configurable: true, get: function() { return this.__prefix; }
+  });
+  Object.defineProperty(Attr.prototype, 'localName', {
+    configurable: true, get: function() { return this.__local; }
+  });
+  Object.defineProperty(Attr.prototype, 'name', {
+    configurable: true,
+    get: function() { return this.__prefix ? this.__prefix + ':' + this.__local : this.__local; }
+  });
+  Object.defineProperty(Attr.prototype, 'nodeName', {
+    configurable: true, get: function() { return this.name; }
+  });
+  Object.defineProperty(Attr.prototype, 'ownerElement', {
+    configurable: true, get: function() { return this.__owner; }
+  });
+  Object.defineProperty(Attr.prototype, 'ownerDocument', {
+    configurable: true,
+    get: function() { return this.__owner ? ownerDocumentOf(this.__owner) : this.__doc; }
+  });
+  Object.defineProperty(Attr.prototype, 'specified', {
+    configurable: true, get: function() { return true; }
+  });
+  function attrValue(a) {
+    if (!a.__owner) return a.__value;
+    var v = __getAttributeNS(a.__owner.__ref, a.__ns || '', a.__local);
+    return v === null ? a.__value : v;
+  }
+  function setAttrValue(a, v) {
+    v = String(v);
+    a.__value = v;
+    if (a.__owner) a.__owner.setAttributeNS(a.__ns, a.name, v);
+  }
+  var attrValueDescriptor = {
+    configurable: true,
+    get: function() { return attrValue(this); },
+    set: function(v) { setAttrValue(this, v); }
   };
+  Object.defineProperty(Attr.prototype, 'value', attrValueDescriptor);
+  Object.defineProperty(Attr.prototype, 'nodeValue', attrValueDescriptor);
+  Object.defineProperty(Attr.prototype, 'textContent', attrValueDescriptor);
+  Object.defineProperty(Attr.prototype, 'childNodes', {
+    configurable: true, get: function() { return makeCollection(function() { return []; }, false); }
+  });
+  Object.defineProperty(Attr.prototype, 'parentNode', {
+    configurable: true, get: function() { return null; }
+  });
+  Attr.prototype.hasChildNodes = function() { return false; };
+  Attr.prototype.cloneNode = function() {
+    var copy = makeAttr(null, this.__ns, this.__prefix, this.__local, this.ownerDocument);
+    copy.__value = this.value;
+    return copy;
+  };
+  Attr.prototype.isEqualNode = function(other) {
+    return !!other && other.nodeType === 2 && other.__ns === this.__ns &&
+           other.__local === this.__local && other.value === this.value;
+  };
+  globalThis.Attr = Attr;
+
+  // NamedNodeMap: a live, indexed view of one element's attributes. The proxy
+  // adds the indexed and named property access the IDL's getters describe.
+  function NamedNodeMap() { throw new TypeError('Illegal constructor'); }
+  NamedNodeMap.prototype.item = function(i) {
+    i = Number(i) >>> 0;
+    var recs = attributeRecords(this.__el);
+    if (i >= recs.length) return null;
+    var r = recs[i];
+    return attrFor(this.__el, r.ns, r.prefix, r.local);
+  };
+  NamedNodeMap.prototype.getNamedItem = function(qname) {
+    return this.__el.getAttributeNode(qname);
+  };
+  NamedNodeMap.prototype.getNamedItemNS = function(ns, local) {
+    return this.__el.getAttributeNodeNS(ns, local);
+  };
+  NamedNodeMap.prototype.setNamedItem = function(attr) { return this.__el.setAttributeNode(attr); };
+  NamedNodeMap.prototype.setNamedItemNS = function(attr) { return this.__el.setAttributeNodeNS(attr); };
+  NamedNodeMap.prototype.removeNamedItem = function(qname) {
+    var a = this.__el.getAttributeNode(qname);
+    if (!a) throw new DOMException("No attribute named '" + qname + "'.", "NotFoundError");
+    this.__el.removeAttribute(qname);
+    return a;
+  };
+  NamedNodeMap.prototype.removeNamedItemNS = function(ns, local) {
+    var a = this.__el.getAttributeNodeNS(ns, local);
+    if (!a) throw new DOMException("No such attribute.", "NotFoundError");
+    this.__el.removeAttributeNS(ns, local);
+    return a;
+  };
+  Object.defineProperty(NamedNodeMap.prototype, 'length', {
+    configurable: true, get: function() { return attributeRecords(this.__el).length; }
+  });
+  globalThis.NamedNodeMap = NamedNodeMap;
+  var namedNodeMaps = new WeakMap();
+  function namedNodeMapFor(el) {
+    var existing = namedNodeMaps.get(el);
+    if (existing) return existing;
+    var target = Object.create(NamedNodeMap.prototype);
+    target.__el = el;
+    var proxy = new Proxy(target, {
+      get: function(t, prop) {
+        if (typeof prop === 'string' && /^[0-9]+$/.test(prop)) return t.item(Number(prop));
+        if (typeof prop === 'string' && !(prop in t)) return t.getNamedItem(prop) || undefined;
+        return t[prop];
+      },
+      has: function(t, prop) {
+        if (typeof prop === 'string' && /^[0-9]+$/.test(prop)) return Number(prop) < t.length;
+        return (prop in t) || (typeof prop === 'string' && !!t.getNamedItem(prop));
+      }
+    });
+    namedNodeMaps.set(el, proxy);
+    return proxy;
+  }
+  Object.defineProperty(Element.prototype, 'attributes', {
+    configurable: true, get: function() { return namedNodeMapFor(this); }
+  });
+  Element.prototype.getAttributeNode = function(qname) {
+    qname = String(qname);
+    if (this.namespaceURI === 'http://www.w3.org/1999/xhtml') qname = qname.toLowerCase();
+    var recs = attributeRecords(this);
+    for (var i = 0; i < recs.length; i++) {
+      if (recs[i].qname === qname) return attrFor(this, recs[i].ns, recs[i].prefix, recs[i].local);
+    }
+    return null;
+  };
+  Element.prototype.getAttributeNodeNS = function(ns, local) {
+    ns = nsArg(ns); local = String(local);
+    var recs = attributeRecords(this);
+    for (var i = 0; i < recs.length; i++) {
+      if ((recs[i].ns || '') === ns && recs[i].local === local) {
+        return attrFor(this, recs[i].ns, recs[i].prefix, recs[i].local);
+      }
+    }
+    return null;
+  };
+  function setAttrNode(el, attr) {
+    if (!attr || attr.nodeType !== 2) throw new TypeError('not an Attr');
+    if (attr.__owner && attr.__owner !== el) {
+      throw new DOMException("The attribute is in use by another element.", "InUseAttributeError");
+    }
+    var old = el.getAttributeNodeNS(attr.__ns, attr.__local);
+    attr.__owner = el;
+    el.setAttributeNS(attr.__ns, attr.name, attr.__value);
+    var byKey = attrViews.get(el);
+    if (!byKey) { byKey = Object.create(null); attrViews.set(el, byKey); }
+    byKey[attrKey(attr.__ns, attr.__local)] = attr;
+    return (old && old !== attr) ? old : null;
+  }
+  Element.prototype.setAttributeNode = function(attr) { return setAttrNode(this, attr); };
+  Element.prototype.setAttributeNodeNS = function(attr) { return setAttrNode(this, attr); };
+  Element.prototype.removeAttributeNode = function(attr) {
+    if (!attr || attr.__owner !== this) {
+      throw new DOMException("The attribute is not on this element.", "NotFoundError");
+    }
+    attr.__value = attr.value;
+    this.removeAttributeNS(attr.__ns, attr.__local);
+    attr.__owner = null;
+    var byKey = attrViews.get(this);
+    if (byKey) delete byKey[attrKey(attr.__ns, attr.__local)];
+    return attr;
+  };
+
+  installMixin(Element.prototype, childNodeMixin);
+  installMixin(CharacterData.prototype, childNodeMixin);
+  installMixin(DocumentType.prototype, childNodeMixin);
+  installMixin(Element.prototype, parentNodeMixin);
+  installMixin(DocumentFragment.prototype, parentNodeMixin);
 
   function customElementKey(tag, isValue) {
     return String(tag).toUpperCase() + '\n' + String(isValue);
@@ -1756,7 +2189,16 @@
   }
 
   // Document : Node, with the construction/lookup methods.
-  function Document() {}
+  // `new Document()` mints an XML document (DOM: the constructor's document is
+  // "XML", which is what makes `createCDATASection` legal on it).
+  function Document() {
+    if (!(this instanceof Document)) {
+      throw new TypeError("Constructor Document requires 'new'");
+    }
+    var doc = wrapNode(__createDocument());
+    doc.__isHtml = false;
+    return doc;
+  }
   Document.prototype = Object.create(Node.prototype);
   Object.defineProperty(Document.prototype, 'styleSheets', {
     configurable: true, get: function() { return documentStyleSheets; }
@@ -1812,6 +2254,33 @@
     var node = wrapNode(__createProcessingInstruction(target, data));
     ownerDocuments.set(node, this);
     return node;
+  };
+  // XML only: the DOM throws NotSupportedError for an HTML document, and
+  // InvalidCharacterError when the data would close the section.
+  Document.prototype.createCDATASection = function(data) {
+    if (this.__isHtml !== false) {
+      throw new DOMException("createCDATASection is not available on an HTML document.", "NotSupportedError");
+    }
+    data = String(data);
+    if (data.indexOf(']]>') >= 0) {
+      throw new DOMException("data contains ']]>'", "InvalidCharacterError");
+    }
+    var node = wrapNode(__createCDATASection(data));
+    ownerDocuments.set(node, this);
+    return node;
+  };
+  Document.prototype.createAttribute = function(local) {
+    local = String(local); validateName(local);
+    if (this.__isHtml !== false) local = local.toLowerCase();
+    return makeAttr(null, null, null, local, this);
+  };
+  Document.prototype.createAttributeNS = function(ns, qname) {
+    ns = (ns === null || ns === undefined) ? null : String(ns);
+    qname = String(qname); validateNS(ns, qname);
+    var cut = qname.indexOf(':');
+    var prefix = cut === -1 ? null : qname.slice(0, cut);
+    var local = cut === -1 ? qname : qname.slice(cut + 1);
+    return makeAttr(null, ns, prefix, local, this);
   };
   Document.prototype.createDocumentFragment = function() {
     var node = wrapNode(__createFragment());
@@ -1976,10 +2445,15 @@
     }
     return new XPathResult(actual, parsed);
   };
+  // Document takes the ParentNode mixin here, once its prototype exists.
+  installMixin(Document.prototype, parentNodeMixin);
   // DocumentFragment is a query scope too (ParentNode mixin).
   DocumentFragment.prototype.querySelector = querySelector;
   DocumentFragment.prototype.querySelectorAll = querySelectorAll;
   DocumentFragment.prototype.getElementById = function(id) { return wrapNode(__getElementById(this.__ref, String(id))); };
+  Object.defineProperty(Document.prototype, 'doctype', {
+    configurable: true, get: function() { return wrapNode(__documentDoctype(this.__ref)); }
+  });
   Object.defineProperty(Document.prototype, 'documentElement', {
     configurable: true, get: function() { return wrapNode(__documentElement(this.__ref)); }
   });
@@ -2000,10 +2474,16 @@
   Object.defineProperty(Document.prototype, 'implementation', {
     configurable: true,
     get: function() {
+      var self = this;
       return {
         hasFeature: function() { return true; },
         createDocumentType: function(name, pub, sys) {
-          var d = wrapNode(__createElement('!doctype')); d.__name = String(name); return d;
+          name = String(name);
+          validateQName(name);
+          var d = wrapNode(__createDoctype(name, pub === undefined ? '' : String(pub),
+                                           sys === undefined ? '' : String(sys)));
+          ownerDocuments.set(d, self);
+          return d;
         },
         createHTMLDocument: function(title) {
           var doc = wrapNode(__createDocument());
@@ -2015,6 +2495,8 @@
         },
         createDocument: function(ns, qname, doctype) {
           var doc = wrapNode(__createDocument());
+          doc.__isHtml = false; // an XML document: createCDATASection is allowed
+          if (doctype) doc.appendChild(doctype);
           if (qname) { doc.appendChild(doc.createElementNS(ns === null ? '' : String(ns), String(qname))); }
           return doc;
         }
@@ -2629,6 +3111,8 @@
   }
   function moSetAttribute(e, n, v) { __setAttribute(e, n, v); moAfterMutation(); }
   function moRemoveAttribute(e, n) { __removeAttribute(e, n); moAfterMutation(); }
+  function moSetAttributeNS(e, ns, q, v) { __setAttributeNS(e, ns, q, v); moAfterMutation(); }
+  function moRemoveAttributeNS(e, ns, l) { __removeAttributeNS(e, ns, l); moAfterMutation(); }
   function moSetTextContent(n, t) {
     rangeWillReplaceAll(wrapNode(n)); __setTextContent(n, t); moAfterMutation();
   }
@@ -3132,14 +3616,10 @@
     return (a && !b) || (b && !a);
   }
 
-  // Move a fragment's children into `target`. `insertBefore` / `appendChild`
-  // insert a DocumentFragment node itself in this engine, so every Range
-  // algorithm that "appends a fragment" moves its children explicitly.
+  // Appending a fragment now moves its children (the DOM's insertion steps), so
+  // the Range algorithms that "append a fragment" are one `appendChild`.
   function appendFragmentChildren(target, fragment) {
-    var kids = [];
-    var count = +__childNodesCount(fragment.__ref);
-    for (var i = 0; i < count; i++) kids.push(childAt(fragment, i));
-    for (var j = 0; j < kids.length; j++) target.appendChild(kids[j]);
+    target.appendChild(fragment);
   }
 
   function containedChildrenOf(range, common) {
@@ -3286,16 +3766,8 @@
     if (node === reference) reference = node.nextSibling;
     if (node.parentNode) node.parentNode.removeChild(node);
     var newOffset = reference === null ? nodeLengthOf(parent) : nodeIndex(reference);
-    var isFragment = node.nodeType === 11;
-    newOffset += isFragment ? nodeLengthOf(node) : 1;
-    if (isFragment) {
-      var kids = [];
-      var count = +__childNodesCount(node.__ref);
-      for (var i = 0; i < count; i++) kids.push(childAt(node, i));
-      for (var j = 0; j < kids.length; j++) parent.insertBefore(kids[j], reference);
-    } else {
-      parent.insertBefore(node, reference);
-    }
+    newOffset += node.nodeType === 11 ? nodeLengthOf(node) : 1;
+    parent.insertBefore(node, reference);
     if (this.__sc === this.__ec && this.__so === this.__eo) {
       setEndBP(this, parent, newOffset);
     }
@@ -4644,4 +5116,88 @@
       defineHandler(globalThis, all[k], null);
     }
   })();
+
+  // -- DOMParser / XMLSerializer ---------------------------------------------
+  //
+  // `parseFromString` builds a whole new Document in the same arena through the
+  // static tier's parsers: html5ever for `text/html`, xml5ever for the four XML
+  // types. A failed XML parse yields the spec's `parsererror` document rather
+  // than throwing, which is what callers (and `responseXML`) branch on.
+  var XML_TYPES = {
+    'text/xml': 1, 'application/xml': 1,
+    'application/xhtml+xml': 1, 'image/svg+xml': 1
+  };
+  function DOMParser() {
+    if (!(this instanceof DOMParser)) return new DOMParser();
+  }
+  DOMParser.prototype.parseFromString = function(source, type) {
+    type = String(type);
+    var isHtml = type === 'text/html';
+    if (!isHtml && !XML_TYPES[type]) {
+      throw new TypeError("DOMParser.parseFromString: unsupported type '" + type + "'");
+    }
+    var ref = __parseDocument(String(source), isHtml ? 'html' : 'xml');
+    if (ref === undefined || ref === null) {
+      // Parse failure (XML only; the HTML parser never fails).
+      var bad = wrapNode(__createDocument());
+      bad.__isHtml = false;
+      var err = bad.createElementNS('http://www.mozilla.org/newlayout/xml/parseerror.xml', 'parsererror');
+      err.textContent = 'XML parse error';
+      bad.appendChild(err);
+      return bad;
+    }
+    var doc = wrapNode(ref);
+    doc.__isHtml = isHtml;
+    return doc;
+  };
+  globalThis.DOMParser = DOMParser;
+
+  function XMLSerializer() {
+    if (!(this instanceof XMLSerializer)) return new XMLSerializer();
+  }
+  function xmlEscape(text, inAttribute) {
+    var out = String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return inAttribute ? out.replace(/"/g, '&quot;') : out;
+  }
+  // XML serialization (DOM Parsing "fragment serializing algorithm"), without
+  // namespace-prefix invention: an element is emitted under the prefix it
+  // already carries, plus the `xmlns` declaration its namespace needs when the
+  // parent did not already supply it.
+  function serializeXml(node, parentNs) {
+    switch (node.nodeType) {
+      case 1: {
+        var ns = node.namespaceURI;
+        var name = node.prefix ? node.prefix + ':' + node.localName : node.localName;
+        var out = '<' + name;
+        if (ns && ns !== parentNs && !node.prefix) out += ' xmlns="' + xmlEscape(ns, true) + '"';
+        var attrs = node.attributes;
+        for (var i = 0; i < attrs.length; i++) {
+          var a = attrs.item(i);
+          out += ' ' + a.name + '="' + xmlEscape(a.value, true) + '"';
+        }
+        var kids = rawChildNodes(node);
+        if (!kids.length) return out + '/>';
+        out += '>';
+        for (var k = 0; k < kids.length; k++) out += serializeXml(kids[k], ns);
+        return out + '</' + name + '>';
+      }
+      case 3: return xmlEscape(node.data, false);
+      case 4: return '<![CDATA[' + node.data + ']]>';
+      case 7: return '<?' + node.target + ' ' + node.data + '?>';
+      case 8: return '<!--' + node.data + '-->';
+      case 10: return '<!DOCTYPE ' + node.name + '>';
+      case 9: case 11: {
+        var body = '';
+        var children = rawChildNodes(node);
+        for (var j = 0; j < children.length; j++) body += serializeXml(children[j], null);
+        return body;
+      }
+      default: return '';
+    }
+  }
+  XMLSerializer.prototype.serializeToString = function(node) {
+    if (!node) throw new TypeError('XMLSerializer.serializeToString: not a Node');
+    return serializeXml(node, null);
+  };
+  globalThis.XMLSerializer = XMLSerializer;
 })();

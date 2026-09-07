@@ -1724,8 +1724,8 @@
       "subtests_total": 11
     },
     "dom/nodes/Node-baseURI.html": {
-      "status": "fail",
-      "subtests_passed": 4,
+      "status": "pass",
+      "subtests_passed": 9,
       "subtests_total": 9
     },
     "dom/nodes/Node-childNodes-cache-2.html": {

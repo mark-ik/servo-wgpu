@@ -21,7 +21,8 @@
 use engine_observables_api::{DomArenaStats, DomNodeKindStats};
 use genet_static_dom::{StaticDocument, StaticNodeId};
 use layout_dom_api::{
-    AttributeView, DomMutation, LayoutDom, LayoutDomMut, LocalName, Namespace, NodeKind, QualName,
+    AttributeView, DoctypeView, DomMutation, LayoutDom, LayoutDomMut, LocalName, Namespace,
+    NodeKind, QualName,
 };
 
 mod forms;
@@ -533,7 +534,13 @@ impl ScriptedDom {
     /// child for the empty string), so every layout consumer observes the same
     /// tree as script.
     pub fn set_text_content(&mut self, node: NodeId, data: &str) {
-        if matches!(self.node(node).kind, NodeKind::Text | NodeKind::Comment) {
+        if matches!(
+            self.node(node).kind,
+            NodeKind::Text
+                | NodeKind::Comment
+                | NodeKind::CdataSection
+                | NodeKind::ProcessingInstruction
+        ) {
             let old = self.node(node).text.clone();
             self.node_mut(node).text = Some(data.to_owned());
             self.mutations
@@ -595,6 +602,70 @@ impl ScriptedDom {
         self.push(Node::new(NodeKind::DocumentFragment))
     }
 
+    /// Create a detached `CDATASection` node carrying `data`. Only XML documents
+    /// may hold one; the caller enforces that.
+    pub fn create_cdata_section(&mut self, data: &str) -> NodeId {
+        let mut node = Node::new(NodeKind::CdataSection);
+        node.text = Some(data.to_owned());
+        self.push(node)
+    }
+
+    /// Create a detached `DocumentType` node. The name lives in `text` (which is
+    /// what the html5ever serializer already reads for a doctype) and the two
+    /// external identifiers ride in `attrs` under the reserved names below, so no
+    /// per-node storage is added for a node kind a document has at most one of.
+    pub fn create_doctype(&mut self, name: &str, public_id: &str, system_id: &str) -> NodeId {
+        let mut node = Node::new(NodeKind::Doctype);
+        node.text = Some(name.to_owned());
+        node.attrs.push((
+            QualName::new(
+                None,
+                Namespace::from(""),
+                LocalName::from(DOCTYPE_PUBLIC_ID),
+            ),
+            public_id.to_owned(),
+        ));
+        node.attrs.push((
+            QualName::new(
+                None,
+                Namespace::from(""),
+                LocalName::from(DOCTYPE_SYSTEM_ID),
+            ),
+            system_id.to_owned(),
+        ));
+        self.push(node)
+    }
+
+    /// The stored `QualName` of the attribute on `id` whose **qualified** name is
+    /// `qname` — what `getAttribute` / `removeAttribute` match on, as opposed to
+    /// the namespace + local pair `LayoutDom::attribute` takes.
+    pub fn attribute_qual_name(&self, id: NodeId, qname: &str) -> Option<QualName> {
+        self.node(id)
+            .attrs
+            .iter()
+            .find(|(name, _)| qualified_name(name) == qname)
+            .map(|(name, _)| name.clone())
+    }
+
+    /// Every attribute on `id` as (namespace, prefix, local name), in insertion
+    /// order — the shape a `NamedNodeMap` enumerates.
+    pub fn attribute_names(&self, id: NodeId) -> Vec<(String, String, String)> {
+        self.node(id)
+            .attrs
+            .iter()
+            .map(|(name, _)| {
+                (
+                    name.ns.as_ref().to_string(),
+                    name.prefix
+                        .as_ref()
+                        .map(|p| p.as_ref().to_string())
+                        .unwrap_or_default(),
+                    name.local.as_ref().to_string(),
+                )
+            })
+            .collect()
+    }
+
     /// Rebuild a fresh document from serialized document children (the same
     /// shape `inner_html(document())` emits for capture).
     pub fn from_serialized_document(html: &str) -> Self {
@@ -628,7 +699,7 @@ impl ScriptedDom {
                 .filter(|&child| {
                     !fragment
                         .element_name(child)
-                        .is_some_and(|q| q.local == LocalName::from("html"))
+                        .is_some_and(|q| q.local.as_ref() == "html")
                 })
                 .collect();
         }
@@ -773,7 +844,9 @@ impl ScriptedDom {
                 NodeKind::DocumentFragment => node_kinds.document_fragments += 1,
                 NodeKind::Doctype => node_kinds.doctypes += 1,
                 NodeKind::Element => node_kinds.elements += 1,
-                NodeKind::Text => node_kinds.text += 1,
+                // A `CDATASection` is a `Text` in the DOM's own hierarchy, and
+                // the observable stats have no separate counter for it.
+                NodeKind::Text | NodeKind::CdataSection => node_kinds.text += 1,
                 NodeKind::Comment => node_kinds.comments += 1,
                 NodeKind::ProcessingInstruction => node_kinds.processing_instructions += 1,
             }
@@ -831,10 +904,21 @@ impl ScriptedDom {
                 }
                 self.push(node)
             },
-            kind @ (NodeKind::Text | NodeKind::Comment) => {
+            kind @ (NodeKind::Text | NodeKind::Comment | NodeKind::CdataSection) => {
                 let mut node = Node::new(kind);
                 node.text = src.text(sid).map(str::to_owned);
                 self.push(node)
+            },
+            NodeKind::ProcessingInstruction => {
+                let target = src
+                    .element_name(sid)
+                    .map(|q| q.local.as_ref().to_string())
+                    .unwrap_or_default();
+                self.create_processing_instruction(&target, src.text(sid).unwrap_or(""))
+            },
+            NodeKind::Doctype => match src.doctype_data(sid) {
+                Some(d) => self.create_doctype(d.name, d.public_id, d.system_id),
+                None => self.create_doctype("html", "", ""),
             },
             other => self.push(Node::new(other)),
         };
@@ -851,8 +935,22 @@ impl ScriptedDom {
         let html = doc.document_element()?;
         doc.dom_children(html).find(|&c| {
             doc.element_name(c)
-                .is_some_and(|q| q.local == LocalName::from("body"))
+                .is_some_and(|q| q.local.as_ref() == "body")
         })
+    }
+}
+
+/// Reserved `attrs` keys carrying a doctype's external identifiers (see
+/// [`ScriptedDom::create_doctype`]). Not attribute names any element can hold:
+/// a doctype is not an element and never reaches the cascade.
+const DOCTYPE_PUBLIC_ID: &str = "__publicId";
+const DOCTYPE_SYSTEM_ID: &str = "__systemId";
+
+/// An attribute's qualified name (`prefix:local`, or just `local`).
+pub fn qualified_name(name: &QualName) -> String {
+    match name.prefix.as_ref() {
+        Some(p) => format!("{}:{}", p.as_ref(), name.local.as_ref()),
+        None => name.local.as_ref().to_string(),
     }
 }
 
@@ -933,6 +1031,24 @@ impl LayoutDom for ScriptedDom {
 
     fn text(&self, id: NodeId) -> Option<&str> {
         self.node(id).text.as_deref()
+    }
+
+    fn doctype_data(&self, id: NodeId) -> Option<DoctypeView<'_>> {
+        let node = self.node(id);
+        if node.kind != NodeKind::Doctype {
+            return None;
+        }
+        let field = |want: &str| {
+            node.attrs
+                .iter()
+                .find(|(name, _)| name.local.as_ref() == want)
+                .map_or("", |(_, value)| value.as_str())
+        };
+        Some(DoctypeView {
+            name: node.text.as_deref().unwrap_or(""),
+            public_id: field(DOCTYPE_PUBLIC_ID),
+            system_id: field(DOCTYPE_SYSTEM_ID),
+        })
     }
 }
 

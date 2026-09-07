@@ -141,6 +141,15 @@ pub trait LayoutDom {
     /// Text content for text or comment nodes, else `None`.
     fn text(&self, id: Self::NodeId) -> Option<&str>;
 
+    /// The three doctype strings when `id` is a [`NodeKind::Doctype`], else
+    /// `None`. Split out from [`Self::text`] because a doctype carries three
+    /// values, and a generic tree copier (`script-runtime-api`'s `clone_into`)
+    /// needs all three to rebuild the node. Defaults to `None` for backends
+    /// that never produce a doctype.
+    fn doctype_data(&self, _id: Self::NodeId) -> Option<DoctypeView<'_>> {
+        None
+    }
+
     // ---- traversal -------------------------------------------------------
 
     /// Walk the whole document from `document()`, descending via
@@ -462,11 +471,23 @@ pub enum NodeKind {
     Doctype,
     Element,
     Text,
+    /// A `CDATASection` (nodeType 4): character data that is a `Text` subtype in
+    /// the DOM, so consumers that treat text as text should treat it the same.
+    /// Only XML documents hold one; the HTML parser never produces one.
+    CdataSection,
     Comment,
     ProcessingInstruction,
     /// A `DocumentFragment` (nodeType 11): a parentless container, used as the
     /// scripted-DOM holder for `createDocumentFragment` and fragment parsing.
     DocumentFragment,
+}
+
+/// Borrowed view of a doctype node's three strings.
+#[derive(Clone, Copy, Debug)]
+pub struct DoctypeView<'a> {
+    pub name: &'a str,
+    pub public_id: &'a str,
+    pub system_id: &'a str,
 }
 
 /// Borrowed view of one attribute on an element.
