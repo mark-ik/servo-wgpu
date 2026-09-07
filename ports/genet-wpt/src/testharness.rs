@@ -220,24 +220,30 @@ fn run_one(test: &TestCase, args: &Args, ctx: &mut RunCtx<'_>) -> OneOutcome {
             let (ev_tx, ev_rx) = std::sync::mpsc::channel::<net::FetchEvent>();
             let doc_url = s.doc_url(test.name());
             let loader = s.loader(&doc_url);
-            let handler = net::NetFetchHandler::new(ev_tx);
+            let handler = net::NetFetchHandler::new(ev_tx.clone());
+            // The `WebSocket` seam rides the same per-test channel: `wpt serve`
+            // hosts ws/wss endpoints, so server mode is where a socket can
+            // actually connect.
+            let sockets = net::NetWebSocketHandler::new(ev_tx);
             let completion = net::ChannelCompletion::new(ev_rx);
             if let Some(template) = ctx.nova_template.as_mut() {
-                return template.run_test_with_style(
+                return template.run_test_with_style_and_ws(
                     &html,
                     &loader,
                     Some(&doc_url),
                     Some(Box::new(handler)),
+                    Some(Box::new(sockets)),
                     Some(&completion),
                     args.renderer.harness_style(),
                 );
             }
-            return harness::run_test_with_style(
+            return harness::run_test_with_style_and_ws(
                 testharness_js,
                 &html,
                 &loader,
                 Some(&doc_url),
                 Some(Box::new(handler)),
+                Some(Box::new(sockets)),
                 Some(&completion),
                 args.engine,
                 args.renderer.harness_style(),

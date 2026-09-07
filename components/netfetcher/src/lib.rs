@@ -83,4 +83,7 @@ pub use response::{BodyStream, Response, ResponseBody, ResponseType};
 pub use transport::hyper::{DefaultTransport, accept_invalid_certs};
 pub use transport::{NoTransport, RawResponse, Transport, TransportFuture, WireRequest};
 #[cfg(all(feature = "websocket", not(target_arch = "wasm32")))]
-pub use websocket::{WebSocket, WsMessage, connect as connect_websocket};
+pub use websocket::{
+    WebSocket, WsClose, WsError, WsIncoming, WsMessage, WsRequest, connect as connect_websocket,
+    is_blocked_port, validate_ws_url,
+};

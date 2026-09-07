@@ -49,6 +49,7 @@ mod selector;
 mod structured_clone;
 mod timing;
 mod webgl;
+mod websocket;
 mod worker;
 
 pub use crypto::RandomSource;
@@ -61,6 +62,7 @@ pub use fetch::{FetchHandler, FetchOutcome, FetchRequest};
 pub use harness::TestResult;
 pub use platform::StorageProvider;
 pub use webgl::{WebGlFactory, WebGlHandler};
+pub use websocket::{WebSocketHandler, WebSocketRequest};
 pub use worker::ScriptResourceLoader;
 
 /// State the runtime's native callbacks share, stored as the engine's single
@@ -113,6 +115,12 @@ pub struct HostState {
     /// before calling it (the handler must not run with a live borrow). No `Send`
     /// bound, so this crate links no network stack and stays `!Send`.
     pub fetch: Option<std::rc::Rc<dyn FetchHandler>>,
+    /// The host's network seam for `WebSocket`. `None` = no network, so every
+    /// connection fails as the spec's `error` then `close` pair. Installed by
+    /// [`Runtime::set_websocket_handler`]; an `Rc` for the same reason
+    /// [`fetch`](Self::fetch) is one — the native sink clones it out from under
+    /// the `HostState` borrow before calling it.
+    pub websocket: Option<std::rc::Rc<dyn WebSocketHandler>>,
     /// The host's computed-style seam for `getComputedStyle` (e.g. pelt's
     /// `ScriptedDocument` over `IncrementalLayout`). `None` = no layout bound, so
     /// `getComputedStyle(...).<prop>` yields "". Installed by
@@ -1234,6 +1242,12 @@ const EVENT_LOOP_BOOTSTRAP: &str = r#"
     };
   }
   if (typeof globalThis.unescape !== 'function') {
+
+    // `WebSocket` + `CloseEvent` over their own host seam. After the fetch
+    // surface, which installs the `__resolve_url` / `__url_parse` / `__url_with`
+    // sinks the constructor validates its URL on, and the `Blob` a binary
+    // message is delivered as.
+    websocket::install_websocket_surface(engine)?;
     globalThis.unescape = function(s) {
       s = String(s); var out = '';
       for (var i = 0; i < s.length; i++) {

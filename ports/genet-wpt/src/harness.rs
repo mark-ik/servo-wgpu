@@ -35,7 +35,7 @@ use livery::media::{Device as MediaDevice, MediaQueryList};
 use script_engine_api::ScriptEngine;
 use script_runtime_api::{
     FetchHandler, FetchOutcome, MediaQueryHandler, Runtime, ScriptResourceLoader, TestResult,
-    WebGlFactory,
+    WebGlFactory, WebSocketHandler,
 };
 
 /// `matchMedia` seam for the WPT runner: evaluates against a default device.
@@ -69,6 +69,16 @@ pub enum FetchCompletion {
     Close(u64),
     Error(u64),
     Fail(u64, String),
+    /// WebSocket completions ride the same channel and the same drive loop: a
+    /// connection opens, carries frames, and ends, all out of band. Routed by the
+    /// JS socket id, which is a separate id space from the fetch ids — the
+    /// variant, not the number, says which registry the runtime looks in.
+    WsOpen(u64, String, String),
+    WsText(u64, String),
+    WsBinary(u64, Vec<u8>),
+    WsFlushed(u64, u64),
+    WsError(u64),
+    WsClose(u64, u16, String, bool),
 }
 
 /// A source of deferred fetch completions (the netfetch worker's channel). The
@@ -369,6 +379,36 @@ pub fn run_test_with_style(
         loader,
         base_url,
         handler,
+        None,
+        completion,
+        None,
+        engine,
+        style,
+    )
+}
+
+/// [`run_test_with_style`] plus the host's `WebSocket` seam. Only the server-mode
+/// runner passes one: with no handler every connection fails, which is the right
+/// answer for a runner with no network.
+#[allow(clippy::too_many_arguments)]
+pub fn run_test_with_style_and_ws(
+    testharness_js: &str,
+    html: &str,
+    loader: &dyn ScriptSrcLoader,
+    base_url: Option<&str>,
+    handler: Option<Box<dyn FetchHandler>>,
+    websocket: Option<Box<dyn WebSocketHandler>>,
+    completion: Option<&dyn CompletionSource>,
+    engine: Engine,
+    style: StyleRoute,
+) -> HarnessOutcome {
+    run_test_with_webgl_and_style(
+        testharness_js,
+        html,
+        loader,
+        base_url,
+        handler,
+        websocket,
         completion,
         None,
         engine,
@@ -401,6 +441,7 @@ pub fn run_test_with_webgl(
         loader,
         base_url,
         handler,
+        None,
         completion,
         webgl,
         engine,
@@ -415,6 +456,7 @@ fn run_test_with_webgl_and_style(
     loader: &dyn ScriptSrcLoader,
     base_url: Option<&str>,
     handler: Option<Box<dyn FetchHandler>>,
+    websocket: Option<Box<dyn WebSocketHandler>>,
     completion: Option<&dyn CompletionSource>,
     webgl: Option<WebGlFactory>,
     engine: Engine,
@@ -434,6 +476,7 @@ fn run_test_with_webgl_and_style(
             &doc,
             base_url,
             handler,
+            websocket,
             completion,
             webgl,
             style,
@@ -445,6 +488,7 @@ fn run_test_with_webgl_and_style(
             &doc,
             base_url,
             handler,
+            websocket,
             completion,
             webgl,
             style,
@@ -487,6 +531,7 @@ impl NovaHarnessTemplate {
             loader,
             base_url,
             handler,
+            None,
             completion,
             webgl,
             StyleRoute::Livery,
@@ -500,6 +545,7 @@ impl NovaHarnessTemplate {
         loader: &dyn ScriptSrcLoader,
         base_url: Option<&str>,
         handler: Option<Box<dyn FetchHandler>>,
+        websocket: Option<Box<dyn WebSocketHandler>>,
         completion: Option<&dyn CompletionSource>,
         webgl: Option<WebGlFactory>,
         style: StyleRoute,
@@ -517,6 +563,7 @@ impl NovaHarnessTemplate {
             &doc,
             base_url,
             handler,
+            websocket,
             webgl,
             loader.resource_route(),
         );
@@ -543,7 +590,26 @@ impl NovaHarnessTemplate {
         completion: Option<&dyn CompletionSource>,
         style: StyleRoute,
     ) -> HarnessOutcome {
-        self.run_test_with_webgl_and_style(html, loader, base_url, handler, completion, None, style)
+        self.run_test_with_webgl_and_style(
+            html, loader, base_url, handler, None, completion, None, style,
+        )
+    }
+
+    /// [`Self::run_test_with_style`] plus the host's `WebSocket` seam.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_test_with_style_and_ws(
+        &mut self,
+        html: &str,
+        loader: &dyn ScriptSrcLoader,
+        base_url: Option<&str>,
+        handler: Option<Box<dyn FetchHandler>>,
+        websocket: Option<Box<dyn WebSocketHandler>>,
+        completion: Option<&dyn CompletionSource>,
+        style: StyleRoute,
+    ) -> HarnessOutcome {
+        self.run_test_with_webgl_and_style(
+            html, loader, base_url, handler, websocket, completion, None, style,
+        )
     }
 }
 
@@ -560,6 +626,7 @@ fn run_with<E: ScriptEngine>(
     doc: &StaticDocument,
     base_url: Option<&str>,
     handler: Option<Box<dyn FetchHandler>>,
+    websocket: Option<Box<dyn WebSocketHandler>>,
     completion: Option<&dyn CompletionSource>,
     webgl: Option<WebGlFactory>,
     style: StyleRoute,
@@ -569,7 +636,7 @@ fn run_with<E: ScriptEngine>(
         Ok(rt) => rt,
         Err(e) => return HarnessOutcome::Threw(format!("runtime init: {e:?}")),
     };
-    prepare_runtime(&mut rt, doc, base_url, handler, webgl, route);
+    prepare_runtime(&mut rt, doc, base_url, handler, websocket, webgl, route);
     if let Err(e) = rt.load_testharness(testharness_js) {
         return HarnessOutcome::Threw(format!("testharness load: {e:?}"));
     }
@@ -582,6 +649,7 @@ fn prepare_runtime<E: ScriptEngine>(
     doc: &StaticDocument,
     base_url: Option<&str>,
     handler: Option<Box<dyn FetchHandler>>,
+    websocket: Option<Box<dyn WebSocketHandler>>,
     webgl: Option<WebGlFactory>,
     route: Option<Box<dyn ScriptResourceLoader>>,
 ) {
@@ -593,6 +661,11 @@ fn prepare_runtime<E: ScriptEngine>(
     }
     if let Some(h) = handler {
         rt.set_fetch_handler(h);
+    }
+    // The `WebSocket` seam, installed the same way and only in server mode: with
+    // no handler every connection fails, which is what disk mode should see.
+    if let Some(h) = websocket {
+        rt.set_websocket_handler(h);
     }
     // Dedicated workers pull their classic script and `importScripts` targets
     // through the page's own route.
@@ -952,6 +1025,9 @@ fn drive_wall<E: ScriptEngine>(
     loop {
         if elapsed_ms(start) >= deadline.as_millis() as f64 {
             rt.fail_all_pending("test timed out");
+            // A socket the peer never answered on fails the same way an
+            // unsettled fetch does, rather than hanging the runner.
+            rt.fail_all_websockets();
             break;
         }
         rt.run_microtasks();
@@ -961,6 +1037,12 @@ fn drive_wall<E: ScriptEngine>(
             FetchCompletion::Close(id) => rt.close_stream(id),
             FetchCompletion::Error(id) => rt.error_stream(id),
             FetchCompletion::Fail(id, m) => rt.fail_fetch(id, &m),
+            FetchCompletion::WsOpen(id, p, e) => rt.ws_open(id, &p, &e),
+            FetchCompletion::WsText(id, t) => rt.ws_message_text(id, &t),
+            FetchCompletion::WsBinary(id, b) => rt.ws_message_binary(id, &b),
+            FetchCompletion::WsFlushed(id, n) => rt.ws_flushed(id, n),
+            FetchCompletion::WsError(id) => rt.ws_error(id),
+            FetchCompletion::WsClose(id, c, r, clean) => rt.ws_close(id, c, &r, clean),
         });
         let clock = elapsed_ms(start) + skipped_ms;
         let fired = rt.run_timers(TIMER_BUDGET, clock);
@@ -973,7 +1055,10 @@ fn drive_wall<E: ScriptEngine>(
         let workers_live = rt.has_worker_work();
         let has_raf = rt.has_animation_frame_callbacks();
         let animating = render.animating();
-        let pending = rt.pending_fetches();
+        // A live WebSocket is outstanding network work exactly as an in-flight
+        // fetch is: the peer can still speak, and the page cannot see it until
+        // the loop applies the completion.
+        let pending = rt.pending_fetches() + rt.pending_websockets();
         let next_timer = rt.next_timer_delay();
         if pending == 0
             && next_timer.is_none()
@@ -1025,6 +1110,12 @@ fn drive_wall<E: ScriptEngine>(
                         FetchCompletion::Error(id) => rt.error_stream(id),
                         FetchCompletion::Close(id) => rt.close_stream(id),
                         FetchCompletion::Fail(id, m) => rt.fail_fetch(id, &m),
+                        FetchCompletion::WsOpen(id, p, e) => rt.ws_open(id, &p, &e),
+                        FetchCompletion::WsText(id, t) => rt.ws_message_text(id, &t),
+                        FetchCompletion::WsBinary(id, b) => rt.ws_message_binary(id, &b),
+                        FetchCompletion::WsFlushed(id, n) => rt.ws_flushed(id, n),
+                        FetchCompletion::WsError(id) => rt.ws_error(id),
+                        FetchCompletion::WsClose(id, c, r, clean) => rt.ws_close(id, c, &r, clean),
                     },
                 );
             } else if wait_ms > 0.0 {
@@ -1094,7 +1185,14 @@ fn looks_like_xml(html: &str) -> bool {
     if head.starts_with("<?xml") {
         return true;
     }
-    let head = &head[..head.len().min(512)];
+    // Back off to a char boundary: a 512-byte cut can land inside a multi-byte
+    // character, which panicked three `websockets/constructor/016.html` variants
+    // (their markup carries a U+FFFD around that offset).
+    let mut end = head.len().min(512);
+    while end > 0 && !head.is_char_boundary(end) {
+        end -= 1;
+    }
+    let head = &head[..end];
     head.starts_with("<svg") && head.contains("xmlns:")
 }
 
@@ -1215,6 +1313,21 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `looks_like_xml` cuts its probe at 512 *bytes*, which can land inside a
+    /// multi-byte character. Three `websockets/constructor/016.html` variants
+    /// panicked the runner that way before the boundary back-off.
+    #[test]
+    fn the_xml_probe_survives_a_multibyte_char_at_the_cut() {
+        let mut html = "x".repeat(511);
+        html.push('\u{fffd}'); // three bytes straddling byte 512
+        html.push_str("<svg xmlns:h=\"y\">");
+        assert!(!looks_like_xml(&html));
+        // A real XML document is still recognised.
+        assert!(looks_like_xml(
+            "<svg xmlns:h=\"http://www.w3.org/1999/xhtml\"></svg>"
+        ));
+    }
 
     /// The harness filter takes file names, not suffixes. WPT support scripts
     /// whose name ends in `-testharness.js` (the SVG animation helpers, 163

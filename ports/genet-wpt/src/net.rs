@@ -9,7 +9,9 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
 
-use script_runtime_api::{FetchHandler, FetchOutcome, FetchRequest};
+use script_runtime_api::{
+    FetchHandler, FetchOutcome, FetchRequest, WebSocketHandler, WebSocketRequest,
+};
 
 use crate::harness::ScriptSrcLoader;
 
@@ -46,6 +48,10 @@ fn worker_loop(rx: std::sync::mpsc::Receiver<Job>) {
         // the reply events already use).
         let mut pulls: std::collections::HashMap<u64, tokio::sync::mpsc::UnboundedSender<()>> =
             std::collections::HashMap::new();
+        // Live WebSocket connections, keyed by the JS socket id: the channel a
+        // send / close command travels down to the task that owns the socket.
+        let mut sockets: std::collections::HashMap<u64, tokio::sync::mpsc::UnboundedSender<WsCmd>> =
+            std::collections::HashMap::new();
         let mut rx = Some(rx);
         loop {
             // Await the next job on the blocking pool, so the runtime thread stays
@@ -77,6 +83,20 @@ fn worker_loop(rx: std::sync::mpsc::Receiver<Job>) {
                     if let Some(tx) = pulls.get(&id) {
                         if tx.send(()).is_err() {
                             pulls.remove(&id);
+                        }
+                    }
+                },
+                Ok(Job::WsConnect(id, req, reply)) => {
+                    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsCmd>();
+                    sockets.insert(id, tx);
+                    tokio::spawn(run_websocket(id, req, reply, rx));
+                },
+                Ok(Job::WsCommand(id, cmd)) => {
+                    // A dead receiver means the socket task has finished, so the
+                    // entry is stale; the runtime already has its close event.
+                    if let Some(tx) = sockets.get(&id) {
+                        if tx.send(cmd).is_err() {
+                            sockets.remove(&id);
                         }
                     }
                 },
@@ -377,6 +397,125 @@ async fn run_fetch_streaming(
     }
 }
 
+/// Run one WebSocket connection on the worker runtime, reporting every stage to
+/// the test's channel: `WsOpen` once the handshake succeeds (carrying the
+/// selected subprotocol and negotiated extensions), `WsText` / `WsBinary` per
+/// incoming frame, `WsFlushed` once a frame this socket was asked to send has
+/// left the queue, and `WsClose` / `WsError` at the end.
+///
+/// The browser policy this path needs — scheme rules, blocked ports, HSTS,
+/// mixed-content blocking, redirect rejection, cookies and `Origin` — is
+/// netfetcher's, not this file's: `connect` enforces it against the same shared
+/// jar and `FetchContext` the fetch path uses, and every refusal arrives here as
+/// a typed `WsError` that becomes the one failure detail the spec lets script
+/// see (`error`, then `close` 1006).
+async fn run_websocket(
+    id: u64,
+    req: WebSocketRequest,
+    reply: std::sync::mpsc::Sender<FetchEvent>,
+    mut cmds: tokio::sync::mpsc::UnboundedReceiver<WsCmd>,
+) {
+    let Ok(url) = url::Url::parse(&req.url) else {
+        let _ = reply.send(FetchEvent::WsError(id));
+        return;
+    };
+    let mut request = netfetcher::WsRequest::new(url).with_protocols(req.protocols);
+    // The initiating document's origin travels as `Origin`, and its scheme is
+    // what mixed-content blocking keys on.
+    if let Some(origin) = page_origin().or_else(|| {
+        url::Url::parse(&req.origin)
+            .ok()
+            .map(|u| u.origin())
+            .filter(|o| o.is_tuple())
+    }) {
+        request.secure_context = origin.ascii_serialization().starts_with("https://");
+        request = request.with_origin(origin);
+    }
+
+    let cx = fetch_context();
+    let mut socket = match netfetcher::connect_websocket(request, &cx).await {
+        Ok(s) => s,
+        Err(e) => {
+            // The specification lets script see only "an error occurred", so the
+            // typed reason stops here.
+            let _ = e;
+            let _ = reply.send(FetchEvent::WsError(id));
+            return;
+        },
+    };
+    if reply
+        .send(FetchEvent::WsOpen(
+            id,
+            socket.protocol().to_owned(),
+            socket.extensions().to_owned(),
+        ))
+        .is_err()
+    {
+        return;
+    }
+
+    loop {
+        tokio::select! {
+            cmd = cmds.recv() => match cmd {
+                Some(WsCmd::Text(text)) => {
+                    let n = text.len() as u64;
+                    if socket.send(netfetcher::WsMessage::Text(text)).await.is_err() {
+                        let _ = reply.send(FetchEvent::WsError(id));
+                        return;
+                    }
+                    if reply.send(FetchEvent::WsFlushed(id, n)).is_err() { return; }
+                },
+                Some(WsCmd::Binary(data)) => {
+                    let n = data.len() as u64;
+                    if socket.send(netfetcher::WsMessage::Binary(data)).await.is_err() {
+                        let _ = reply.send(FetchEvent::WsError(id));
+                        return;
+                    }
+                    if reply.send(FetchEvent::WsFlushed(id, n)).is_err() { return; }
+                },
+                Some(WsCmd::Close(code, reason)) => {
+                    // Start the closing handshake and keep reading: the peer's
+                    // close frame carries the code and reason the `close` event
+                    // reports, so the socket is not torn down here.
+                    if socket.close(code.map(|c| (c, reason))).await.is_err() {
+                        let _ = reply.send(FetchEvent::WsClose(
+                            id,
+                            netfetcher::WsClose::ABNORMAL,
+                            String::new(),
+                            false,
+                        ));
+                        return;
+                    }
+                },
+                // The handler dropped (the test ended): stop owning the socket.
+                None => return,
+            },
+            incoming = socket.recv() => match incoming {
+                Ok(Some(netfetcher::WsIncoming::Message(m))) => {
+                    let event = match m {
+                        netfetcher::WsMessage::Text(t) => FetchEvent::WsText(id, t),
+                        netfetcher::WsMessage::Binary(b) => FetchEvent::WsBinary(id, b),
+                        // Ping / Pong are transport bookkeeping; tungstenite
+                        // answers a ping itself and neither is script-visible.
+                        _ => continue,
+                    };
+                    if reply.send(event).is_err() { return; }
+                },
+                Ok(Some(netfetcher::WsIncoming::Close(c))) => {
+                    let _ = reply.send(FetchEvent::WsClose(id, c.code, c.reason, c.clean));
+                    return;
+                },
+                // End of stream with no closing handshake, or a transport error:
+                // both are an abnormal closure, which script sees as error+close.
+                Ok(None) | Err(_) => {
+                    let _ = reply.send(FetchEvent::WsError(id));
+                    return;
+                },
+            },
+        }
+    }
+}
+
 /// A job for the persistent worker. `Get` is a blocking resource GET (reply: the
 /// body or `None`); `Fetch` is a deferred `fetch()` (reply: a `FetchEvent` to the
 /// test's channel); `Cancel` aborts an in-flight fetch by its global key.
@@ -386,6 +525,18 @@ pub enum Job {
     /// Demand the next body chunk for a streaming fetch, by its JS id.
     Pull(u64),
     Cancel(u64),
+    /// Open a WebSocket for JS socket `id` (reply: a `FetchEvent::Ws*`).
+    WsConnect(u64, WebSocketRequest, std::sync::mpsc::Sender<FetchEvent>),
+    /// Send or close on an open WebSocket, by its JS socket id.
+    WsCommand(u64, WsCmd),
+}
+
+/// What script asked an open socket to do. Routed to the task that owns it, so
+/// the socket is never touched from two places.
+pub enum WsCmd {
+    Text(String),
+    Binary(Vec<u8>),
+    Close(Option<u16>, String),
 }
 
 /// A deferred fetch event, routed to the originating test's channel by the JS
@@ -400,6 +551,15 @@ pub enum FetchEvent {
     Close(u64),
     Error(u64),
     Fail(u64, String),
+    /// WebSocket, routed by the JS socket id. The two id spaces are separate but
+    /// never confused: the runtime routes by variant, not by id.
+    WsOpen(u64, String, String),
+    WsText(u64, String),
+    WsBinary(u64, Vec<u8>),
+    /// `n` bytes left the send queue (`bufferedAmount` drops by that much).
+    WsFlushed(u64, u64),
+    WsError(u64),
+    WsClose(u64, u16, String, bool),
 }
 
 /// The deferred host `fetch()` seam: `start` hands the request to the shared
@@ -471,7 +631,9 @@ impl FetchHandler for NetFetchHandler {
                 Ok(FetchEvent::Close(_)) => {
                     return out.unwrap_or_else(FetchOutcome::network_error);
                 },
-                Ok(FetchEvent::Error(_)) | Ok(FetchEvent::Fail(_, _)) | Err(_) => {
+                // Anything else on this private channel (an error, a failure, or
+                // a stray WebSocket event) ends the blocking read.
+                Ok(_) | Err(_) => {
                     let _ = worker_jobs().send(Job::Cancel(key));
                     return FetchOutcome::network_error();
                 },
@@ -493,6 +655,53 @@ impl Drop for NetFetchHandler {
     fn drop(&mut self) {
         for key in self.keys.borrow().values() {
             let _ = worker_jobs().send(Job::Cancel(*key));
+        }
+    }
+}
+
+/// The host `WebSocket` seam: every call hands a job to the shared worker and
+/// returns, and the reply reaches the runtime through the same per-test channel
+/// the deferred fetches use. Per-test, so a late frame from a prior test lands on
+/// a dropped channel and is discarded.
+pub struct NetWebSocketHandler {
+    reply: std::sync::mpsc::Sender<FetchEvent>,
+    live: std::cell::RefCell<Vec<u64>>,
+}
+
+impl NetWebSocketHandler {
+    pub fn new(reply: std::sync::mpsc::Sender<FetchEvent>) -> Self {
+        Self {
+            reply,
+            live: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+}
+
+impl WebSocketHandler for NetWebSocketHandler {
+    fn connect(&self, id: u64, request: WebSocketRequest) {
+        self.live.borrow_mut().push(id);
+        let _ = worker_jobs().send(Job::WsConnect(id, request, self.reply.clone()));
+    }
+    fn send_text(&self, id: u64, text: String) {
+        let _ = worker_jobs().send(Job::WsCommand(id, WsCmd::Text(text)));
+    }
+    fn send_binary(&self, id: u64, data: Vec<u8>) {
+        let _ = worker_jobs().send(Job::WsCommand(id, WsCmd::Binary(data)));
+    }
+    fn close(&self, id: u64, code: Option<u16>, reason: String) {
+        let _ = worker_jobs().send(Job::WsCommand(id, WsCmd::Close(code, reason)));
+    }
+}
+
+impl Drop for NetWebSocketHandler {
+    // The test is over: close every socket it opened, so the worker drops the
+    // connection instead of holding it (and its port) for the rest of the run.
+    fn drop(&mut self) {
+        for id in self.live.borrow().iter() {
+            let _ = worker_jobs().send(Job::WsCommand(
+                *id,
+                WsCmd::Close(Some(1001), "going away".to_owned()),
+            ));
         }
     }
 }
@@ -540,6 +749,14 @@ fn to_completion(ev: FetchEvent) -> crate::harness::FetchCompletion {
         FetchEvent::Close(id) => crate::harness::FetchCompletion::Close(id),
         FetchEvent::Error(id) => crate::harness::FetchCompletion::Error(id),
         FetchEvent::Fail(id, m) => crate::harness::FetchCompletion::Fail(id, m),
+        FetchEvent::WsOpen(id, p, e) => crate::harness::FetchCompletion::WsOpen(id, p, e),
+        FetchEvent::WsText(id, t) => crate::harness::FetchCompletion::WsText(id, t),
+        FetchEvent::WsBinary(id, b) => crate::harness::FetchCompletion::WsBinary(id, b),
+        FetchEvent::WsFlushed(id, n) => crate::harness::FetchCompletion::WsFlushed(id, n),
+        FetchEvent::WsError(id) => crate::harness::FetchCompletion::WsError(id),
+        FetchEvent::WsClose(id, c, r, clean) => {
+            crate::harness::FetchCompletion::WsClose(id, c, r, clean)
+        },
     }
 }
 
