@@ -53,8 +53,8 @@ mod webgl;
 pub use crypto::RandomSource;
 pub use dom::{
     ComputedStyleHandler, CookieProvider, InlineStyleHandler, InlineStyleValueResult,
-    MediaQueryHandler, StyleSheetHandler, StyleSheetImportOwner, StyleSheetImportRule,
-    StyleSheetMutationError, StyleSheetRule, StyleSheetRuleKind,
+    MediaQueryHandler, SelectionHandler, StyleSheetHandler, StyleSheetImportOwner,
+    StyleSheetImportRule, StyleSheetMutationError, StyleSheetRule, StyleSheetRuleKind,
 };
 pub use fetch::{FetchHandler, FetchOutcome, FetchRequest};
 pub use harness::TestResult;
@@ -117,6 +117,11 @@ pub struct HostState {
     /// [`Runtime::set_computed_style_handler`]; an `Rc` so the native sink clones
     /// it out before calling (no live `HostState` borrow during the call).
     pub computed_style: Option<std::rc::Rc<dyn ComputedStyleHandler>>,
+    /// The host's layout seam for `Range.getClientRects` and for projecting the
+    /// script-owned selection onto the visual one. `None` = no layout bound, so
+    /// range geometry is empty and the projection goes nowhere. Script remains
+    /// the only owner of the selection either way.
+    pub selection: Option<std::rc::Rc<dyn SelectionHandler>>,
     /// The selected CSS engine's specified-value normalizer for
     /// `element.style`. `None` preserves authored values verbatim.
     pub inline_style: Option<std::rc::Rc<dyn InlineStyleHandler>>,
@@ -769,6 +774,14 @@ impl<E: ScriptEngine> Runtime<E> {
     /// boundary, mirroring [`set_fetch_handler`](Self::set_fetch_handler).
     pub fn set_computed_style_handler(&mut self, handler: Box<dyn ComputedStyleHandler>) {
         self.host.borrow_mut().computed_style = Some(std::rc::Rc::from(handler));
+    }
+
+    /// Install the host's selection seam: range geometry for
+    /// `Range.getClientRects` / `getBoundingClientRect`, and the sink the
+    /// script-owned selection projects onto. Until set, range geometry is empty
+    /// and the projection is dropped.
+    pub fn set_selection_handler(&mut self, handler: Box<dyn SelectionHandler>) {
+        self.host.borrow_mut().selection = Some(std::rc::Rc::from(handler));
     }
 
     /// Install specified-value parsing and canonical serialization for the

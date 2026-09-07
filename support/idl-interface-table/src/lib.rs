@@ -359,17 +359,14 @@ pub const OVERRIDES: &[Override] = &[
 /// Interfaces whose bootstrap glue is keyed by name in `bootstrap.js`.
 const MEMBERS: &[(&str, &[&str])] = &[("HTMLCanvasElement", &["canvas_context"])];
 
-/// `dom.idl` / `cssom.idl` interfaces the shape-only pass must not touch, each
+/// `dom.idl` / `cssom.idl` / `selection-api.idl` interfaces the shape-only pass
+/// must not touch, each
 /// because a page feature-detects it and takes a different path when it is a
 /// bare shape rather than a working implementation.
 // `MutationObserver` / `MutationRecord` left this list on 2026-09-07: the
 // bootstrap implements both, so the shape pass finds the name taken and only
 // stamps the class string.
-const SHAPE_ONLY_DENY: &[&str] = &[
-    "AbortController",
-    "AbortSignal",
-    "XSLTProcessor",
-];
+const SHAPE_ONLY_DENY: &[&str] = &["AbortController", "AbortSignal", "XSLTProcessor"];
 
 // ---------------------------------------------------------------------------
 // Generated records.
@@ -572,7 +569,10 @@ pub fn build(wpt: &Path) -> Result<(Vec<GenInterface>, Vec<GenShape>), String> {
     }
 
     // Shape-only DOM / CSSOM interfaces.
-    let other = parse_idl(wpt, &["dom.idl", "cssom.idl"])?;
+    // `selection-api.idl` joins the shape sources for `Selection`, whose
+    // implementation the bootstrap supplies; the shape pass then only stamps
+    // its class string.
+    let other = parse_idl(wpt, &["dom.idl", "cssom.idl", "selection-api.idl"])?;
     let mut shapes: Vec<&idl::Interface> = other
         .interfaces
         .values()

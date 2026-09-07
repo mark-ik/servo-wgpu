@@ -34,8 +34,8 @@ use paint_list_api::{ColorF, DeviceIntSize, LayoutPoint, LayoutRect, LayoutSize}
 use script_engine_api::ScriptEngine;
 use script_runtime_api::{
     ComputedStyleHandler, HostState, InlineStyleHandler, InlineStyleValueResult, Runtime,
-    StyleSheetHandler, StyleSheetImportOwner, StyleSheetImportRule, StyleSheetMutationError,
-    StyleSheetRule, StyleSheetRuleKind,
+    SelectionHandler, StyleSheetHandler, StyleSheetImportOwner, StyleSheetImportRule,
+    StyleSheetMutationError, StyleSheetRule, StyleSheetRuleKind,
 };
 
 struct LiveryState {
@@ -360,6 +360,10 @@ impl LiveryCssom {
             state: state.clone(),
         }));
         runtime.set_inline_style_handler(Box::new(LiveryInlineStyle));
+        runtime.set_selection_handler(Box::new(LiverySelection {
+            host: host.clone(),
+            state: state.clone(),
+        }));
         runtime.set_stylesheet_handler(Box::new(LiveryStyleSheets {
             state: state.clone(),
             host,
@@ -864,6 +868,157 @@ impl LiveryCssom {
         } else {
             ScriptedClick::Navigate(href)
         }
+    }
+}
+
+/// The selection seam over the live Livery frame.
+///
+/// Script owns the selection: the bootstrap's `Selection` holds the one live
+/// `Range`. `state.selection_range` is that range *projected* into rendered
+/// byte space, and it is written only from here — the same field a pointer
+/// gesture writes, so the painted selection and the scripted one are never two
+/// authorities. `range_rects` reads the same range-rect primitive the overlay
+/// paints from, so geometry and paint cannot disagree either.
+struct LiverySelection {
+    host: Weak<RefCell<HostState>>,
+    state: Rc<RefCell<LiveryState>>,
+}
+
+/// UTF-16 code units (what script counts) to a byte offset (what shaped text is
+/// indexed by).
+fn utf16_to_byte(text: &str, offset: usize) -> usize {
+    let mut units = 0usize;
+    for (index, ch) in text.char_indices() {
+        if units >= offset {
+            return index;
+        }
+        units += ch.len_utf16();
+    }
+    text.len()
+}
+
+fn first_text(dom: &ScriptedDom, node: NodeId) -> Option<NodeId> {
+    if matches!(dom.kind(node), NodeKind::Text) {
+        return Some(node);
+    }
+    dom.dom_children(node)
+        .find_map(|child| first_text(dom, child))
+}
+
+fn last_text(dom: &ScriptedDom, node: NodeId) -> Option<NodeId> {
+    if matches!(dom.kind(node), NodeKind::Text) {
+        return Some(node);
+    }
+    let children: Vec<NodeId> = dom.dom_children(node).collect();
+    children
+        .into_iter()
+        .rev()
+        .find_map(|child| last_text(dom, child))
+}
+
+/// A DOM boundary point as a shaped-text position. A container boundary has no
+/// shaped text of its own, so it resolves to the nearest text node on the side
+/// the boundary faces.
+fn resolve_text_point(
+    dom: &ScriptedDom,
+    node: NodeId,
+    offset: usize,
+    start_side: bool,
+) -> Option<(NodeId, usize)> {
+    if matches!(dom.kind(node), NodeKind::Text) {
+        return Some((node, utf16_to_byte(dom.text(node).unwrap_or(""), offset)));
+    }
+    let children: Vec<NodeId> = dom.dom_children(node).collect();
+    let forward = |children: &[NodeId]| {
+        children
+            .iter()
+            .skip(offset)
+            .find_map(|&child| first_text(dom, child))
+            .map(|text| (text, 0usize))
+    };
+    let backward = |children: &[NodeId]| {
+        children
+            .iter()
+            .take(offset)
+            .rev()
+            .find_map(|&child| last_text(dom, child))
+            .map(|text| (text, dom.text(text).unwrap_or("").len()))
+    };
+    if start_side {
+        forward(&children).or_else(|| backward(&children))
+    } else {
+        backward(&children).or_else(|| forward(&children))
+    }
+}
+
+impl LiverySelection {
+    fn to_text_range(
+        &self,
+        start: u64,
+        start_offset: u32,
+        end: u64,
+        end_offset: u32,
+    ) -> Option<TextRange<NodeId>> {
+        let host = self.host.upgrade()?;
+        let host = host.borrow();
+        let start = NodeId::from_raw(start as usize);
+        let end = NodeId::from_raw(end as usize);
+        if !host.dom.is_live(start) || !host.dom.is_live(end) {
+            return None;
+        }
+        let (anchor_node, anchor_offset) =
+            resolve_text_point(&host.dom, start, start_offset as usize, true)?;
+        let (focus_node, focus_offset) =
+            resolve_text_point(&host.dom, end, end_offset as usize, false)?;
+        Some(TextRange {
+            anchor_node,
+            anchor_offset,
+            focus_node,
+            focus_offset,
+        })
+    }
+}
+
+impl SelectionHandler for LiverySelection {
+    fn range_rects(
+        &self,
+        start: u64,
+        start_offset: u32,
+        end: u64,
+        end_offset: u32,
+    ) -> Vec<[f32; 4]> {
+        let Some(range) = self.to_text_range(start, start_offset, end, end_offset) else {
+            return Vec::new();
+        };
+        let state = self.state.borrow();
+        let Some(selection) = state
+            .frame
+            .as_ref()
+            .and_then(|frame| frame.fragments.text_selection(range))
+        else {
+            return Vec::new();
+        };
+        selection
+            .rects
+            .into_iter()
+            .map(|rect| {
+                [
+                    rect.x - state.scroll.0,
+                    rect.y - state.scroll.1,
+                    rect.width,
+                    rect.height,
+                ]
+            })
+            .collect()
+    }
+
+    fn set_visual_selection(&self, range: Option<(u64, u32, u64, u32)>) {
+        let resolved = range.and_then(|(start, start_offset, end, end_offset)| {
+            self.to_text_range(start, start_offset, end, end_offset)
+        });
+        let mut state = self.state.borrow_mut();
+        state.selection_anchor = None;
+        state.selection_range = resolved;
     }
 }
 

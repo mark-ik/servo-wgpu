@@ -3548,6 +3548,7 @@ pub(crate) const SHAPE_INTERFACES: &[ShapeInterface] = &[
     ShapeInterface { name: "CSSNamespaceRule", parent: "CSSRule", exposed: &["Window"], constructible: false },
     ShapeInterface { name: "CSSStyleDeclaration", parent: "", exposed: &["Window"], constructible: false },
     ShapeInterface { name: "CSSStyleProperties", parent: "CSSStyleDeclaration", exposed: &["Window"], constructible: false },
+    ShapeInterface { name: "Selection", parent: "", exposed: &["Window"], constructible: false },
     ShapeInterface { name: "CSSStyleRule", parent: "CSSGroupingRule", exposed: &["Window"], constructible: false },
     ShapeInterface { name: "CSSPageDescriptors", parent: "CSSStyleDeclaration", exposed: &["Window"], constructible: false },
 ];

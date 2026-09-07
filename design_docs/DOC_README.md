@@ -52,7 +52,8 @@ older `docs/` corpus without changing their location or governance.
 | [XMLHttpRequest](2026-09-07_xhr_plan.md) | XHR as a state machine over the fetch seam, landed 2026-09-07: xhr 53 to 281 subtests in disk mode, 831 of 1,336 in server mode, fetch holds. Residuals: responseXML needs DOMParser; 28 errors are Worker and document.domain demand. |
 | [Cheap globals](2026-09-07_cheap_globals_plan.md) | `performance` (+ `PerformanceObserver`), `queueMicrotask`, `structuredClone`, `MessageChannel` / `MessagePort` / `BroadcastChannel` and `crypto` landed 2026-09-07: 79 forward file movements, zero pass-to-fail, +462 subtest passes over ten directories. Next proof is `crypto.subtle`, real `ArrayBuffer` detachment, and the cross-agent reuse of the clone walker by the Worker lane. |
 | [IDL interface table](2026-09-07_idl_interface_table_plan.md) | The scripted tier's HTML interface table is generated from WPT's vendored WebIDL plus its tag map, with 41 reasoned overrides and a drift test. 72 interfaces / 338 reflected attributes / 41 shape-only DOM-CSSOM interfaces. Next proof is extending the shape pass past `html`, `dom` and `cssom`, and the reflection-algorithm gaps (`ReflectRange` clamping, invalid-value defaults). |
-| [MutationObserver](2026-09-07_mutation_observer_plan.md) | The arena's mutation point now has two consumers: Livery's `DomMutation` stream and a spec-shaped observer record fanned out at the same mutators, off until something observes. Landed 2026-09-07 with four `dom/nodes/MutationObserver-*` files all-pass, +495 subtest passes and zero pass-to-fail. Next proof is `DocumentFragment` insertion (Mark's decision), then `Range`, `normalize` and attribute namespaces, which the remaining observer subtests need. |
+| [MutationObserver](2026-09-07_mutation_observer_plan.md) | The arena's mutation point now has two consumers: Livery's `DomMutation` stream and a spec-shaped observer record fanned out at the same mutators, off until something observes. Landed 2026-09-07 with four `dom/nodes/MutationObserver-*` files all-pass, +495 subtest passes and zero pass-to-fail. `Range` landed 2026-09-07 and closed that residual (`childList` 18/38 to 32/38, `characterData` 13/23 to 21/23). Next proof is `DocumentFragment` insertion (Mark's decision), then `normalize` and attribute namespaces, which the remaining observer subtests need. |
+| [Selection and Range](2026-09-07_selection_range_plan.md) | `Range` / `StaticRange` / `Selection` over the scripted arena, with the live-range steps at the bootstrap's mutation funnel and a boundary index keyed by node. Landed 2026-09-07: `selection` 0/280 to 28,582/33,621 subtests, `dom/ranges` 0 to 10 all-pass, +29,126 subtest passes and zero pass-to-fail. Next proof is the DOM node model `dom/common.js` still floors on — `CDATASection`, real `DocumentType`, `document.doctype` — which is Mark's decision. |
 | [Host contract ownership](../docs/2026-08-14_web_platform_host_contract_plan.md) | Genet owns retained session contracts; Mere owns surface orchestration and product adapters. The older S0-S5 receipts need a consumer-side status refresh before resuming those lanes. |
 
 The [Buckram master](../docs/2026-07-26_buckram_css_layout_engine_plan.md)
@@ -80,6 +81,25 @@ completed corpus census or bounded slice does not close its enclosing feature.
 
 ## WPT census — the web platform beyond CSS
 
+- [selection_range_plan](2026-09-07_selection_range_plan.md)
+  (**landed 2026-09-07**: `Range`, `StaticRange`, `AbstractRange`, `Selection`
+  and `getSelection` over the scripted arena. The DOM's live-range steps run at
+  the bootstrap's own twelve-call-site mutation funnel rather than off the
+  arena's observer record, because they need the child index and the boundary
+  offsets as they stood *before* the mutation; boundaries are indexed by the
+  node they sit in, since a flat list is quadratic and hung eight
+  `editing/run/*` files in the first `post` map. One source of truth: the
+  script-owned `Range` is it, and Livery's `TextRange` selection is a projection
+  pushed through a new `SelectionHandler` seam, which also serves
+  `Range.getClientRects` from the same range-rect primitive the overlay paints
+  from. `ProcessingInstruction` became a real arena node in the same lane — both
+  census directories' shared `common.js` aborted on its absence before a single
+  subtest ran. `Selection` is declared by the generated table, which now reads
+  `selection-api.idl`. `selection` 0 → 12 all-pass and 0/280 → 28,582/33,621
+  subtests, `dom/ranges` 0 → 10 all-pass, `MutationObserver-childList`
+  18/38 → 32/38 and `-characterData` 13/23 → 21/23; +29,126 subtest passes over
+  five directories with zero pass-to-fail. Raw maps under
+  `Code/testing/genet/wpt-ledger/2026-09-07_selection_range/`.)
 - [mutation_observer_plan](2026-09-07_mutation_observer_plan.md)
   (**landed 2026-09-07**: `MutationObserver` as a second consumer of
   `genet-scripted-dom`'s mutation point. The arena fans out at the mutator into
@@ -281,6 +301,19 @@ same session; links out of it are rewritten for its new depth.
   edited compiles whatever the crate looks like when the compiler reaches it,
   and the resulting binary is not a baseline. See the cheap-globals plan's
   Findings and the MutationObserver plan's Progress.
+- **A per-mutation walk over a script-created population is quadratic.** The
+  bootstrap's mutation funnel runs on every DOM change, so anything hung off it
+  must be indexed by the node it concerns, not scanned. The Selection and Range
+  lane's first live-range list turned eight `editing/run/*` files that had
+  merely failed into hangs, at four times the directory's wall time; keyed by
+  node, the same directory ran faster than its baseline. A `post` map that
+  slows a directory down is reporting a complexity defect, not noise.
+- **A directory's census can be floored by one missing name.** Two directories
+  in this session reported almost nothing because their shared setup file threw
+  on a node type neither lane was about, aborting every file before its first
+  subtest. Probe the shared `common.js` of a directory that will not move before
+  concluding anything about the feature under test. Supplying the missing name
+  took `selection` from 384 reported subtests to 33,621.
 - **A global native cannot be interposed on from the bootstrap.** Boa's host
   globals are writable and Nova's are not (`defineProperty` throws there too),
   so wrapping `globalThis.__someNative` works on one backend and silently does
@@ -298,7 +331,7 @@ same session; links out of it are rewritten for its new depth.
 ## Status
 
 Founded 2026-08-24; current work map reconciled 2026-09-07, including the IDL
-interface-table, cheap-globals and MutationObserver lanes. The index covers
+interface-table, cheap-globals, MutationObserver and Selection/Range lanes. The index covers
 the flat plans sectioned above and two archived plans; the count in this line
 was stale before 2026-09-07 and is now stated by the sections themselves.
 All three former component area roots now live in Mere. The older `docs/`

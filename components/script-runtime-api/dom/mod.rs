@@ -98,7 +98,7 @@ pub(crate) fn clone_into<D: LayoutDom>(
 /// First element child of `node` (e.g. `<html>` under the document).
 fn first_element_child(dom: &ScriptedDom, node: NodeId) -> Option<NodeId> {
     dom.dom_children(node)
-        .find(|&c| dom.element_name(c).is_some())
+        .find(|&c| matches!(dom.kind(c), NodeKind::Element))
 }
 
 /// Install the `document`/`Node` surface: native sinks, then the JS bootstrap that
@@ -128,6 +128,7 @@ pub(crate) fn install_dom_surface<E: ScriptEngine>(engine: &mut E) -> Result<(),
     engine.set_function::<CreateDocument>("__createDocument", 0)?;
     engine.set_function::<CreateComment>("__createComment", 1)?;
     engine.set_function::<CreateFragment>("__createFragment", 0)?;
+    engine.set_function::<CreateProcessingInstruction>("__createProcessingInstruction", 2)?;
     engine.set_function::<NodeType>("__nodeType", 1)?;
     engine.set_function::<NodeRawId>("__nodeRawId", 1)?;
     engine.set_function::<RemoveAttribute>("__removeAttribute", 2)?;
@@ -182,6 +183,8 @@ pub(crate) fn install_dom_surface<E: ScriptEngine>(engine: &mut E) -> Result<(),
     engine.set_function::<mutation_observer::SetObserving>("__moObserving", 1)?;
     engine.set_function::<mutation_observer::TakeRecords>("__moTake", 0)?;
     engine.set_function::<mutation_observer::SetGroup>("__moGroup", 1)?;
+    engine.set_function::<selection::RangeRects>("__rangeRects", 4)?;
+    engine.set_function::<selection::VisualSelection>("__selectionVisual", 4)?;
     let html_interfaces = html_interfaces::bootstrap_script();
     engine.eval(&html_interfaces)?;
     engine.eval(DOM_BOOTSTRAP)?;
@@ -1082,6 +1085,8 @@ mod html_interfaces;
 mod html_interfaces_generated;
 mod mutation_observer;
 mod query_traverse;
+mod selection;
+pub use selection::SelectionHandler;
 mod tree;
 mod xpath_eval;
 

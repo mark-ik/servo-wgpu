@@ -110,6 +110,7 @@
       proto = nt === 9 ? Document.prototype
             : nt === 3 ? Text.prototype
             : nt === 8 ? Comment.prototype
+            : nt === 7 ? ProcessingInstruction.prototype
             : nt === 11 ? DocumentFragment.prototype
             : Node.prototype;
     }
@@ -163,7 +164,12 @@
   function Node() {}
   Node.ELEMENT_NODE = Node.prototype.ELEMENT_NODE = 1;
   Node.TEXT_NODE = Node.prototype.TEXT_NODE = 3;
+  Node.CDATA_SECTION_NODE = Node.prototype.CDATA_SECTION_NODE = 4;
+  Node.PROCESSING_INSTRUCTION_NODE = Node.prototype.PROCESSING_INSTRUCTION_NODE = 7;
   Node.COMMENT_NODE = Node.prototype.COMMENT_NODE = 8;
+  Node.DOCUMENT_TYPE_NODE = Node.prototype.DOCUMENT_TYPE_NODE = 10;
+  Node.DOCUMENT_FRAGMENT_NODE = Node.prototype.DOCUMENT_FRAGMENT_NODE = 11;
+  Node.ATTRIBUTE_NODE = Node.prototype.ATTRIBUTE_NODE = 2;
   Node.DOCUMENT_NODE = Node.prototype.DOCUMENT_NODE = 9;
   // Pre-insertion validity (DOM): the inserted node must not be an inclusive
   // ancestor of the parent (would form a cycle) → HierarchyRequestError.
@@ -651,7 +657,9 @@
   Object.defineProperty(CharacterData.prototype, 'data', {
     configurable: true,
     get: function() { var v = __getTextContent(this.__ref); return v === null ? '' : v; },
-    set: function(v) { moSetTextContent(this.__ref, v === null ? '' : String(v)); }
+    // Every write is DOM "replace data", so the live-range steps see a real
+    // (offset, count, data) rather than a whole new string.
+    set: function(v) { cdReplaceData(this, 0, this.data.length, v === null ? '' : String(v)); }
   });
   Object.defineProperty(CharacterData.prototype, 'length', {
     configurable: true, get: function() { return this.data.length; }
@@ -662,23 +670,17 @@
     // slice (core ES), not substr (Annex B — not implemented on all backends).
     return d.slice(offset, offset + (count >>> 0));
   };
-  CharacterData.prototype.appendData = function(s) { this.data = this.data + String(s); };
+  CharacterData.prototype.appendData = function(s) {
+    cdReplaceData(this, this.data.length, 0, String(s));
+  };
   CharacterData.prototype.insertData = function(offset, s) {
-    var d = this.data; offset = offset >>> 0;
-    if (offset > d.length) throw new DOMException("offset out of range", "IndexSizeError");
-    this.data = d.slice(0, offset) + String(s) + d.slice(offset);
+    cdReplaceData(this, offset, 0, String(s));
   };
   CharacterData.prototype.deleteData = function(offset, count) {
-    var d = this.data; offset = offset >>> 0;
-    if (offset > d.length) throw new DOMException("offset out of range", "IndexSizeError");
-    count = count >>> 0;
-    this.data = d.slice(0, offset) + d.slice(offset + count);
+    cdReplaceData(this, offset, count, '');
   };
   CharacterData.prototype.replaceData = function(offset, count, s) {
-    var d = this.data; offset = offset >>> 0;
-    if (offset > d.length) throw new DOMException("offset out of range", "IndexSizeError");
-    count = count >>> 0;
-    this.data = d.slice(0, offset) + String(s) + d.slice(offset + count);
+    cdReplaceData(this, offset, count, String(s));
   };
   globalThis.CharacterData = CharacterData;
 
@@ -689,14 +691,17 @@
     return wrapNode(__createTextNode(data === undefined ? '' : String(data)));
   }
   Text.prototype = Object.create(CharacterData.prototype);
+  // DOM "split a Text node": the new node is placed and the live ranges moved
+  // onto it *before* the original's data is truncated, which is the spec's
+  // order and the only order under which a boundary past the split survives.
   Text.prototype.splitText = function(offset) {
     var d = this.data; offset = offset >>> 0;
     if (offset > d.length) throw new DOMException("offset out of range", "IndexSizeError");
-    var rest = d.slice(offset);
-    this.data = d.slice(0, offset);
-    var newNode = this.ownerDocument.createTextNode(rest);
+    var newNode = this.ownerDocument.createTextNode(d.slice(offset));
     var parent = this.parentNode;
     if (parent) parent.insertBefore(newNode, this.nextSibling);
+    rangeDidSplit(this, newNode, offset);
+    cdReplaceData(this, offset, d.length - offset, '');
     return newNode;
   };
   Object.defineProperty(Text.prototype, 'wholeText', {
@@ -719,6 +724,19 @@
   }
   Comment.prototype = Object.create(CharacterData.prototype);
   globalThis.Comment = Comment;
+
+  // ProcessingInstruction : CharacterData (nodeType 7). Its `target` is the
+  // node name; `data` is the shared character-data slot. Not constructible —
+  // `document.createProcessingInstruction` mints it.
+  function ProcessingInstruction() { throw new TypeError('Illegal constructor'); }
+  ProcessingInstruction.prototype = Object.create(CharacterData.prototype);
+  Object.defineProperty(ProcessingInstruction.prototype, 'constructor', {
+    configurable: true, writable: true, value: ProcessingInstruction
+  });
+  Object.defineProperty(ProcessingInstruction.prototype, 'target', {
+    configurable: true, get: function() { return __nodeName(this.__ref); }
+  });
+  globalThis.ProcessingInstruction = ProcessingInstruction;
 
   // DocumentFragment : Node. `new DocumentFragment()` mints a detached fragment;
   // querySelector(All)/getElementById scope to it (assigned after Element defines
@@ -1784,11 +1802,30 @@
     ownerDocuments.set(node, this);
     return node;
   };
+  Document.prototype.createProcessingInstruction = function(target, data) {
+    target = String(target);
+    validateName(target);
+    data = String(data);
+    if (data.indexOf('?>') >= 0) {
+      throw new DOMException("data contains '?>'", "InvalidCharacterError");
+    }
+    var node = wrapNode(__createProcessingInstruction(target, data));
+    ownerDocuments.set(node, this);
+    return node;
+  };
   Document.prototype.createDocumentFragment = function() {
     var node = wrapNode(__createFragment());
     ownerDocuments.set(node, this);
     return node;
   };
+  // Range and Selection entry points. `createRange` mints a live range already
+  // collapsed at (document, 0); `getSelection` hands back the one Selection.
+  Document.prototype.createRange = function() {
+    var range = new Range();
+    setBothBP(range, this, 0, this, 0);
+    return range;
+  };
+  Document.prototype.getSelection = function() { return getSelection(); };
   Document.prototype.adoptNode = function(node) {
     if (!node) return node;
     if (node.nodeType === 9) {
@@ -2571,19 +2608,1064 @@
   function moEndGroup() {
     if (--moGroupDepth === 0) { __moGroup('0'); moAfterMutation(); }
   }
-  function moAppendChild(p, c) { __appendChild(p, c); moAfterMutation(); }
-  function moInsertBefore(p, n, r) { __insertBefore(p, n, r); moAfterMutation(); }
-  function moMoveBefore(p, n, r) { __moveBefore(p, n, r); moAfterMutation(); }
-  function moRemoveChild(p, c) { __removeChild(p, c); moAfterMutation(); }
+  // The same call sites carry the DOM's live-range steps: `rangeWillRemove`
+  // before the tree moves (it needs the child index and the pre-mutation
+  // boundaries), `rangeDidInsert` after (the index the node lands at is the
+  // reference child's old index).
+  function moAppendChild(p, c) {
+    rangeWillRemove(wrapNode(c)); __appendChild(p, c);
+    rangeDidInsert(wrapNode(c)); moAfterMutation();
+  }
+  function moInsertBefore(p, n, r) {
+    rangeWillRemove(wrapNode(n)); __insertBefore(p, n, r);
+    rangeDidInsert(wrapNode(n)); moAfterMutation();
+  }
+  function moMoveBefore(p, n, r) {
+    rangeWillRemove(wrapNode(n)); __moveBefore(p, n, r);
+    rangeDidInsert(wrapNode(n)); moAfterMutation();
+  }
+  function moRemoveChild(p, c) {
+    rangeWillRemove(wrapNode(c)); __removeChild(p, c); moAfterMutation();
+  }
   function moSetAttribute(e, n, v) { __setAttribute(e, n, v); moAfterMutation(); }
   function moRemoveAttribute(e, n) { __removeAttribute(e, n); moAfterMutation(); }
-  function moSetTextContent(n, t) { __setTextContent(n, t); moAfterMutation(); }
-  function moSetInnerHtml(n, h) { __setInnerHtml(n, h); moAfterMutation(); }
+  function moSetTextContent(n, t) {
+    rangeWillReplaceAll(wrapNode(n)); __setTextContent(n, t); moAfterMutation();
+  }
+  function moSetInnerHtml(n, h) {
+    rangeWillReplaceAll(wrapNode(n)); __setInnerHtml(n, h); moAfterMutation();
+  }
 
   // The runtime calls this at the head of every microtask checkpoint while any
   // observer is registered, which is what turns the arena's pending record into
   // queued records and schedules the notify microtask the checkpoint then runs.
   globalThis.__moPump = function() { moFlush(); };
+
+  // ── Range, StaticRange and Selection ───────────────────────────────────────
+  //
+  // DOM §5 boundary points over the scripted arena, plus the Selection API's
+  // single live range. Every live range registers here, and the bootstrap's own
+  // mutation funnel (the `mo*` wrappers above) runs the spec's removing,
+  // inserting, replace-data and split steps against the registry. The arena's
+  // observer record is deliberately not the driver: those steps need the child
+  // index and the boundary offsets as they stood *before* the mutation, which
+  // only the call site still holds.
+  //
+  // A registration is a WeakRef where the backend has one, so a test that mints
+  // thousands of ranges does not make every later mutation linear in all of
+  // them for the realm's life; `eachLiveRange` compacts as it walks.
+  // Boundaries are indexed by the node they sit in, not held in one flat list:
+  // an editing test mints thousands of ranges, and a per-mutation walk over all
+  // of them is quadratic (the first measurement of this lane hung eight
+  // `editing/run/*` files that had merely failed before). Each boundary owns one
+  // index entry `[ref, which, resolved]` — `which` 0 for the start, 1 for the
+  // end — and the range keeps a handle to its own entries, so retiring one is
+  // O(1). A removal still walks the removed subtree, but that cost is the
+  // tree's, not the range population's.
+  var rangeIndex = Object.create(null);
+  var liveRangeCount = 0;
+  var haveWeakRef = typeof WeakRef === 'function';
+
+  function indexAdd(node, range, which) {
+    var key = __nodeRawId(node.__ref);
+    var bucket = rangeIndex[key] || (rangeIndex[key] = []);
+    var entry = [haveWeakRef ? new WeakRef(range) : range, which, null];
+    bucket.push(entry);
+    if (which === 0) range.__se = entry; else range.__ee = entry;
+  }
+
+  function setStartBP(range, node, offset) {
+    if (range.__sc !== node) {
+      if (range.__se) range.__se[0] = null;
+      range.__sc = node;
+      indexAdd(node, range, 0);
+    }
+    range.__so = offset;
+  }
+  function setEndBP(range, node, offset) {
+    if (range.__ec !== node) {
+      if (range.__ee) range.__ee[0] = null;
+      range.__ec = node;
+      indexAdd(node, range, 1);
+    }
+    range.__eo = offset;
+  }
+  function setBothBP(range, sc, so, ec, eo) {
+    setStartBP(range, sc, so);
+    setEndBP(range, ec, eo);
+  }
+
+  // The live boundaries in `node`, with dead entries swept out. Entry slot 2
+  // carries the resolved range so the caller does not deref twice.
+  function boundariesAt(node) {
+    if (!liveRangeCount) return null;
+    var key = __nodeRawId(node.__ref);
+    var bucket = rangeIndex[key];
+    if (!bucket) return null;
+    var live = [];
+    for (var i = 0; i < bucket.length; i++) {
+      var entry = bucket[i];
+      if (!entry[0]) continue;
+      var range = haveWeakRef ? entry[0].deref() : entry[0];
+      if (!range) { entry[0] = null; continue; }
+      entry[2] = range;
+      live.push(entry);
+    }
+    if (!live.length) { delete rangeIndex[key]; return null; }
+    rangeIndex[key] = live.slice();
+    return live;
+  }
+
+  // DOM "length of a node".
+  function nodeLengthOf(node) {
+    var t = node.nodeType;
+    if (t === 10) return 0;
+    if (t === 3 || t === 8 || t === 7) return node.data.length;
+    return +__childNodesCount(node.__ref);
+  }
+
+  function childAt(node, index) {
+    var ref = __childNodesItem(node.__ref, index);
+    return (ref === null || ref === undefined) ? null : wrapNode(ref);
+  }
+
+  function nodeIndex(node) {
+    var i = 0, n = node.previousSibling;
+    while (n) { i++; n = n.previousSibling; }
+    return i;
+  }
+
+  function rootOf(node) { return node.getRootNode(); }
+
+  // DOM "position of boundary point A relative to boundary point B":
+  // -1 before, 0 equal, 1 after. Callers compare roots first; a disconnected
+  // pair reports 0 rather than recursing.
+  function bpPosition(an, ao, bn, bo) {
+    if (an === bn) return ao < bo ? -1 : ao > bo ? 1 : 0;
+    var pos = an.compareDocumentPosition(bn);
+    if (pos & 1) return 0;
+    if (pos & 2) return -bpPosition(bn, bo, an, ao);
+    if (pos & 16) {
+      var child = bn;
+      while (child.parentNode !== an) child = child.parentNode;
+      return nodeIndex(child) < ao ? 1 : -1;
+    }
+    return -1;
+  }
+
+  // ---- live range updating, run from the bootstrap's mutation funnel --------
+
+  // Move every boundary inside `root`'s subtree onto (parent, index).
+  function moveBoundariesUnder(root, parent, index) {
+    var stack = [root];
+    while (stack.length) {
+      var node = stack.pop();
+      var live = boundariesAt(node);
+      if (live) {
+        for (var i = 0; i < live.length; i++) {
+          var range = live[i][2];
+          if (live[i][1] === 0) { if (range.__sc === node) setStartBP(range, parent, index); }
+          else if (range.__ec === node) setEndBP(range, parent, index);
+        }
+      }
+      var count = +__childNodesCount(node.__ref);
+      for (var k = 0; k < count; k++) stack.push(childAt(node, k));
+    }
+  }
+
+  // DOM "removing steps", run before `node` leaves its parent.
+  function rangeWillRemove(node) {
+    if (!liveRangeCount || !node) return;
+    var parent = node.parentNode;
+    if (!parent) return;
+    var index = nodeIndex(node);
+    moveBoundariesUnder(node, parent, index);
+    var live = boundariesAt(parent);
+    if (!live) return;
+    for (var i = 0; i < live.length; i++) {
+      var range = live[i][2];
+      if (live[i][1] === 0) { if (range.__sc === parent && range.__so > index) range.__so--; }
+      else if (range.__ec === parent && range.__eo > index) range.__eo--;
+    }
+  }
+
+  // DOM "insertion steps", run after `node` has taken its place. The index the
+  // node now occupies is the reference child's index before the insertion,
+  // which is what the spec compares offsets against.
+  function rangeDidInsert(node) {
+    if (!liveRangeCount || !node) return;
+    var parent = node.parentNode;
+    if (!parent) return;
+    var live = boundariesAt(parent);
+    if (!live) return;
+    var index = nodeIndex(node);
+    for (var i = 0; i < live.length; i++) {
+      var range = live[i][2];
+      if (live[i][1] === 0) { if (range.__sc === parent && range.__so > index) range.__so++; }
+      else if (range.__ec === parent && range.__eo > index) range.__eo++;
+    }
+  }
+
+  // DOM "replace all", which removes every child in tree order. Sequentially
+  // that leaves any boundary inside the parent at offset 0, and any boundary
+  // inside a removed subtree at (parent, 0).
+  function rangeWillReplaceAll(parent) {
+    if (!liveRangeCount || !parent) return;
+    var count = +__childNodesCount(parent.__ref);
+    if (!count) return;
+    for (var i = 0; i < count; i++) moveBoundariesUnder(childAt(parent, i), parent, 0);
+    var live = boundariesAt(parent);
+    if (!live) return;
+    for (var j = 0; j < live.length; j++) {
+      var range = live[j][2];
+      if (live[j][1] === 0) { if (range.__sc === parent) range.__so = 0; }
+      else if (range.__ec === parent) range.__eo = 0;
+    }
+  }
+
+  // CharacterData "replace data" (DOM §4.10) with its live-range steps. Every
+  // character-data mutator funnels here so the range steps see a real
+  // (offset, count, data) rather than a whole new string.
+  function cdReplaceData(node, offset, count, data) {
+    var current = node.data;
+    var length = current.length;
+    offset = offset >>> 0;
+    if (offset > length) {
+      throw new DOMException("offset out of range", "IndexSizeError");
+    }
+    count = count >>> 0;
+    if (offset + count > length) count = length - offset;
+    moSetTextContent(node.__ref, current.slice(0, offset) + data + current.slice(offset + count));
+    var live = boundariesAt(node);
+    if (!live) return;
+    var added = data.length;
+    for (var i = 0; i < live.length; i++) {
+      var range = live[i][2];
+      if (live[i][1] === 0) {
+        if (range.__sc !== node) continue;
+        if (range.__so > offset && range.__so <= offset + count) range.__so = offset;
+        else if (range.__so > offset + count) range.__so += added - count;
+      } else {
+        if (range.__ec !== node) continue;
+        if (range.__eo > offset && range.__eo <= offset + count) range.__eo = offset;
+        else if (range.__eo > offset + count) range.__eo += added - count;
+      }
+    }
+  }
+
+  // DOM "split a Text node" range steps, run after the new node is in place and
+  // before the original's data is truncated.
+  function rangeDidSplit(node, newNode, offset) {
+    if (!liveRangeCount) return;
+    var live = boundariesAt(node);
+    var i, range;
+    if (live) {
+      for (i = 0; i < live.length; i++) {
+        range = live[i][2];
+        if (live[i][1] === 0) {
+          if (range.__sc === node && range.__so > offset) setStartBP(range, newNode, range.__so - offset);
+        } else if (range.__ec === node && range.__eo > offset) {
+          setEndBP(range, newNode, range.__eo - offset);
+        }
+      }
+    }
+    var parent = node.parentNode;
+    if (!parent) return;
+    var after = nodeIndex(node) + 1;
+    live = boundariesAt(parent);
+    if (!live) return;
+    for (i = 0; i < live.length; i++) {
+      range = live[i][2];
+      if (live[i][1] === 0) {
+        if (range.__sc === parent && range.__so === after) setStartBP(range, newNode, 0);
+      } else if (range.__ec === parent && range.__eo === after) {
+        setEndBP(range, newNode, 0);
+      }
+    }
+  }
+
+  // ---- AbstractRange / StaticRange ------------------------------------------
+
+  function AbstractRange() { throw new TypeError('Illegal constructor'); }
+  AbstractRange.prototype = Object.create(Object.prototype);
+  Object.defineProperty(AbstractRange.prototype, 'constructor', {
+    configurable: true, writable: true, value: AbstractRange
+  });
+  function defineBoundaryAccessors(proto) {
+    Object.defineProperty(proto, 'startContainer', {
+      configurable: true, get: function() { return this.__sc; }
+    });
+    Object.defineProperty(proto, 'startOffset', {
+      configurable: true, get: function() { return this.__so; }
+    });
+    Object.defineProperty(proto, 'endContainer', {
+      configurable: true, get: function() { return this.__ec; }
+    });
+    Object.defineProperty(proto, 'endOffset', {
+      configurable: true, get: function() { return this.__eo; }
+    });
+    Object.defineProperty(proto, 'collapsed', {
+      configurable: true,
+      get: function() { return this.__sc === this.__ec && this.__so === this.__eo; }
+    });
+  }
+  defineBoundaryAccessors(AbstractRange.prototype);
+  setClassString(AbstractRange.prototype, 'AbstractRange');
+  globalThis.AbstractRange = AbstractRange;
+
+  function StaticRange(init) {
+    if (!(this instanceof StaticRange)) {
+      throw new TypeError("Constructor StaticRange requires 'new'");
+    }
+    if (init === null || typeof init !== 'object') {
+      throw new TypeError('StaticRange: init is not a StaticRangeInit');
+    }
+    var sc = init.startContainer, ec = init.endContainer;
+    if (!sc || !sc.__ref || !ec || !ec.__ref) {
+      throw new TypeError('StaticRange: containers must be Nodes');
+    }
+    if (sc.nodeType === 10 || ec.nodeType === 10 || sc.__isAttr || ec.__isAttr) {
+      throw new DOMException('DocumentType or Attr boundary', 'InvalidNodeTypeError');
+    }
+    this.__sc = sc;
+    this.__so = init.startOffset >>> 0;
+    this.__ec = ec;
+    this.__eo = init.endOffset >>> 0;
+  }
+  StaticRange.prototype = Object.create(AbstractRange.prototype);
+  Object.defineProperty(StaticRange.prototype, 'constructor', {
+    configurable: true, writable: true, value: StaticRange
+  });
+  defineBoundaryAccessors(StaticRange.prototype);
+  setClassString(StaticRange.prototype, 'StaticRange');
+  globalThis.StaticRange = StaticRange;
+
+  // ---- Range ----------------------------------------------------------------
+
+  function Range() {
+    if (!(this instanceof Range)) {
+      throw new TypeError("Constructor Range requires 'new'");
+    }
+    this.__sc = null; this.__so = 0; this.__ec = null; this.__eo = 0;
+    this.__se = null; this.__ee = null;
+    liveRangeCount++;
+    setBothBP(this, document, 0, document, 0);
+  }
+  Range.prototype = Object.create(AbstractRange.prototype);
+  Object.defineProperty(Range.prototype, 'constructor', {
+    configurable: true, writable: true, value: Range
+  });
+  defineBoundaryAccessors(Range.prototype);
+  Range.START_TO_START = Range.prototype.START_TO_START = 0;
+  Range.START_TO_END = Range.prototype.START_TO_END = 1;
+  Range.END_TO_END = Range.prototype.END_TO_END = 2;
+  Range.END_TO_START = Range.prototype.END_TO_START = 3;
+
+  function requireNode(node, what) {
+    if (!node || !node.__ref) {
+      throw new TypeError(what + ' is not a Node');
+    }
+    return node;
+  }
+
+  function checkBoundary(node, offset) {
+    if (node.nodeType === 10) {
+      throw new DOMException('boundary node is a DocumentType', 'InvalidNodeTypeError');
+    }
+    if (offset > nodeLengthOf(node)) {
+      throw new DOMException('offset is past the end of the node', 'IndexSizeError');
+    }
+  }
+
+  // DOM "set the start" / "set the end": the other boundary collapses onto the
+  // new one when they end up in different trees or out of order.
+  function rangeSetStart(range, node, offset) {
+    checkBoundary(node, offset);
+    if (rootOf(node) !== rootOf(range.__ec) || bpPosition(node, offset, range.__ec, range.__eo) === 1) {
+      setEndBP(range, node, offset);
+    }
+    setStartBP(range, node, offset);
+  }
+  function rangeSetEnd(range, node, offset) {
+    checkBoundary(node, offset);
+    if (rootOf(node) !== rootOf(range.__sc) || bpPosition(node, offset, range.__sc, range.__so) === -1) {
+      setStartBP(range, node, offset);
+    }
+    setEndBP(range, node, offset);
+  }
+
+  Range.prototype.setStart = function(node, offset) {
+    rangeSetStart(this, requireNode(node, 'setStart: node'), offset >>> 0);
+    selectionMayHaveChanged(this);
+  };
+  Range.prototype.setEnd = function(node, offset) {
+    rangeSetEnd(this, requireNode(node, 'setEnd: node'), offset >>> 0);
+    selectionMayHaveChanged(this);
+  };
+  function siblingBoundary(node, what) {
+    requireNode(node, what + ': node');
+    var parent = node.parentNode;
+    if (!parent) throw new DOMException('node has no parent', 'InvalidNodeTypeError');
+    return parent;
+  }
+  Range.prototype.setStartBefore = function(node) {
+    var parent = siblingBoundary(node, 'setStartBefore');
+    rangeSetStart(this, parent, nodeIndex(node));
+    selectionMayHaveChanged(this);
+  };
+  Range.prototype.setStartAfter = function(node) {
+    var parent = siblingBoundary(node, 'setStartAfter');
+    rangeSetStart(this, parent, nodeIndex(node) + 1);
+    selectionMayHaveChanged(this);
+  };
+  Range.prototype.setEndBefore = function(node) {
+    var parent = siblingBoundary(node, 'setEndBefore');
+    rangeSetEnd(this, parent, nodeIndex(node));
+    selectionMayHaveChanged(this);
+  };
+  Range.prototype.setEndAfter = function(node) {
+    var parent = siblingBoundary(node, 'setEndAfter');
+    rangeSetEnd(this, parent, nodeIndex(node) + 1);
+    selectionMayHaveChanged(this);
+  };
+  Range.prototype.collapse = function(toStart) {
+    if (toStart) setEndBP(this, this.__sc, this.__so);
+    else setStartBP(this, this.__ec, this.__eo);
+    selectionMayHaveChanged(this);
+  };
+  Range.prototype.selectNode = function(node) {
+    var parent = siblingBoundary(node, 'selectNode');
+    var index = nodeIndex(node);
+    setBothBP(this, parent, index, parent, index + 1);
+    selectionMayHaveChanged(this);
+  };
+  Range.prototype.selectNodeContents = function(node) {
+    requireNode(node, 'selectNodeContents: node');
+    if (node.nodeType === 10) {
+      throw new DOMException('node is a DocumentType', 'InvalidNodeTypeError');
+    }
+    setBothBP(this, node, 0, node, nodeLengthOf(node));
+    selectionMayHaveChanged(this);
+  };
+  Range.prototype.compareBoundaryPoints = function(how, sourceRange) {
+    how = how >>> 0;
+    if (how > 3) {
+      throw new DOMException('invalid comparison method', 'NotSupportedError');
+    }
+    if (!sourceRange || sourceRange.__sc === undefined) {
+      throw new TypeError('compareBoundaryPoints: sourceRange is not a Range');
+    }
+    if (rootOf(this.__sc) !== rootOf(sourceRange.__sc)) {
+      throw new DOMException('ranges are in different trees', 'WrongDocumentError');
+    }
+    var thisNode, thisOffset, otherNode, otherOffset;
+    if (how === 0) { thisNode = this.__sc; thisOffset = this.__so; otherNode = sourceRange.__sc; otherOffset = sourceRange.__so; }
+    else if (how === 1) { thisNode = this.__ec; thisOffset = this.__eo; otherNode = sourceRange.__sc; otherOffset = sourceRange.__so; }
+    else if (how === 2) { thisNode = this.__ec; thisOffset = this.__eo; otherNode = sourceRange.__ec; otherOffset = sourceRange.__eo; }
+    else { thisNode = this.__sc; thisOffset = this.__so; otherNode = sourceRange.__ec; otherOffset = sourceRange.__eo; }
+    return bpPosition(thisNode, thisOffset, otherNode, otherOffset);
+  };
+  Range.prototype.comparePoint = function(node, offset) {
+    requireNode(node, 'comparePoint: node');
+    offset = offset >>> 0;
+    if (rootOf(node) !== rootOf(this.__sc)) {
+      throw new DOMException('node is in a different tree', 'WrongDocumentError');
+    }
+    if (node.nodeType === 10) {
+      throw new DOMException('node is a DocumentType', 'InvalidNodeTypeError');
+    }
+    if (offset > nodeLengthOf(node)) {
+      throw new DOMException('offset is past the end of the node', 'IndexSizeError');
+    }
+    if (bpPosition(node, offset, this.__sc, this.__so) === -1) return -1;
+    if (bpPosition(node, offset, this.__ec, this.__eo) === 1) return 1;
+    return 0;
+  };
+  Range.prototype.isPointInRange = function(node, offset) {
+    requireNode(node, 'isPointInRange: node');
+    offset = offset >>> 0;
+    if (rootOf(node) !== rootOf(this.__sc)) return false;
+    if (node.nodeType === 10) {
+      throw new DOMException('node is a DocumentType', 'InvalidNodeTypeError');
+    }
+    if (offset > nodeLengthOf(node)) {
+      throw new DOMException('offset is past the end of the node', 'IndexSizeError');
+    }
+    return bpPosition(node, offset, this.__sc, this.__so) !== -1 &&
+           bpPosition(node, offset, this.__ec, this.__eo) !== 1;
+  };
+  Range.prototype.intersectsNode = function(node) {
+    requireNode(node, 'intersectsNode: node');
+    if (rootOf(node) !== rootOf(this.__sc)) return false;
+    var parent = node.parentNode;
+    if (!parent) return true;
+    var offset = nodeIndex(node);
+    return bpPosition(parent, offset, this.__ec, this.__eo) === -1 &&
+           bpPosition(parent, offset + 1, this.__sc, this.__so) === 1;
+  };
+  Object.defineProperty(Range.prototype, 'commonAncestorContainer', {
+    configurable: true,
+    get: function() {
+      var container = this.__sc;
+      while (container && !container.contains(this.__ec)) container = container.parentNode;
+      return container || this.__sc;
+    }
+  });
+  Range.prototype.cloneRange = function() {
+    var copy = new Range();
+    setBothBP(copy, this.__sc, this.__so, this.__ec, this.__eo);
+    return copy;
+  };
+  Range.prototype.detach = function() {};
+
+  // A node is *contained* in a range when both its boundaries lie strictly
+  // inside it; *partially contained* when it is an inclusive ancestor of
+  // exactly one of the range's two nodes.
+  function rangeContains(range, node) {
+    if (rootOf(node) !== rootOf(range.__sc)) return false;
+    return bpPosition(node, 0, range.__sc, range.__so) === 1 &&
+           bpPosition(node, nodeLengthOf(node), range.__ec, range.__eo) === -1;
+  }
+  function rangePartiallyContains(range, node) {
+    var a = node.contains(range.__sc);
+    var b = node.contains(range.__ec);
+    return (a && !b) || (b && !a);
+  }
+
+  // Move a fragment's children into `target`. `insertBefore` / `appendChild`
+  // insert a DocumentFragment node itself in this engine, so every Range
+  // algorithm that "appends a fragment" moves its children explicitly.
+  function appendFragmentChildren(target, fragment) {
+    var kids = [];
+    var count = +__childNodesCount(fragment.__ref);
+    for (var i = 0; i < count; i++) kids.push(childAt(fragment, i));
+    for (var j = 0; j < kids.length; j++) target.appendChild(kids[j]);
+  }
+
+  function containedChildrenOf(range, common) {
+    var out = [];
+    var count = +__childNodesCount(common.__ref);
+    for (var i = 0; i < count; i++) {
+      var child = childAt(common, i);
+      if (rangeContains(range, child)) out.push(child);
+    }
+    return out;
+  }
+
+  function subRange(sc, so, ec, eo) {
+    var r = new Range();
+    setBothBP(r, sc, so, ec, eo);
+    return r;
+  }
+
+  Range.prototype.deleteContents = function() {
+    if (this.__sc === this.__ec && this.__so === this.__eo) return;
+    var sn = this.__sc, so = this.__so, en = this.__ec, eo = this.__eo;
+    if (sn === en && (sn.nodeType === 3 || sn.nodeType === 8 || sn.nodeType === 7)) {
+      cdReplaceData(sn, so, eo - so, '');
+      return;
+    }
+    var common = this.commonAncestorContainer;
+    var toRemove = containedChildrenOf(this, common);
+    var newNode, newOffset;
+    if (sn.contains(en)) { newNode = sn; newOffset = so; }
+    else {
+      var reference = sn;
+      while (reference.parentNode && !reference.parentNode.contains(en)) reference = reference.parentNode;
+      newNode = reference.parentNode;
+      newOffset = nodeIndex(reference) + 1;
+    }
+    if (sn.nodeType === 3 || sn.nodeType === 8 || sn.nodeType === 7) {
+      cdReplaceData(sn, so, nodeLengthOf(sn) - so, '');
+    }
+    for (var i = 0; i < toRemove.length; i++) {
+      if (toRemove[i].parentNode) toRemove[i].parentNode.removeChild(toRemove[i]);
+    }
+    if (en.nodeType === 3 || en.nodeType === 8 || en.nodeType === 7) {
+      cdReplaceData(en, 0, eo, '');
+    }
+    setBothBP(this, newNode, newOffset, newNode, newOffset);
+    selectionMayHaveChanged(this);
+  };
+
+  // DOM "extract" (extractContents) and "clone the contents" share their shape;
+  // `extract` additionally removes what it took.
+  function rangeExtractOrClone(range, extract) {
+    var fragment = document.createDocumentFragment();
+    var sn = range.__sc, so = range.__so, en = range.__ec, eo = range.__eo;
+    if (sn === en && so === eo) return fragment;
+    var isCharacterData = function(n) {
+      return n.nodeType === 3 || n.nodeType === 8 || n.nodeType === 7;
+    };
+    if (sn === en && isCharacterData(sn)) {
+      var only = sn.cloneNode(false);
+      only.data = sn.substringData(so, eo - so);
+      fragment.appendChild(only);
+      if (extract) cdReplaceData(sn, so, eo - so, '');
+      return fragment;
+    }
+    var common = range.commonAncestorContainer;
+    var first = null, last = null;
+    var count = +__childNodesCount(common.__ref);
+    var i, child;
+    if (!sn.contains(en)) {
+      for (i = 0; i < count; i++) {
+        child = childAt(common, i);
+        if (rangePartiallyContains(range, child)) { first = child; break; }
+      }
+    }
+    if (!en.contains(sn)) {
+      for (i = count - 1; i >= 0; i--) {
+        child = childAt(common, i);
+        if (rangePartiallyContains(range, child)) { last = child; break; }
+      }
+    }
+    var contained = containedChildrenOf(range, common);
+    for (i = 0; i < contained.length; i++) {
+      if (contained[i].nodeType === 10) {
+        throw new DOMException('range contains a DocumentType', 'HierarchyRequestError');
+      }
+    }
+    var newNode, newOffset;
+    if (sn.contains(en)) { newNode = sn; newOffset = so; }
+    else {
+      var reference = sn;
+      while (reference.parentNode && !reference.parentNode.contains(en)) reference = reference.parentNode;
+      newNode = reference.parentNode;
+      newOffset = nodeIndex(reference) + 1;
+    }
+    var clone;
+    if (first && isCharacterData(first)) {
+      clone = sn.cloneNode(false);
+      clone.data = sn.substringData(so, nodeLengthOf(sn) - so);
+      fragment.appendChild(clone);
+      if (extract) cdReplaceData(sn, so, nodeLengthOf(sn) - so, '');
+    } else if (first) {
+      clone = first.cloneNode(false);
+      fragment.appendChild(clone);
+      var head = subRange(sn, so, first, nodeLengthOf(first));
+      appendFragmentChildren(clone, rangeExtractOrClone(head, extract));
+    }
+    for (i = 0; i < contained.length; i++) {
+      fragment.appendChild(extract ? contained[i] : contained[i].cloneNode(true));
+    }
+    if (last && isCharacterData(last)) {
+      clone = en.cloneNode(false);
+      clone.data = en.substringData(0, eo);
+      fragment.appendChild(clone);
+      if (extract) cdReplaceData(en, 0, eo, '');
+    } else if (last) {
+      clone = last.cloneNode(false);
+      fragment.appendChild(clone);
+      var tail = subRange(last, 0, en, eo);
+      appendFragmentChildren(clone, rangeExtractOrClone(tail, extract));
+    }
+    if (extract) {
+      setBothBP(range, newNode, newOffset, newNode, newOffset);
+      selectionMayHaveChanged(range);
+    }
+    return fragment;
+  }
+
+  Range.prototype.extractContents = function() { return rangeExtractOrClone(this, true); };
+  Range.prototype.cloneContents = function() { return rangeExtractOrClone(this, false); };
+
+  Range.prototype.insertNode = function(node) {
+    requireNode(node, 'insertNode: node');
+    var sn = this.__sc, so = this.__so;
+    if (sn.nodeType === 7 || sn.nodeType === 8 ||
+        (sn.nodeType === 3 && !sn.parentNode) || node === sn) {
+      throw new DOMException('cannot insert here', 'HierarchyRequestError');
+    }
+    var reference = sn.nodeType === 3 ? sn : childAt(sn, so);
+    var parent = reference === null ? sn : reference.parentNode;
+    if (node.contains && node.contains(parent)) {
+      throw new DOMException('node is an ancestor of the insertion parent', 'HierarchyRequestError');
+    }
+    if (sn.nodeType === 3) reference = sn.splitText(so);
+    if (node === reference) reference = node.nextSibling;
+    if (node.parentNode) node.parentNode.removeChild(node);
+    var newOffset = reference === null ? nodeLengthOf(parent) : nodeIndex(reference);
+    var isFragment = node.nodeType === 11;
+    newOffset += isFragment ? nodeLengthOf(node) : 1;
+    if (isFragment) {
+      var kids = [];
+      var count = +__childNodesCount(node.__ref);
+      for (var i = 0; i < count; i++) kids.push(childAt(node, i));
+      for (var j = 0; j < kids.length; j++) parent.insertBefore(kids[j], reference);
+    } else {
+      parent.insertBefore(node, reference);
+    }
+    if (this.__sc === this.__ec && this.__so === this.__eo) {
+      setEndBP(this, parent, newOffset);
+    }
+    selectionMayHaveChanged(this);
+  };
+
+  Range.prototype.surroundContents = function(newParent) {
+    requireNode(newParent, 'surroundContents: newParent');
+    var common = this.commonAncestorContainer;
+    var node = this.__sc;
+    while (node) {
+      if (node.nodeType !== 3 && node.nodeType !== 8 && node.nodeType !== 7 &&
+          rangePartiallyContains(this, node)) {
+        throw new DOMException('range partially contains a non-Text node', 'InvalidStateError');
+      }
+      if (node === common) break;
+      node = node.parentNode;
+    }
+    node = this.__ec;
+    while (node) {
+      if (node.nodeType !== 3 && node.nodeType !== 8 && node.nodeType !== 7 &&
+          rangePartiallyContains(this, node)) {
+        throw new DOMException('range partially contains a non-Text node', 'InvalidStateError');
+      }
+      if (node === common) break;
+      node = node.parentNode;
+    }
+    if (newParent.nodeType === 9 || newParent.nodeType === 10 || newParent.nodeType === 11) {
+      throw new DOMException('invalid surround parent', 'InvalidNodeTypeError');
+    }
+    var fragment = this.extractContents();
+    while (newParent.firstChild) newParent.removeChild(newParent.firstChild);
+    this.insertNode(newParent);
+    appendFragmentChildren(newParent, fragment);
+    this.selectNode(newParent);
+  };
+
+  // Every Text node the range covers, in tree order.
+  function rangeText(range) {
+    var sn = range.__sc, so = range.__so, en = range.__ec, eo = range.__eo;
+    if (sn === en && sn.nodeType === 3) return sn.substringData(so, eo - so);
+    var out = '';
+    if (sn.nodeType === 3) out += sn.substringData(so, nodeLengthOf(sn) - so);
+    var common = range.commonAncestorContainer;
+    var stack = [];
+    var count = +__childNodesCount(common.__ref);
+    for (var i = count - 1; i >= 0; i--) stack.push(childAt(common, i));
+    while (stack.length) {
+      var node = stack.pop();
+      if (node.nodeType === 3 && rangeContains(range, node)) out += node.data;
+      var kids = +__childNodesCount(node.__ref);
+      for (var k = kids - 1; k >= 0; k--) stack.push(childAt(node, k));
+    }
+    if (en.nodeType === 3) out += en.substringData(0, eo);
+    return out;
+  }
+  Range.prototype.toString = function() { return rangeText(this); };
+
+  // The fragment parser, borrowed from the element the range starts in: the
+  // context element's `innerHTML` runs the same parser, and the children move
+  // into a fragment afterwards.
+  Range.prototype.createContextualFragment = function(html) {
+    var context = this.__sc;
+    if (context.nodeType !== 1) context = context.parentNode || document.body || document.documentElement;
+    var host = (context && context.nodeType === 1)
+      ? context.cloneNode(false)
+      : document.createElement('body');
+    host.innerHTML = String(html);
+    var fragment = document.createDocumentFragment();
+    while (host.firstChild) fragment.appendChild(host.firstChild);
+    return fragment;
+  };
+
+  // ---- geometry --------------------------------------------------------------
+  //
+  // `__rangeRects` asks the host's selection seam for viewport rectangles over
+  // the laid-out document. No layout bound (or a range that resolves to no
+  // shaped text) yields an empty list, which is what the spec asks of a range
+  // in a document with no box tree.
+  function rangeRectList(range) {
+    var out = [];
+    if (typeof __rangeRects !== 'function') return out;
+    var blob = __rangeRects(range.__sc.__ref, range.__so >>> 0, range.__ec.__ref, range.__eo >>> 0);
+    if (!blob) return out;
+    var lines = String(blob).split('\n');
+    for (var i = 0; i < lines.length; i++) {
+      if (!lines[i]) continue;
+      var f = lines[i].split(',');
+      out.push(new DOMRect(+f[0], +f[1], +f[2], +f[3]));
+    }
+    return out;
+  }
+  Range.prototype.getClientRects = function() {
+    var rects = rangeRectList(this);
+    rects.item = function(i) { return this[i] === undefined ? null : this[i]; };
+    return rects;
+  };
+  Range.prototype.getBoundingClientRect = function() {
+    var rects = rangeRectList(this);
+    if (!rects.length) return new DOMRect(0, 0, 0, 0);
+    var left = rects[0].x, top = rects[0].y;
+    var right = left + rects[0].width, bottom = top + rects[0].height;
+    for (var i = 1; i < rects.length; i++) {
+      var r = rects[i];
+      if (r.width === 0 && r.height === 0) continue;
+      if (r.x < left) left = r.x;
+      if (r.y < top) top = r.y;
+      if (r.x + r.width > right) right = r.x + r.width;
+      if (r.y + r.height > bottom) bottom = r.y + r.height;
+    }
+    return new DOMRect(left, top, right - left, bottom - top);
+  };
+
+  setClassString(Range.prototype, 'Range');
+  globalThis.Range = Range;
+
+  // ---- Selection -------------------------------------------------------------
+  //
+  // One source of truth: the Selection's single live `Range` is it. The visual
+  // selection Livery paints is a *projection* pushed through `__selectionVisual`
+  // whenever that range changes, never a second authority; a host-side pointer
+  // gesture reaches script through the same seam in the other direction.
+  var selectionRange = null;
+  var selectionDirection = 'none';
+  var selectionChangeQueued = false;
+  var theSelection = null;
+
+  function selectionProject() {
+    if (typeof __selectionVisual !== 'function') return;
+    if (!selectionRange || (selectionRange.__sc === selectionRange.__ec &&
+                            selectionRange.__so === selectionRange.__eo)) {
+      __selectionVisual();
+      return;
+    }
+    __selectionVisual(selectionRange.__sc.__ref, selectionRange.__so >>> 0,
+                      selectionRange.__ec.__ref, selectionRange.__eo >>> 0);
+  }
+
+  // Called by every boundary mutator. A range that is not the selection's own
+  // is not a selection change; the check is one identity comparison.
+  function selectionMayHaveChanged(range) {
+    if (range !== selectionRange) return;
+    selectionProject();
+    queueSelectionChange();
+  }
+
+  function queueSelectionChange() {
+    if (selectionChangeQueued) return;
+    selectionChangeQueued = true;
+    Promise.resolve().then(function() {
+      selectionChangeQueued = false;
+      try {
+        document.dispatchEvent(new Event('selectionchange', { bubbles: false, cancelable: false }));
+      } catch (_) {}
+    });
+  }
+
+  function selectionSet(range, direction) {
+    selectionRange = range;
+    selectionDirection = range ? (direction || 'forward') : 'none';
+    selectionProject();
+    queueSelectionChange();
+  }
+
+  function Selection() { throw new TypeError('Illegal constructor'); }
+  Selection.prototype = Object.create(Object.prototype);
+  Object.defineProperty(Selection.prototype, 'constructor', {
+    configurable: true, writable: true, value: Selection
+  });
+  function selectionAnchorIsEnd() { return selectionDirection === 'backward'; }
+  Object.defineProperty(Selection.prototype, 'anchorNode', {
+    configurable: true,
+    get: function() {
+      if (!selectionRange) return null;
+      return selectionAnchorIsEnd() ? selectionRange.__ec : selectionRange.__sc;
+    }
+  });
+  Object.defineProperty(Selection.prototype, 'anchorOffset', {
+    configurable: true,
+    get: function() {
+      if (!selectionRange) return 0;
+      return selectionAnchorIsEnd() ? selectionRange.__eo : selectionRange.__so;
+    }
+  });
+  Object.defineProperty(Selection.prototype, 'focusNode', {
+    configurable: true,
+    get: function() {
+      if (!selectionRange) return null;
+      return selectionAnchorIsEnd() ? selectionRange.__sc : selectionRange.__ec;
+    }
+  });
+  Object.defineProperty(Selection.prototype, 'focusOffset', {
+    configurable: true,
+    get: function() {
+      if (!selectionRange) return 0;
+      return selectionAnchorIsEnd() ? selectionRange.__so : selectionRange.__eo;
+    }
+  });
+  Object.defineProperty(Selection.prototype, 'isCollapsed', {
+    configurable: true,
+    get: function() {
+      return !selectionRange ||
+             (selectionRange.__sc === selectionRange.__ec && selectionRange.__so === selectionRange.__eo);
+    }
+  });
+  Object.defineProperty(Selection.prototype, 'rangeCount', {
+    configurable: true, get: function() { return selectionRange ? 1 : 0; }
+  });
+  Object.defineProperty(Selection.prototype, 'type', {
+    configurable: true,
+    get: function() {
+      if (!selectionRange) return 'None';
+      return (selectionRange.__sc === selectionRange.__ec && selectionRange.__so === selectionRange.__eo)
+        ? 'Caret' : 'Range';
+    }
+  });
+  Object.defineProperty(Selection.prototype, 'direction', {
+    configurable: true,
+    get: function() { return selectionRange ? selectionDirection : 'none'; }
+  });
+  Selection.prototype.getRangeAt = function(index) {
+    index = index >>> 0;
+    if (!selectionRange || index !== 0) {
+      throw new DOMException('no range at that index', 'IndexSizeError');
+    }
+    return selectionRange;
+  };
+  Selection.prototype.addRange = function(range) {
+    if (!range || range.__sc === undefined) {
+      throw new TypeError('addRange: argument is not a Range');
+    }
+    if (rootOf(range.__sc) !== document) return;
+    if (selectionRange) return;
+    selectionSet(range, 'forward');
+  };
+  Selection.prototype.removeRange = function(range) {
+    if (range !== selectionRange) {
+      throw new DOMException('range is not in the selection', 'NotFoundError');
+    }
+    selectionSet(null, 'none');
+  };
+  Selection.prototype.removeAllRanges = function() { selectionSet(null, 'none'); };
+  Selection.prototype.empty = function() { selectionSet(null, 'none'); };
+  function selectionCollapse(node, offset) {
+    if (node === null || node === undefined) { selectionSet(null, 'none'); return; }
+    requireNode(node, 'collapse: node');
+    if (node.nodeType === 10) {
+      throw new DOMException('node is a DocumentType', 'InvalidNodeTypeError');
+    }
+    offset = offset === undefined ? 0 : offset >>> 0;
+    if (offset > nodeLengthOf(node)) {
+      throw new DOMException('offset is past the end of the node', 'IndexSizeError');
+    }
+    if (rootOf(node) !== document) return;
+    var range = new Range();
+    setBothBP(range, node, offset, node, offset);
+    selectionSet(range, 'forward');
+  }
+  Selection.prototype.collapse = function(node, offset) { selectionCollapse(node, offset); };
+  Selection.prototype.setPosition = function(node, offset) { selectionCollapse(node, offset); };
+  Selection.prototype.collapseToStart = function() {
+    if (!selectionRange) {
+      throw new DOMException('no selection', 'InvalidStateError');
+    }
+    selectionCollapse(selectionRange.__sc, selectionRange.__so);
+  };
+  Selection.prototype.collapseToEnd = function() {
+    if (!selectionRange) {
+      throw new DOMException('no selection', 'InvalidStateError');
+    }
+    selectionCollapse(selectionRange.__ec, selectionRange.__eo);
+  };
+  Selection.prototype.extend = function(node, offset) {
+    requireNode(node, 'extend: node');
+    if (rootOf(node) !== document) {
+      throw new DOMException('node is not in the document', 'InvalidNodeTypeError');
+    }
+    if (!selectionRange) {
+      throw new DOMException('no selection', 'InvalidStateError');
+    }
+    offset = offset === undefined ? 0 : offset >>> 0;
+    if (offset > nodeLengthOf(node)) {
+      throw new DOMException('offset is past the end of the node', 'IndexSizeError');
+    }
+    var anchorNode = selectionAnchorIsEnd() ? selectionRange.__ec : selectionRange.__sc;
+    var anchorOffset = selectionAnchorIsEnd() ? selectionRange.__eo : selectionRange.__so;
+    var range = new Range();
+    if (bpPosition(node, offset, anchorNode, anchorOffset) === -1) {
+      setBothBP(range, node, offset, anchorNode, anchorOffset);
+      selectionSet(range, 'backward');
+    } else {
+      setBothBP(range, anchorNode, anchorOffset, node, offset);
+      selectionSet(range, 'forward');
+    }
+  };
+  Selection.prototype.setBaseAndExtent = function(anchorNode, anchorOffset, focusNode, focusOffset) {
+    requireNode(anchorNode, 'setBaseAndExtent: anchorNode');
+    requireNode(focusNode, 'setBaseAndExtent: focusNode');
+    anchorOffset = anchorOffset >>> 0;
+    focusOffset = focusOffset >>> 0;
+    if (anchorOffset > nodeLengthOf(anchorNode) || focusOffset > nodeLengthOf(focusNode)) {
+      throw new DOMException('offset is past the end of the node', 'IndexSizeError');
+    }
+    if (rootOf(anchorNode) !== document || rootOf(focusNode) !== document) return;
+    var range = new Range();
+    if (bpPosition(anchorNode, anchorOffset, focusNode, focusOffset) === 1) {
+      setBothBP(range, focusNode, focusOffset, anchorNode, anchorOffset);
+      selectionSet(range, 'backward');
+    } else {
+      setBothBP(range, anchorNode, anchorOffset, focusNode, focusOffset);
+      selectionSet(range, 'forward');
+    }
+  };
+  Selection.prototype.selectAllChildren = function(node) {
+    requireNode(node, 'selectAllChildren: node');
+    if (node.nodeType === 10) {
+      throw new DOMException('node is a DocumentType', 'InvalidNodeTypeError');
+    }
+    if (rootOf(node) !== document) return;
+    var range = new Range();
+    setBothBP(range, node, 0, node, nodeLengthOf(node));
+    selectionSet(range, 'forward');
+  };
+  Selection.prototype.deleteFromDocument = function() {
+    if (selectionRange) selectionRange.deleteContents();
+  };
+  Selection.prototype.containsNode = function(node, allowPartial) {
+    requireNode(node, 'containsNode: node');
+    if (!selectionRange || rootOf(node) !== document) return false;
+    if (allowPartial) return selectionRange.intersectsNode(node);
+    var parent = node.parentNode;
+    if (!parent) return false;
+    var index = nodeIndex(node);
+    return bpPosition(parent, index, selectionRange.__sc, selectionRange.__so) !== -1 &&
+           bpPosition(parent, index + 1, selectionRange.__ec, selectionRange.__eo) !== 1;
+  };
+  Selection.prototype.getComposedRanges = function() {
+    if (!selectionRange) return [];
+    return [new StaticRange({
+      startContainer: selectionRange.__sc, startOffset: selectionRange.__so,
+      endContainer: selectionRange.__ec, endOffset: selectionRange.__eo
+    })];
+  };
+  // `modify` needs shaped-text granularity the script tier does not own; it is
+  // a no-op rather than a throw so a caller's feature test still succeeds.
+  Selection.prototype.modify = function() {};
+  Selection.prototype.toString = function() {
+    return selectionRange ? rangeText(selectionRange) : '';
+  };
+  setClassString(Selection.prototype, 'Selection');
+  globalThis.Selection = Selection;
+
+  function getSelection() {
+    if (!theSelection) theSelection = Object.create(Selection.prototype);
+    return theSelection;
+  }
+  globalThis.getSelection = getSelection;
+  if (globalThis.window) { globalThis.window.getSelection = getSelection; }
+
+  // The host's pointer gesture, arriving as the same boundary points the script
+  // side would have set. This is the projection running the other way, and it
+  // is the only writer of the selection that is not script.
+  globalThis.__selectionFromHost = function(scRef, so, ecRef, eo) {
+    if (scRef === undefined || scRef === null) { selectionSet(null, 'none'); return; }
+    var range = new Range();
+    setBothBP(range, wrapNode(scRef), so >>> 0, wrapNode(ecRef), eo >>> 0);
+    selectionRange = range;
+    selectionDirection = 'forward';
+    queueSelectionChange();
+  };
 
   installHtmlInterfaceTable();
   installShapeInterfaces();
@@ -3544,6 +4626,7 @@
       'focusin', 'focusout',
       'drag', 'dragstart', 'dragend', 'dragenter', 'dragover', 'dragleave', 'drop',
       'copy', 'cut', 'paste',
+      'selectionchange', 'selectstart',
       'animationstart', 'animationiteration', 'animationend', 'animationcancel',
       'transitionstart', 'transitionrun', 'transitionend', 'transitioncancel',
       'toggle',

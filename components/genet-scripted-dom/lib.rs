@@ -576,6 +576,20 @@ impl ScriptedDom {
         self.push(node)
     }
 
+    /// Create a detached `ProcessingInstruction` node. The target lives in
+    /// `name` (it is `nodeName`) and the data in `text`, so the character-data
+    /// readers and writers already reach it.
+    pub fn create_processing_instruction(&mut self, target: &str, data: &str) -> NodeId {
+        let mut node = Node::new(NodeKind::ProcessingInstruction);
+        node.name = Some(QualName::new(
+            None,
+            Namespace::from(""),
+            LocalName::from(target),
+        ));
+        node.text = Some(data.to_owned());
+        self.push(node)
+    }
+
     /// Create a detached `DocumentFragment` node (a parentless container).
     pub fn create_fragment(&mut self) -> NodeId {
         self.push(Node::new(NodeKind::DocumentFragment))

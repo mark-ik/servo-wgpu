@@ -224,7 +224,11 @@ impl<E: ScriptEngine> NativeFn<E> for NodeName {
                 NodeKind::Comment => "#comment".to_string(),
                 NodeKind::Document => "#document".to_string(),
                 NodeKind::Doctype => "html".to_string(),
-                NodeKind::ProcessingInstruction => "#processing-instruction".to_string(),
+                // A PI's node name is its target.
+                NodeKind::ProcessingInstruction => dom
+                    .element_name(n)
+                    .map(|q| q.local.as_ref().to_string())
+                    .unwrap_or_default(),
                 NodeKind::DocumentFragment => "#document-fragment".to_string(),
             }
         })

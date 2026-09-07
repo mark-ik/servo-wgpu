@@ -433,6 +433,22 @@ impl<E: ScriptEngine> NativeFn<E> for CreateComment {
     }
 }
 
+/// `__createProcessingInstruction(target, data)` → a reflector for a fresh
+/// detached `ProcessingInstruction` node.
+pub(crate) struct CreateProcessingInstruction;
+impl<E: ScriptEngine> NativeFn<E> for CreateProcessingInstruction {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let target_value = cx.arg(0);
+        let target = cx.value_to_string(&target_value)?;
+        let data_value = cx.arg(1);
+        let data = cx.value_to_string(&data_value)?;
+        match with_dom::<E, _>(cx, |dom| dom.create_processing_instruction(&target, &data)) {
+            Some(node) => reflect_pinned::<E>(cx, node.raw() as u64),
+            None => Ok(cx.undefined()),
+        }
+    }
+}
+
 /// `__createFragment()` → a reflector for a fresh detached `DocumentFragment`.
 pub(crate) struct CreateFragment;
 impl<E: ScriptEngine> NativeFn<E> for CreateFragment {
