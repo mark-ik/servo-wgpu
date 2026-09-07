@@ -10,13 +10,13 @@
 //! `Crypto.prototype`, so feature detection works instead of throwing a
 //! `ReferenceError` on the way in.
 //!
-//! The default source is a ChaCha20 stream seeded from `RandomState` (the OS
-//! entropy `std` already keeps for hash seeds) plus address entropy. It links no
-//! crate outside `std`, so the wasm cone keeps carrying no `getrandom`. A host
-//! that has a real OS CSPRNG installs it with [`crate::Runtime::set_random_source`].
+//! The default source is the operating system's CSPRNG through the `getrandom`
+//! crate on native targets. On wasm there is no default: the host installs the
+//! browser's own source with [`crate::Runtime::set_random_source`], and until it
+//! does `getRandomValues` throws `NotSupportedError` rather than return bytes
+//! that are not random. Nothing in this file generates randomness itself.
 
 use std::cell::RefCell;
-use std::hash::{BuildHasher, Hasher};
 
 use script_engine_api::{CallCx, NativeFn, ScriptEngine};
 
@@ -30,109 +30,21 @@ pub trait RandomSource {
     fn fill(&self, buf: &mut [u8]);
 }
 
-/// The default source: a ChaCha20 keystream over a seed taken from `std`'s
-/// OS-seeded hash keys and an ASLR-dependent address.
-#[derive(Default)]
-pub(crate) struct DefaultRandom {
-    state: RefCell<Option<ChaCha20>>,
+/// Fill `buf` from the platform default, or report that there is none.
+#[cfg(not(target_arch = "wasm32"))]
+fn default_fill(buf: &mut [u8]) -> bool {
+    getrandom::fill(buf).is_ok()
 }
 
-impl DefaultRandom {
-    fn fill(&self, buf: &mut [u8]) {
-        let mut slot = self.state.borrow_mut();
-        let rng = slot.get_or_insert_with(|| ChaCha20::new(seed_words()));
-        rng.fill(buf);
-    }
-}
-
-/// 256 bits of seed material: four independent `RandomState` keys (each derived
-/// from the process's OS-seeded hash seed) mixed with a stack address.
-fn seed_words() -> [u32; 8] {
-    let mut out = [0u32; 8];
-    let probe = 0u64;
-    let mut mix = &probe as *const u64 as u64;
-    for slot in out.chunks_mut(2) {
-        let state = std::collections::hash_map::RandomState::new();
-        let mut hasher = state.build_hasher();
-        hasher.write_u64(mix);
-        let v = hasher.finish();
-        mix = mix.rotate_left(17) ^ v;
-        slot[0] = v as u32;
-        slot[1] = (v >> 32) as u32;
-    }
-    out
-}
-
-/// ChaCha20 as a keystream generator (RFC 8439 block function, 64-bit counter).
-struct ChaCha20 {
-    key: [u32; 8],
-    counter: u64,
-    block: [u8; 64],
-    used: usize,
-}
-
-impl ChaCha20 {
-    fn new(key: [u32; 8]) -> Self {
-        Self {
-            key,
-            counter: 0,
-            block: [0; 64],
-            used: 64,
-        }
-    }
-
-    fn fill(&mut self, buf: &mut [u8]) {
-        for byte in buf.iter_mut() {
-            if self.used == 64 {
-                self.refill();
-            }
-            *byte = self.block[self.used];
-            self.used += 1;
-        }
-    }
-
-    fn refill(&mut self) {
-        let mut s = [0u32; 16];
-        s[0] = 0x6170_7865;
-        s[1] = 0x3320_646e;
-        s[2] = 0x7962_2d32;
-        s[3] = 0x6b20_6574;
-        s[4..12].copy_from_slice(&self.key);
-        s[12] = self.counter as u32;
-        s[13] = (self.counter >> 32) as u32;
-        let mut w = s;
-        for _ in 0..10 {
-            quarter(&mut w, 0, 4, 8, 12);
-            quarter(&mut w, 1, 5, 9, 13);
-            quarter(&mut w, 2, 6, 10, 14);
-            quarter(&mut w, 3, 7, 11, 15);
-            quarter(&mut w, 0, 5, 10, 15);
-            quarter(&mut w, 1, 6, 11, 12);
-            quarter(&mut w, 2, 7, 8, 13);
-            quarter(&mut w, 3, 4, 9, 14);
-        }
-        for i in 0..16 {
-            let v = w[i].wrapping_add(s[i]);
-            self.block[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
-        }
-        self.counter = self.counter.wrapping_add(1);
-        self.used = 0;
-    }
-}
-
-fn quarter(s: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize) {
-    s[a] = s[a].wrapping_add(s[b]);
-    s[d] = (s[d] ^ s[a]).rotate_left(16);
-    s[c] = s[c].wrapping_add(s[d]);
-    s[b] = (s[b] ^ s[c]).rotate_left(12);
-    s[a] = s[a].wrapping_add(s[b]);
-    s[d] = (s[d] ^ s[a]).rotate_left(8);
-    s[c] = s[c].wrapping_add(s[d]);
-    s[b] = (s[b] ^ s[c]).rotate_left(7);
+/// No platform default on wasm: the host must install a source.
+#[cfg(target_arch = "wasm32")]
+fn default_fill(_buf: &mut [u8]) -> bool {
+    false
 }
 
 /// `__crypto_random(n)` → `n` random bytes as a lossless binary string (each JS
-/// char code is one byte), the same convention the fetch sink uses.
+/// char code is one byte), the same convention the fetch sink uses, or `null`
+/// when no random source exists on this host.
 struct CryptoRandom;
 impl<E: ScriptEngine> NativeFn<E> for CryptoRandom {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
@@ -150,16 +62,15 @@ impl<E: ScriptEngine> NativeFn<E> for CryptoRandom {
         });
         match source {
             Some(source) => source.fill(&mut bytes),
-            None => DEFAULT.with(|d| d.fill(&mut bytes)),
+            None => {
+                if !default_fill(&mut bytes) {
+                    return Ok(cx.make_null());
+                }
+            },
         }
         let s: String = bytes.iter().map(|&b| b as char).collect();
         cx.make_string(&s)
     }
-}
-
-thread_local! {
-    /// One default generator per thread: seeded on first use, then a stream.
-    static DEFAULT: DefaultRandom = DefaultRandom::default();
 }
 
 pub(crate) fn install_crypto_surface<E: ScriptEngine>(engine: &mut E) -> Result<(), E::Error> {
@@ -178,6 +89,9 @@ const CRYPTO_BOOTSTRAP: &str = r#"
   };
   function randomBytes(n) {
     var s = __crypto_random(n), out = new Uint8Array(n);
+    if (s === null) {
+      throw new DOMException("No random source is installed on this host", "NotSupportedError");
+    }
     for (var i = 0; i < n; i++) { out[i] = s.charCodeAt(i) & 0xFF; }
     return out;
   }

@@ -223,16 +223,14 @@ Named, not hidden, and each is a boundary rather than a bug:
 1. **`crypto.subtle` is absent.** 72 WebCryptoAPI files still error. The whole
    algorithm catalogue is a separate lane; `crypto` existing is what this one
    bought.
-2. **The default random source is not an OS CSPRNG.** `DefaultRandom` is a
-   ChaCha20 stream seeded from `std`'s OS-derived hash keys plus a stack
-   address. It links nothing outside `std`, which keeps the wasm cone free of
-   `getrandom` (the workspace deliberately carries none — see the `ahash`
-   note in the root `Cargo.toml`). A host with a real CSPRNG installs it with
-   `Runtime::set_random_source`. **This is a decision that is Mark's:** the
-   alternative is a `cfg(not(target_arch = "wasm32"))` dependency on `rand`,
-   which gives real OS entropy natively at the cost of a second code path and
-   a cfg-gated build surface. The lane took the no-dependency option so the
-   wasm cone stayed measured; say the word and it flips.
+2. **The default random source** (decided by Mark 2026-09-07, landed the
+   same day): the in-tree ChaCha20 seeded from `std`'s hash keys is gone.
+   Native targets fill from the operating system through `getrandom` 0.4,
+   cfg-gated off wasm so the wasm cone still carries no `getrandom`; on wasm
+   there is no default, `getRandomValues` throws `NotSupportedError` until
+   the host installs the browser's source through
+   `Runtime::set_random_source`. Nothing in the tree generates randomness
+   itself.
 3. **`ArrayBuffer` detachment is emulated,** not real, on both backends
    (Findings, above). The battery's *Resizable ArrayBuffer is transferable*,
    *Length-tracking TypedArray/DataView is transferable* and the OOB cases

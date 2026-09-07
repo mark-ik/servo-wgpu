@@ -21,6 +21,9 @@ script-engine-api = { path = "../script-engine-api" }
 # The DOM the host surface scripts against: a NodeId arena implementing
 # LayoutDom + LayoutDomMut, recording DomMutations for retained Livery hosts.
 genet-scripted-dom = { path = "../genet-scripted-dom" }
+# The HTML and XML parsers behind DOMParser.parseFromString; the parsed tree is
+# copied into the scripted arena as a new Document.
+genet-static-dom = { path = "../genet-static-dom" }
 # QualName / Namespace / LocalName for create_element.
 layout-dom-api = { path = "../shared/layout-dom" }
 # Prefix (not re-exported by layout-dom-api) for createElementNS qualified names.
@@ -39,13 +42,17 @@ genet-idl-interface-table = { path = "../../support/idl-interface-table" }
 # Validate the host surface against a real backend. Boa is pure Rust (all targets);
 # Nova is available to tests on every 64-bit target, including wasm64.
 script-engine-boa = { path = "../script-engine-boa" }
-# Parse HTML to a LayoutDom for the `load_dom` test (a real source document).
-genet-static-dom = { path = "../genet-static-dom" }
 # Backs the test-side WebGlHandler that proves the JS WebGLRenderingContext
 # surface reaches a real wgpu-backed context end-to-end.
 webgl_wgpu = { workspace = true }
 wgpu = { workspace = true }
 pollster = "0.4"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# crypto.getRandomValues' default source. Native only: the wasm cone carries no
+# getrandom (see the sonic-rs patch note in the root manifest); a wasm host
+# installs the browser's source through Runtime::set_random_source.
+getrandom = "0.4"
 
 [target.'cfg(target_pointer_width = "64")'.dev-dependencies]
 script-engine-nova = { path = "../script-engine-nova" }
