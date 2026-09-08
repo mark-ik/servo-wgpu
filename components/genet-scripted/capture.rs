@@ -10,8 +10,6 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[cfg(feature = "render")]
-use genet_layout::{Applied, IncrementalLayout};
 use genet_scripted_dom::{NodeId, ScriptedDom};
 use layout_dom_api::{CapturedQualName, DomMutation, LayoutDom, LayoutDomMut};
 use serde::{Deserialize, Serialize};
@@ -73,8 +71,6 @@ pub(crate) struct DomCaptureRecorder {
     stylesheets: Vec<String>,
     layout_width: u32,
     layout_height: u32,
-    #[cfg(feature = "render")]
-    shadow_layout: IncrementalLayout<NodeId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -189,36 +185,6 @@ impl RecordedMutation {
     }
 }
 
-#[cfg(feature = "render")]
-impl From<Applied> for RecordedApplied {
-    fn from(value: Applied) -> Self {
-        match value {
-            Applied::Unchanged => Self::Unchanged,
-            Applied::RepaintOnly => Self::RepaintOnly,
-            Applied::Restyled => Self::Restyled,
-            Applied::Spliced => Self::Spliced,
-            Applied::FullRecompute => Self::FullRecompute,
-        }
-    }
-}
-
-impl RecordedLayoutBatch {
-    #[cfg(feature = "render")]
-    fn capture(dom: &ScriptedDom, layout: &IncrementalLayout<NodeId>, applied: Applied) -> Self {
-        let viewport = layout.viewport();
-        Self {
-            applied: applied.into(),
-            fragment_digest: fragment_digest(dom, layout.fragments()),
-            viewport: RecordedViewport {
-                width: viewport.size.width,
-                height: viewport.size.height,
-                scroll_x_bits: viewport.scroll.0.to_bits(),
-                scroll_y_bits: viewport.scroll.1.to_bits(),
-            },
-        }
-    }
-}
-
 impl DomCaptureRecorder {
     pub(crate) fn from_env(
         dom: &mut ScriptedDom,
@@ -247,8 +213,6 @@ impl DomCaptureRecorder {
             stylesheets: stylesheets.to_vec(),
             layout_width,
             layout_height,
-            #[cfg(feature = "render")]
-            shadow_layout: new_shadow_layout(dom, stylesheets, layout_width, layout_height),
         };
         recorder.write_record(&DomCaptureRecord::SessionStart {
             snapshot_html: dom.inner_html(dom.document()),
@@ -273,23 +237,17 @@ impl DomCaptureRecorder {
             .iter()
             .map(|m| RecordedMutation::capture(dom, m))
             .collect();
-        #[cfg(feature = "render")]
-        let layout = Some(self.capture_layout(dom, &pending));
-        #[cfg(not(feature = "render"))]
+        // Layout parity capture (a shadow `genet_layout::IncrementalLayout` kept
+        // beside the recorder, applying each batch to record fragment-digest +
+        // viewport alongside the DOM mutations) was retired with the
+        // genet-layout route: this crate never declared the `render` feature
+        // that code was gated on, so it neither compiled nor ran. Rather than
+        // resurrect a shadow layout for a route that no longer exists, this
+        // recorder now records DOM mutations only; `layout` stays in the wire
+        // format for backward-compatible deserialization of old captures.
         let layout = None;
         self.write_record(&DomCaptureRecord::MutationBatch { mutations, layout })?;
         Ok(pending.len())
-    }
-
-    #[cfg(feature = "render")]
-    fn capture_layout(
-        &mut self,
-        dom: &ScriptedDom,
-        pending: &[DomMutation<NodeId>],
-    ) -> RecordedLayoutBatch {
-        let sheets = stylesheet_refs(&self.stylesheets);
-        let applied = self.shadow_layout.apply(dom, &sheets, pending);
-        RecordedLayoutBatch::capture(dom, &self.shadow_layout, applied)
     }
 
     fn write_record(&mut self, record: &DomCaptureRecord) -> io::Result<()> {
@@ -326,62 +284,6 @@ fn read_capture_records(path: &Path) -> io::Result<Vec<DomCaptureRecord>> {
     Ok(out)
 }
 
-#[cfg(feature = "render")]
-fn new_shadow_layout(
-    dom: &ScriptedDom,
-    stylesheets: &[String],
-    layout_width: u32,
-    layout_height: u32,
-) -> IncrementalLayout<NodeId> {
-    let sheets = stylesheet_refs(stylesheets);
-    IncrementalLayout::new(dom, &sheets, layout_width as f32, layout_height as f32)
-}
-
-#[cfg(feature = "render")]
-fn stylesheet_refs(stylesheets: &[String]) -> Vec<&str> {
-    stylesheets.iter().map(String::as_str).collect()
-}
-
-#[cfg(feature = "render")]
-fn fragment_digest(dom: &ScriptedDom, fragments: &genet_layout::FragmentPlane<NodeId>) -> u64 {
-    let mut entries: Vec<_> = fragments
-        .iter()
-        .map(|(node, layout)| {
-            (
-                dom.capture_node_id(*node),
-                layout.location.x.to_bits(),
-                layout.location.y.to_bits(),
-                layout.size.width.to_bits(),
-                layout.size.height.to_bits(),
-            )
-        })
-        .collect();
-    entries.sort_unstable_by_key(|entry| entry.0);
-
-    let mut digest = 0xcbf2_9ce4_8422_2325u64;
-    for (node, x, y, width, height) in entries {
-        hash_u64(&mut digest, node);
-        hash_u32(&mut digest, x);
-        hash_u32(&mut digest, y);
-        hash_u32(&mut digest, width);
-        hash_u32(&mut digest, height);
-    }
-    digest
-}
-
-#[cfg(feature = "render")]
-fn hash_u64(state: &mut u64, value: u64) {
-    for byte in value.to_le_bytes() {
-        *state ^= byte as u64;
-        *state = state.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-}
-
-#[cfg(feature = "render")]
-fn hash_u32(state: &mut u64, value: u32) {
-    hash_u64(state, value as u64);
-}
-
 fn session_file_name() -> String {
     format!("dom-capture-{}.postcard", now_millis())
 }
@@ -407,14 +309,6 @@ mod tests {
         static NEXT_ID: AtomicU64 = AtomicU64::new(0);
         let unique = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!("genet-dom-capture-{}-{unique}.bin", now_millis()))
-    }
-
-    #[cfg(feature = "render")]
-    fn structural_sheets() -> Vec<String> {
-        crate::STRUCTURAL_SHEET
-            .iter()
-            .map(|sheet| sheet.to_string())
-            .collect()
     }
 
     #[test]
@@ -453,13 +347,11 @@ mod tests {
                         new_value: Some("main".to_string()),
                     }]
                 );
-                #[cfg(feature = "render")]
-                assert!(layout.is_some(), "render build should record layout parity");
-                #[cfg(not(feature = "render"))]
-                assert!(
-                    layout.is_none(),
-                    "non-render build should skip layout parity"
-                );
+                // Layout-parity capture (the shadow `IncrementalLayout` this
+                // recorder used to keep alongside the DOM mutation stream) was
+                // retired with the genet-layout route; `layout` is always
+                // `None` now. See `record_pending`.
+                assert!(layout.is_none(), "layout parity capture is retired");
             },
             other => panic!("unexpected record: {other:?}"),
         }

@@ -884,3 +884,106 @@ once two identified timing artifacts are removed, with all 19 census
 fourteen at `unexpected=0`; both reftest guards at `unexpected=0`; the Ortet
 digest unchanged. Receipts under
 `Code/testing/genet/wpt-ledger/2026-09-08_interleaving_part_two/`.
+
+## Findings — 2026-09-08, `genet-scripted` test-surface cleanup
+
+Part two's residual 8 ("`genet-scripted`'s main test module does not
+compile") and residual 10 (the second-parse cost being dead code under the
+same phantom feature) are **closed**. A separate lane revived the crate's
+`#[cfg(all(test, feature = "render"))] mod tests` in `document.rs` and the
+matching `#[cfg(feature = "render")]` production code in `document.rs` and
+`capture.rs` — the `render` feature this crate never declared. Scope was
+`genet-scripted`'s `Cargo.toml`, `document.rs`, `capture.rs`, `livery.rs`, and
+their tests only.
+
+- **`ScriptedDocument` is not dead — only its render half was.** Only the
+  fields/methods explicitly gated `#[cfg(feature = "render")]` (a
+  `ComputedStyleBridge`/`MediaQueryBridge` pair, `frame`,
+  `frame_with_external_textures`, `links`, the text-selection trio,
+  `dom()`, `scroll_by`, `scroll_for_key`, `click_at`, `scroll()`,
+  `last_layout_batch_stats`, plus the render-only struct fields backing
+  them) were unreachable. `ScriptedDocument::parse`/`load`/`from_body`,
+  `evaluate`, `dispatch_event`, `pump`, `extract`, `console`, `dom_snapshot`,
+  and the WebGL-factory constructors were never gated at all — `Runtime::
+  set_webgl_factory` is called unconditionally in `build`. So `ScriptedDocument`
+  is a real, live, intentionally headless route (script execution + DOM
+  mutation + render-free extraction — see its module doc, which undersold this
+  as "GPU-free and testable" when it is actually the only mode this type has
+  now). Also, `genet_layout`/`genet_render` were never even declared as
+  dependencies in `Cargo.toml` — the render-gated code could not have compiled
+  even if the feature had existed.
+- **Two Livery receipts were trapped inside the dead module and never ran.**
+  `livery_scripted_document_owns_live_cssom_resources_and_frame_on_boa` and
+  `livery_scripted_button_hit_dispatches_to_its_listener_on_boa` already
+  targeted `LiveryScriptedDocument` (the live route) but sat inside
+  `#[cfg(all(test, feature = "render"))] mod tests`, so the `render` gate
+  silently swallowed them too. Relocated verbatim into a new, ungated
+  `livery_render_tests` submodule; both pass.
+- **`capture.rs`'s render-gated code was a "shadow layout" for the retired
+  route by name** (`shadow_layout: IncrementalLayout<NodeId>`,
+  `fragment_digest` over a `genet_layout::FragmentPlane`) — exactly the
+  "shadow layout" / "fragment planes" the task's delete criteria named.
+  Deleted outright: `shadow_layout` field, `new_shadow_layout`,
+  `stylesheet_refs`, `fragment_digest`, both hash helpers, and
+  `RecordedLayoutBatch::capture` / `From<Applied> for RecordedApplied`.
+  `record_pending` now always writes `layout: None`; `RecordedLayoutBatch`'s
+  struct/enum shapes are kept in the wire format for backward-compatible
+  deserialization of old capture files, just never constructed.
+- **Two headless script-timing tests were finally run for the first time and
+  turned out wrong, not my port.** Once un-gated (both are plain
+  `ScriptedDocument` tests, untouched otherwise):
+  - `async_runs_after_parser_blocking` expects `["inline", "async"]`, but
+    `script-runtime-api`'s own `ScriptTiming::Async` doc says a synchronous
+    fetcher makes `async` run "at the pause" like `Blocking` — the observed
+    `["async", "inline"]` matches the documented design. The test's
+    expectation was never correct.
+  - `module_imports_dependency` and `module_import_diamond_loads_shared_once`
+    fail to fetch: `DocumentScriptLoader::resolve` (in `document.rs`) routes a
+    module's relative `import` specifier through `crate::resolve_href`
+    (`lib.rs`), which is plain string-prefix concatenation and never collapses
+    a leading `./` — `resolve_href("http://x/main.js", "./dep.js")` yields
+    `"http://x/./dep.js"`, which does not string-match a fixture's
+    `"http://x/dep.js"` key. `lib.rs`'s own doc comment on `resolve_href`
+    claims "Module resolution uses `url::Url::join` separately where
+    normalization is required" — that path is not actually wired up.
+  - All three left `#[ignore]`d with the reason inline, per instruction not to
+    weaken assertions to force a pass; fixing `resolve_href` or the module
+    resolver is out of this cleanup's scope (and touches `lib.rs` /
+    `script-runtime-api`, neither owned here).
+- **A genuine capability gap, not a bug: Livery has no `MediaQueryHandler`.**
+  `LiveryCssom::install_live_with_optional_sink` installs a
+  `ComputedStyleHandler` (`LiveryComputedStyle`) but never
+  `set_media_query_handler`, unlike the retired `MediaQueryBridge`. Ported
+  `match_media_evaluates_against_the_frame` onto `LiveryScriptedDocument`
+  anyway, `#[ignore]`d with that reason, so the gap has a compiling receipt
+  instead of silently missing coverage. `from_body_wires_document_cookie` and
+  the WebGL-factory test needed no such treatment — both are `ScriptedDocument`
+  (headless) capabilities, ungated, and ported unchanged.
+- **`LiveryScriptedDocument::click_at`'s bool means something different from
+  the retired `ScriptedDocument::click_at`'s.** The old one returned "did the
+  default action move the scroll"; Livery's returns "did the click hit
+  anything at all" (`ScriptedClick::Miss` vs. not) — a `preventDefault`
+  listener still counts as a hit. `prevent_default_blocks_anchor_nav` was
+  ported to assert directly on `scroll()` rather than reusing the return value
+  as a "scrolled" stand-in, with a comment recording the semantic difference.
+
+**Disposition.** 40 render-gated generic test scenarios (many run on both Boa
+and, where `scripted-nova` was already covering them, Nova): **34 ported**
+(25 stayed on headless `ScriptedDocument` essentially unchanged — three of
+those newly `#[ignore]`d for the findings above — and 9 moved onto
+`LiveryScriptedDocument`, one of those `#[ignore]`d for the `MediaQueryHandler`
+gap), **2 relocated** unchanged out of the dead module (the trapped Livery
+receipts), **5 deleted** as specifically testing the retired genet-layout
+route: `dom_and_layout_stats_surface` (`last_layout_batch_stats` /
+`LayoutApplyKind` — incremental-layout receipts),
+`canvas_external_texture_metadata_reaches_the_frame` (the
+`frame_with_external_textures`/`RenderedFrame` external-texture side channel,
+which has no Livery equivalent), and `transition_interpolates_via_get_computed_style`,
+`transition_events_dispatch_to_listeners`, `animation_events_dispatch_to_listeners`
+(all three hand-drive a `genet_layout::IncrementalLayout` directly —
+`tick_animations`/`take_transition_events`/`has_active_animations` — with no
+Livery transition/animation machinery to port onto at all). The
+`unexpected_cfgs` allowance and every `#[cfg(feature = "render")]` gate are
+gone from `Cargo.toml`, `document.rs`, and `capture.rs`. `cargo test -p
+genet-scripted` is green (60 passed, 4 ignored, each with a reason);
+`cargo clippy -p genet-scripted --all-targets` adds no new warnings.

@@ -29,12 +29,6 @@ scripted-nova = ["dep:script-engine-nova"]
 # Owned CSSOM, layout, and paint bridge for scripted/fullweb hosts.
 livery = ["dep:genet-livery", "dep:paint_list_api", "dep:paint_list_render", "dep:netrender"]
 
-[lints.rust]
-# `document.rs` and `capture.rs` still contain bounded pre-L7 donor blocks while
-# their useful recorder/view-state contracts are evaluated for Livery or Verso.
-# No `render` feature exists, so the retired incumbent route cannot compile.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("render"))'] }
-
 [dependencies]
 genet-scripted-dom = { path = "../genet-scripted-dom" }
 genet-document-resources = { workspace = true }
