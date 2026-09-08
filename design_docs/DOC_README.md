@@ -49,6 +49,7 @@ older `docs/` corpus without changing their location or governance.
 | [WPT harness and ledger](../docs/2026-08-24_wpt_harness_ledger_execution_plan.md) | Exact scorer and reference-verification gates landed. Freeze a fresh candidate runner for new work; unsupported test/reference agreement earns no conformance credit. |
 | [Servo cone retirement](2026-09-07_servo_cone_retirement_plan.md) | servo-paint's compositor half carved out as genet-compositor; the reftest lane renders through genet-render-host; the constellation trait cone left the graph 2026-09-07. All gates green; next proof is Mere's dependency rename at its next bump. |
 | [Web platform WPT census](2026-09-06_web_platform_wpt_census.md) | Baseline exact maps for 41 non-CSS WPT directories (21,672 files, disk mode, Boa/Livery) landed 2026-09-06. Three of its four harness caveats are closed by the harness-repair plan; the reftest caveat and the per-directory lanes remain open. |
+| [Standards-to-features ledger](2026-09-07_standards_to_features_ledger.md) | Founded 2026-09-07 by Mark's ruling on mere's lighter-recall brief: fourteen rows pairing a standard, its census count, what adhering means in genet, and what mere and the products unlock; consumers on record. The census is the authority for current numbers. |
 | [WPT harness repair](2026-09-07_wpt_harness_repair_plan.md) | Per-test worker isolation, the disk-mode include and `.py` fixes, and a configurable, quiescing server-mode deadline landed 2026-09-07, with a re-run census whose 204 movements are all attributed. Next proof: a server-mode measurement of the network-dependent families on a live `wpt serve`. |
 | [XMLHttpRequest](2026-09-07_xhr_plan.md) | XHR as a state machine over the fetch seam, landed 2026-09-07: xhr 53 to 281 subtests in disk mode, 831 of 1,336 in server mode, fetch holds. Residuals: responseXML needs DOMParser; 28 errors are Worker and document.domain demand. |
 | [Cheap globals](2026-09-07_cheap_globals_plan.md) | `performance` (+ `PerformanceObserver`), `queueMicrotask`, `structuredClone`, `MessageChannel` / `MessagePort` / `BroadcastChannel` and `crypto` landed 2026-09-07: 79 forward file movements, zero pass-to-fail, +462 subtest passes over ten directories. Next proof is `crypto.subtle`, real `ArrayBuffer` detachment, and the cross-agent reuse of the clone walker by the Worker lane. |
@@ -66,8 +67,8 @@ older `docs/` corpus without changing their location or governance.
 
 | [iframes and nested browsing contexts](2026-09-08_iframes_plan.md) | HTML's browsing-context tree in `genet-documents` (parent, children, top, each context's active document, origin, sandbox flags and its own session history), loading through the parent's own resource route (`src`, `srcdoc`, `about:blank`, the initial-`about:blank` rules, `sandbox` / `allow` / `loading`), and the child's scene composited into the parent's replaced box as a **paint-list splice** rather than a producer texture, clipped to the content box, with hit testing descending into it. Landed 2026-09-08: +23 subtest passes over eight directories, two files `fail -> pass`, zero pass-to-fail, three baselines repinned forward with six named entries, all fourteen at `unexpected=0` and both reftest guards at `unexpected=0`. Ortet composites child frames through the script-free Livery route with no Ortet code change; the article digest is unchanged at `0x6377ba8a6bf4dbc9` and the new `frames.html` receipt is `0x2e7dd44b19907205`. **The per-context `Runtime` and the cross-origin `WindowProxy` are a decision for Mark**: two `Runtime`s are two engine instances and this stack's cross-instance boundary marshals strings, which cannot carry the same-origin object identity `contentWindow` requires. |
 The [Buckram master](../docs/2026-07-26_buckram_css_layout_engine_plan.md)
-assigns residuals. The linked execution plans carry their current gate; a
 defines ownership and the [lane program](../docs/2026-08-21_buckram_livery_lane_program_plan.md)
+assigns residuals. The linked execution plans carry their current gate; a
 completed corpus census or bounded slice does not close its enclosing feature.
 
 ## Servo cone retirement
@@ -140,7 +141,6 @@ completed corpus census or bounded slice does not close its enclosing feature.
   `html/webappapis` 31 → 45; +972 subtest passes over five directories, 207
   previously unenumerated variants now reporting, and zero pass-to-fail. Raw
   maps under `Code/testing/genet/wpt-ledger/2026-09-07_worker/`.)
-- [websocket_plan](2026-09-07_websocket_plan.md)
 - [iframes_plan](2026-09-08_iframes_plan.md)
   (**landed 2026-09-08**: nested browsing contexts. `BrowsingContextTree` in
   `genet-documents` is deliberately *data*, not a session — identity, origin,
@@ -183,6 +183,7 @@ completed corpus census or bounded slice does not close its enclosing feature.
   `contentWindow` needs realms in `ScriptEngine` or stays permanently partial —
   plus `document.domain`, the cross-origin `WindowProxy`, COOP/COEP enforcement,
   child navigation, lazy loading, focus, and a headed script-driven receipt.)
+- [websocket_plan](2026-09-07_websocket_plan.md)
   (**landed 2026-09-07**: `WebSocket` and `CloseEvent` as a script-visible state
   machine over an extended netfetcher transport. Two halves, because WebSocket is
   not a shape of `fetch()`: the Fetch algorithm does not wrap the connection
@@ -240,8 +241,8 @@ completed corpus census or bounded slice does not close its enclosing feature.
   (**landed 2026-09-07**: `Range`, `StaticRange`, `AbstractRange`, `Selection`
   and `getSelection` over the scripted arena. The DOM's live-range steps run at
   the bootstrap's own twelve-call-site mutation funnel rather than off the
-  offsets as they stood *before* the mutation; boundaries are indexed by the
   arena's observer record, because they need the child index and the boundary
+  offsets as they stood *before* the mutation; boundaries are indexed by the
   node they sit in, since a flat list is quadratic and hung eight
   `editing/run/*` files in the first `post` map. One source of truth: the
   script-owned `Range` is it, and Livery's `TextRange` selection is a projection
@@ -347,6 +348,91 @@ completed corpus census or bounded slice does not close its enclosing feature.
   soak restated to "bounded by reachable touched nodes" and asserting both
   directions. Baselines `unexpected=0`, Ortet digest unchanged. Raw maps under
   `Code/testing/genet/wpt-ledger/2026-09-07_reflector_identity/`.)
+- [parser_script_interleaving_plan](2026-09-08_parser_script_interleaving_plan.md)
+  (**landed 2026-09-08 in the engine**: the residual the Shadow DOM lane left to
+  Mark. html5ever already had the seam — `Tokenizer::feed` returns
+  `TokenizerResult::Script(handle)` when the tree builder pops a `</script>`,
+  with the element and its text already in the tree — so the lane is a
+  `TreeSink` over the **live arena** plus a drive loop around it. Parsing through
+  the arena's own `LayoutDomMut` mutators is why a `MutationObserver` sees parser
+  insertions for free: `append_child` already writes the record, maintains slot
+  assignment and advances the structural epoch. The arena is **moved** between
+  the host state and the parser's cell around each pause rather than shared
+  behind a second `RefCell`, because a tree-sink call and a DOM native both want
+  `&mut ScriptedDom` and are never live at once. The two questions the tree
+  builder asks the script tier — `allow_declarative_shadow_roots` and
+  `attach_declarative_shadow` — are answered from a table refreshed **after**
+  each script, which is exact rather than approximate because the registry can
+  only change while a script runs. `document.write` during a parse is
+  `BufferQueue::push_front`, the spec's insertion point literally; after a parse
+  it implies `document.open` and re-materializes the document, with the exact
+  rule and its two limits named. `readyState` stopped being a bootstrap constant
+  and became a host fact the driver moves through loading → interactive →
+  complete at HTML's points. `html/syntax` errored **62 → 1** (61 of them one
+  undefined `document.write`), `dynamic-markup-insertion` 1 → **30** all-pass,
+  `custom-elements` 8 → 9, `html/semantics/scripting-1` errored 125 → 103;
+  `dom`, `html/dom/documents` and `html/webappapis/scripting` byte-identical.
+  +68 subtest passes, 30 `fail -> pass`, 2 `error -> pass`, **zero pass-to-fail**,
+  no baselines repinned, Ortet digest unchanged. `innerHTML` on a `<template>`
+  was operating on its children and now operates on its contents. The two Shadow
+  DOM declarative WPT files do **not** move: the runner never parses with
+  scripts interleaved, and this lane was fenced out of `ports/genet-wpt/src`.
+  Raw maps under
+  `Code/testing/genet/wpt-ledger/2026-09-08_parser_script_interleaving/`.)
+  **Part two, landed 2026-09-08**, closes that gate. `run_test_with_webgl_and_style`
+  parses interleaved through a `ParserScriptLoader` over the existing
+  `ScriptSrcLoader`, with `testharness.js` and the results bridge as a *prelude*
+  and exactly one `load` dispatch (`Runtime::begin_parsed_testharness`); the XML
+  corpus keeps parse-then-run because `xml5ever` has no pause driver.
+  `LiveryCssom::install_over_parse` is the two-phase form both
+  `LiveryScriptedDocument::build` and the runner's rendering session use: a live
+  stylesheet source with a fetcher that serves nothing, so sheets enter the
+  cascade at the point the parser inserts them. The one tokenizer moved into
+  `MarkupState`, because HTML has the parser process written characters
+  **during** the `document.write` call — the whole `document-write/0xx` battery
+  is written in that shape — with the pause it reaches *stalled* for the driver,
+  which keeps script timing where it belongs. Custom-element upgrades run at
+  creation, by feeding the tokenizer a tag at a time while any definition
+  exists; foreign-namespace `<script>` elements are collected at creation and
+  run at the next pause; a script in a template's contents does not run; and the
+  arena carries a `parsing` flag so an `innerHTML` from a parser-run script
+  cannot free the tree builder's own handles. +181 subtest passes over the named
+  subset with two explained `pass -> fail`, +439 across the 79-directory census
+  once two identified timing artifacts are removed, 19 census `pass -> fail` all
+  attributed — sixteen of them `html/dom/render-blocking/*`, which passed only
+  because the old post-parse `document.open` had wiped the document they assert
+  about. Six testharness baselines repinned forward-only; all fourteen and both
+  reftest guards at `unexpected=0`; Ortet digest `0x6377ba8a6bf4dbc9` unchanged.
+  Maps under
+  `Code/testing/genet/wpt-ledger/2026-09-08_interleaving_part_two/`.)
+- [shadow_dom_plan](2026-09-07_shadow_dom_plan.md)
+  (**landed 2026-09-07/08**: Shadow DOM across both DOMs. A shadow root is a real
+  node in the same store with **no parent**, hung off its host through two side
+  maps rather than through the host's `children`, so every existing
+  `dom_children` walk — layout, serialization, `querySelector`, Fleece — skips it
+  by construction rather than by being told to; `<template>` contents use the
+  same trick, in one inert `Document` shared by a document's templates, per
+  Mark's ruling. Slot assignment is recomputed eagerly per affected root at the
+  mutation, behind a `shadow_hosts.is_empty()` guard, so a shadow-free document
+  pays one hash check per structural mutation. Declarative
+  `<template shadowrootmode>` is a **post-parse pass**, not an html5ever change,
+  so one set of rules serves both tiers and a script-free page reaches the same
+  flat tree. Livery's rendering traversals moved to `flat_children` while the
+  DOM-ordered ones (selection sources, `:nth-child` ordinals, the canvas
+  background source) deliberately did not; the cascade descends the flat tree
+  and numbers siblings in the node tree. Style scoping is decided **per rule**
+  from each sheet's owner node, because a flattened cascade has lost the sheet;
+  `selectors` 0.39 already implemented `:host` / `::slotted()` / `::part()`, so
+  what the lane built was the boundary around them. `tree_root` continuing
+  through the host is the entire reflector-identity integration. `shadow-dom`
+  6 -> **45** all-pass, 36 -> **13** errored, 24 -> **1,512** subtests;
+  `the-template-element` 273 -> **514**; +1,761 subtest passes over four
+  directories, 47 files `fail -> pass`, one explained `pass -> fail` and one
+  explained `fail -> error`, both from Genet parsing a document before it runs
+  its scripts. Three baselines repinned forward. Raw maps under
+  `Code/testing/genet/wpt-ledger/2026-09-07_shadow_dom/`.)
+- [web_platform_wpt_census](2026-09-06_web_platform_wpt_census.md)
+- [standards_to_features_ledger](2026-09-07_standards_to_features_ledger.md)
   (**complete 2026-09-06**: exact `genet-wpt` testharness maps for every
   non-CSS WPT directory a web engine owns, `html` split by subdirectory;
   676 all-pass / 13,845 fail / 2,392 error / 985 no-results / 3,774 skip of
@@ -511,6 +597,8 @@ same session; links out of it are rewritten for its new depth.
   not of the score.
 - **A directory's census can be floored by one missing name.** Two directories
   in this session reported almost nothing because their shared setup file threw
+  on a node type neither lane was about, aborting every file before its first
+  subtest. Probe the shared `common.js` of a directory that will not move before
   concluding anything about the feature under test. Supplying the missing name
   took `selection` from 384 reported subtests to 33,621. The same file floored
   `dom/ranges` **twice**: `CDATASection` and, behind it, a constructible
@@ -582,8 +670,6 @@ same session; links out of it are rewritten for its new depth.
 - **A model no consumer exercises is not validated by the tests that do not
   exercise it.** The parser/script lane's part one queued `document.write`
   source until the calling script returned, and passed 22 runtime cases and a
-  on a node type neither lane was about, aborting every file before its first
-  subtest. Probe the shared `common.js` of a directory that will not move before
   whole WPT directory doing it — because on both routes the DOM was never read
   back inside the writing script. The first honest consumer turned 21
   `document-write/0xx` files from `pass` to `fail` in one step. When a design
@@ -606,8 +692,6 @@ same session; links out of it are rewritten for its new depth.
   stack still points at it. The flag has the same shape `observing` already had,
   and the arena's own fence caught it on the first file that could have gone
   wrong silently.
-- **Parallel work needs commit fences as well as file fences.** Pin one base,
-  give each worker a disposable detached worktree and disjoint write paths,
 - **A headed digest is not a receipt until it repeats, and a moved digest is not
   a verdict until a control renders the same page without the feature.** An
   Ortet page built for the iframes lane produced a different digest on every
@@ -645,6 +729,8 @@ same session; links out of it are rewritten for its new depth.
   child's own script sees. When a surface's contract is identity rather than
   transport, a marshalled proxy is not a partial implementation of it — it is a
   different thing that scores well. See the iframes plan §4.
+- **Parallel work needs commit fences as well as file fences.** Pin one base,
+  give each worker a disposable detached worktree and disjoint write paths,
   inspect staged paths before committing, and remove the worktree immediately
   after integration.
 
