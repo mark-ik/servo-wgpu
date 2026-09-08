@@ -535,6 +535,22 @@ handles or establish replacement memory bounds. Direct Rust pins do not close th
 adoption, owning-document or O5 headed gates below. Production source is unchanged.
 
 **Proof sequence: retain → detach → collect → adopt → mutate → render → release.**
+
+**Continuation, 2026-09-08.** The shared research ledger's S1-S4 at
+`mere/design_docs/2026-08-12_family_composition_thesis_brief.md` now authorize
+bounded implementation here. S1 changes only text/fragment replacement to
+orphan old children until pin-aware collection. Its named regression manifest
+is `components/genet-scripted-dom/tests/replacement_retention.rs`: observers
+off/on, empty/nonempty replacements, a pin on a descendant, exact mutation
+records, semantic readback, reattachment, unpin/reclamation and replacement
+churn. Existing crate tests must remain green. S2 covers root closure; S3/S4
+select and implement the all-target handle contract. **S1 implemented and
+validated 2026-09-08:** 6 production regressions, 37 existing crate source tests
+and 7 original probe assertions pass in the exact isolated overlay documented
+in [the S1 receipt](../design_docs/receipts/2026-09-08_g5_s1/receipt.md).
+Concurrent parser/runtime WIP was excluded; the larger G5/backend/Ortet proof
+sequence remains open.
+
 Freeze a fixture manifest and named regressions before implementation:
 
 1. Retain a node and descendant through JS references. Record their identity,

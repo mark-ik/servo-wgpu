@@ -617,7 +617,8 @@ impl ScriptedDom {
         for child in existing {
             self.node_mut(child).parent = None;
             self.structure_epoch += 1;
-            self.release_subtree(child);
+            // Replacement detaches like removeChild: a reflector or queued
+            // record can still retain this subtree. Only collect sees all pins.
         }
         self.node_mut(node).text = None;
         let mut added = Vec::new();
@@ -1416,13 +1417,13 @@ impl LayoutDomMut for ScriptedDom {
     }
 
     fn set_inner_html(&mut self, node: NodeId, html: &str) {
-        // Drop the current children silently — the single SubtreeReplaced covers it.
+        // Orphan the current children; the single SubtreeReplaced covers it.
         let existing = std::mem::take(&mut self.node_mut(node).children);
         let removed = existing.clone();
         for child in existing {
             self.node_mut(child).parent = None;
             self.structure_epoch += 1;
-            self.release_subtree(child);
+            // Keep retained descendants available until pin-aware collection.
         }
         // Parse via the static parser (a LayoutDom) and copy the explicitly
         // wrapped <body> children in. The wrapper keeps metadata elements such

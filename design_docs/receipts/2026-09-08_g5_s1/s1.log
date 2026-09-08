@@ -1,0 +1,89 @@
+warning: patch `fontique v0.10.0 (C:\Users\mark_\Code\scratch\pillar-research-20260908\arena\source\support\patches\fontique)` was not used in the crate graph
+warning: patch `genet-taffy v0.14.0 (C:\Users\mark_\Code\scratch\pillar-research-20260908\arena\source\support\patches\taffy)` was not used in the crate graph
+warning: patch `gpu-allocator v0.28.0 (C:\Users\mark_\Code\scratch\pillar-research-20260908\arena\source\support\patches\gpu-allocator)` was not used in the crate graph
+warning: patch `parley v0.10.0 (C:\Users\mark_\Code\scratch\pillar-research-20260908\arena\source\support\patches\parley)` was not used in the crate graph
+warning: patch `sonic-rs v0.5.8 (C:\Users\mark_\Code\scratch\pillar-research-20260908\arena\source\support\patches\sonic-rs-0.5.8)` was not used in the crate graph
+help: Check that the patched package version and available features are compatible
+      with the dependency requirements. If the patch has a different version from
+      what is locked in the Cargo.lock file, run `cargo update` to use the new
+      version. This may also occur with an optional dependency that is not enabled.
+   Compiling arena-research-probe v0.0.0 (C:\Users\mark_\Code\scratch\pillar-research-20260908\arena\probe)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.93s
+     Running unittests src\lib.rs (C:\Users\mark_\Code\scratch\pillar-research-20260908\arena\target\debug\deps\arena_research_probe-70ceee38f692f86e.exe)
+
+running 7 tests
+test probes::control_remove_child_retains_pin_until_release ... ok
+test probes::text_replacement_retains_pin_observers_off ... ok
+test probes::text_replacement_retains_pin_observers_on ... ok
+test probes::fragment_replacement_retains_pin_observers_on ... ok
+test probes::fragment_replacement_retains_pin_observers_off ... ok
+test probes::foreign_handle_refuses_same_local_slot ... ok
+test probes::control_released_ids_do_not_alias_after_churn ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running ..\source\components\genet-scripted-dom\tests\replacement_retention.rs (C:\Users\mark_\Code\scratch\pillar-research-20260908\arena\target\debug\deps\replacement_retention-d36bd2098409a39f.exe)
+
+running 6 tests
+test text_replacement_retains_descendants_without_observers ... ok
+test text_replacement_retains_descendants_with_observers ... ok
+test fragment_replacement_retains_descendants_with_observers ... ok
+test fragment_replacement_retains_descendants_without_observers ... ok
+test replacement_churn_reclaims_without_observers ... ok
+test replacement_churn_reclaims_after_observer_delivery ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+
+     Running ..\source\components\genet-scripted-dom\lib.rs (C:\Users\mark_\Code\scratch\pillar-research-20260908\arena\target\debug\deps\scripted_dom_unit_suite-3011a9838dc896e2.exe)
+
+running 37 tests
+
+thread 'tests::cross_document_node_id_panics' (9304) panicked at ..\source\components\genet-scripted-dom\lib.rs:369:9:
+NodeId from a different document (id tag 4, this doc 5)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test parser::tests::document_write_reenters_the_token_stream_at_the_insertion_point ... ok
+test parser::tests::pauses_at_each_script_in_document_order ... ok
+test tests::collect_reaps_unpinned_orphans_keeps_pinned_components ... ok
+test tests::cross_document_node_id_panics - should panic ... ok
+test parser::tests::a_disabled_definition_leaves_the_template_ordinary ... ok
+test parser::tests::an_existing_imperative_root_leaves_the_template_ordinary ... ok
+test tests::captured_node_id_remints_for_another_document ... ok
+test forms::tests::unnamed_controls_are_skipped ... ok
+test parser::tests::a_declarative_template_becomes_a_shadow_root_at_parse_time ... ok
+test serialize::tests::outer_html_emits_tag_attrs_and_escaped_text ... ok
+test serialize::tests::void_elements_get_no_close_tag ... ok
+test forms::tests::collects_input_value_keyed_by_name ... ok
+test forms::tests::textarea_value_is_its_text_content ... ok
+test parser::tests::the_tree_is_only_built_as_far_as_the_pause ... ok
+test tests::collect_bounds_memory_under_churn ... ok
+test serialize::tests::inner_html_skips_the_node_itself ... ok
+test tests::in_tree_insert_reports_the_removal_too ... ok
+test tests::insert_before_orders_and_appends ... ok
+test tests::drained_mutations_round_trip_through_captured_postcard ... ok
+test tests::idle_collect_reaps_orphans_without_mutations ... ok
+test tests::observed_record_is_off_until_asked_and_then_spec_shaped ... ok
+test tests::pending_mutations_can_be_observed_without_stealing_layouts_batch ... ok
+test tests::observed_inner_html_and_text_content_carry_both_sides ... ok
+test tests::pins_clear ... ok
+test tests::dangle_contract_churn_across_frames ... ok
+test tests::distinct_documents_get_distinct_tags ... ok
+test tests::move_before_same_parent_reorders_and_noops_in_place ... ok
+test tests::mutate_read_and_record ... ok
+test tests::is_live_is_false_for_dropped_and_foreign_ids ... ok
+test tests::move_before_moves_across_parents_with_one_moved_record ... ok
+test tests::pins_pin_unpin_and_retire ... ok
+test tests::remove_attribute_records_and_noops ... ok
+test tests::secondary_document_is_pin_kept ... ok
+test tests::secondary_root_is_same_document ... ok
+test tests::stats_count_node_kinds_attributes_and_bytes ... ok
+test tests::set_inner_html_builds_subtree ... ok
+test tests::siblings_and_remove ... ok
+
+test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s
+
+   Doc-tests arena_research_probe
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

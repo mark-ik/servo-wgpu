@@ -1,0 +1,9 @@
+{
+  "base_revision": "ee0b314b3e9ac4a2fadb07fb7816990fa3f2b71d",
+  "overlay_base_head": "d050ccdd78d551e7a06b762712027636e9254d1d",
+  "source_overlay": {
+    "components/genet-scripted-dom/lib.rs": "ecce65ca5414dadd7faffafa3f1a890aa6bacdc0001a2515d1b17a1858700461",
+    "components/genet-scripted-dom/tests/replacement_retention.rs": "fe8c3e0a50398492dac04317dcd494ca497b5e34e242409bc1b3b37ef3deb637"
+  },
+  "excluded": "Concurrent parser/runtime working-tree changes; snapshot keeps pinned parser and dependencies."
+}

@@ -1,0 +1,24 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--manifest-path",
+    "C:\\Users\\mark_\\Code\\scratch\\pillar-research-20260908\\arena\\probe\\Cargo.toml",
+    "--target-dir",
+    "C:\\Users\\mark_\\Code\\scratch\\pillar-research-20260908\\arena\\target",
+    "--",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "elapsed_seconds": 9.832034349441528,
+  "cargo_home": "C:\\Users\\mark_\\Code\\scratch\\pillar-research-20260908\\arena\\cargo-home",
+  "engine": "Rust arena only",
+  "renderer": "none",
+  "server": "none",
+  "probe/Cargo.toml_sha256": "4438785df1d53348d334cb71ef191c419111f6611729f4ee3b7890df4c997656",
+  "probe/Cargo.lock_sha256": "07bb062b63fe8d172d26c39e87d6db4287f34d338de3c48984bf4ca743abf4ed",
+  "probe/src/lib.rs_sha256": "64ce02cb9141539e9b3f91c40f5cd062794c598b1da0af3b8bc32dd5e970efb7",
+  "source-manifest.json_sha256": "16ef81f32ff91ae388a35389c9f6d294fd54ef77112dc83956328bf4ba298b3a",
+  "run_probe.py_sha256": "3750791ae8286d8d5a1e650d4de87ef0da54c6d233b6fd9683cc57c488c40479"
+}
