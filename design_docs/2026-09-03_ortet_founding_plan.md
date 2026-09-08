@@ -279,6 +279,15 @@ implementation. Native acceptance exercises both Boa and Nova where supported:
    hold. Dependency-cone checks cover each new supported feature/engine
    combination and retain the prohibition on Mere crates.
 
+**Arena continuation (agreed 2026-09-07).** Scripted Ortet also hosts the
+[G5 arena semantic-contract proof](../docs/2026-06-11_gc_arena_dom_plan.md#g5-arena-semantic-contract-agreed-planned-2026-09-07):
+retain a node, detach it, collect, adopt it, mutate it, render it, then release
+it. G5 owns the identity/mutation/lifetime assertions and collection metrics;
+Ortet owns production session execution, semantic readback and correlated
+frame capture. G5 can use runtime tests while O5 is being built, but its
+headed acceptance stays open. O5 does not inherit all future shadow/iframe
+arena work as prerequisites.
+
 The first scripted acceptance is native. Preserve the existing script-free
 wasm route and measure its cone/build; browser-hosted Boa/Nova scripting and
 worker placement need their own target receipts before being advertised.

@@ -38,6 +38,7 @@ older `docs/` corpus without changing their location or governance.
 
 | Work | Current boundary and next proof |
 |---|---|
+| [Arena semantic contract](../docs/2026-06-11_gc_arena_dom_plan.md#g5-arena-semantic-contract-agreed-planned-2026-09-07) | G5 agreed and planned 2026-09-07: distinct arena/node/document/tree-scope identity, coordinated mutation and reference-driven lifetime. Runtime regressions plus a retain/detach/collect/adopt/mutate/render/release receipt through scripted Ortet. Implementation and acceptance open. |
 | [Font fallback](2026-09-04_common_script_font_fallback_plan.md) | Windows T1 is accepted with focused regressions and Ortet readback. Consumer revision adoption, upstream disposition, and other-platform measurements remain open. |
 | [Ortet](2026-09-03_ortet_founding_plan.md) | O0-O4 landed, including native accessibility and wasm/HTTP receipts. O5 planned: selectable script-free/Boa/Nova modes through the shared session contract, production async scheduling/resource wiring, and headed engine proofs without Mere. genet-wpt owns WPT scoring; Pelt supplies downstream integration evidence. Stable accessibility IDs and publication remain open. |
 | [K6 fragmentation](../docs/2026-08-15_buckram_k6_fragmentation_execution_plan.md) | K6a typed inputs, K6b's retained context/token model, and a dormant pre-K6c style/input dispatch seam landed. All 6,077 named records match the frozen pre-K6 baseline. Live formatter continuation and multicol geometry remain K6c work. |

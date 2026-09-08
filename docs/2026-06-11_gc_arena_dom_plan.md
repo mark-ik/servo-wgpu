@@ -1,6 +1,10 @@
 # gc-arena DOM Plan (the piccolo fork's dividends)
 
 **Date**: 2026-06-11
+**Current continuation, agreed 2026-09-07:** G5 below scopes the arena's
+identity, mutation and lifetime contract and its scripted Ortet proof. It is
+planned; the historical G0-G4 receipts do not establish G5 acceptance.
+
 **Status**: G0–G2 + G4 done (see Progress). G3 design locked 2026-06-12 to a
 **custom mark-sweep**, not gc-arena (the title is now historical — kept for
 stable references). Why the pivot: gc-arena's `Arena` confines every GC-data
@@ -428,6 +432,102 @@ reflector's `u64`, so `downcast_static` tells them apart). Test
 `p:await()` *method* form and `Budget::Steps` honoring are the only deferred
 niceties (deviations documented at the crate).
 
+### G5. Arena semantic contract (agreed, planned 2026-09-07)
+
+Keep the engine-owned node store and the script-engine-neutral handle seam.
+Strengthen the semantic contract across Rust storage, JS bindings, layout and
+collection. This is a continuation of the existing arena, not a replacement
+collector or a shared store for Mere's durable graph. G5 owns these invariants;
+the [Ortet O5 plan](../design_docs/2026-09-03_ortet_founding_plan.md#o5-scripted-platform-host-planned-2026-09-07)
+owns the headed host through which they are exercised.
+
+**Identity.** Treat arena membership, node identity, owning document, tree
+scope and connectivity as separate relationships. A detached node retains its
+identity and owning document. Adoption changes document ownership according
+to the DOM algorithm; it is not copying a node or reinterpreting its raw id
+against a different store. Shadow roots introduce a tree scope within this
+model; iframe documents additionally have realm and browsing-context rules.
+
+Specify the authoritative representation and mutation entry point for each
+relationship. The representation may use side tables, but its facts must be
+available consistently to engine consumers and JS bindings, without a second
+independently maintained account. Cross-arena handles must be rejected or
+explicitly translated at every boundary on release and wasm as well as debug
+builds. Select the handle/fence shape during implementation; retaining the
+old pointer-sized encoding is not grounds for accepting silent aliasing.
+Define exhaustion behavior before a monotonic id can wrap or be reused.
+
+**Mutation.** A semantic DOM operation coordinates tree changes, live-range
+updates, observer records, custom-element reactions where applicable, and
+style/layout invalidation in the specified order. Inventory every caller:
+JS methods, parser/fragment replacement, native host edits, adoption and replay.
+They must enter a common semantic boundary or have an explicit lower-level
+contract whose caller supplies the missing steps. Capture old ancestry and
+indices before mutation where required. Preserve the distinct record shapes
+needed by observers and layout; one mutation boundary does not mean one lossy
+record for all consumers. Name batching, callback/reentrancy and exception
+boundaries so partly executed operations cannot silently diverge.
+
+**Lifetime.** Tree removal and loss of reachability are separate events.
+Wrappers, live ranges, queued observer records, secondary documents and other
+script-visible references keep the nodes they can expose alive. Enumerate
+these roots and the engine/host edges that retain or release them, including
+cross-language cycles. Shadow/template ownership adds its own edges when
+implemented. Observer registration must not decide whether a retained node
+survives replacement. Destructive storage operations may run only after the
+caller establishes that no semantic reference can expose the removed data.
+Once references and queues are released, detached state becomes collectable;
+expired ids never resolve to another node. Layout caches must neither keep
+unreachable DOM alive accidentally nor dereference retired nodes.
+
+These are engine contracts. JS engines supply wrapper liveness through
+`script-engine-api`; Genet supplies DOM relationships and collection roots;
+the host supplies scheduling and inspection. See the
+[DOM node and mutation model](https://dom.spec.whatwg.org/#concept-node-document).
+
+**Findings, 2026-09-07 (source review, not a failure receipt).** Committed
+`c30cc3571d6` has monotonic ids in `genet-scripted-dom/lib.rs`, a cross-arena
+tag only on 64-bit debug builds, and custom mark-sweep using host pins.
+Document ownership also lives in `dom/bootstrap.js`'s `ownerDocuments` map
+and `ownerDocumentOf`. Range semantics and observer delivery straddle the
+bootstrap and native mutators. `release_subtree` frees removed descendants
+when observation is off, without consulting pins; `set_text_content` and
+fragment replacement call it. Reproduce the retained-reference case before
+claiming a defect fixed. Concurrent arena/runtime changes are not this plan's
+implementation or validation receipt.
+
+**Proof sequence: retain → detach → collect → adopt → mutate → render → release.**
+Freeze a fixture manifest and named regressions before implementation:
+
+1. Retain a node and descendant through JS references. Record their identity,
+   owning document and connectivity. Include a secondary-document case.
+2. Detach via explicit removal and via parent text/fragment replacement in
+   separate cases. Repeat with observer recording off and on. Retained
+   descendants remain readable and can be reinserted in every case.
+3. Collect through the test host's runtime/collector seam, not a new web API.
+   Assert retained nodes, range boundaries and undelivered observer records
+   still expose valid identities and data. Include each retention source
+   independently so one extra wrapper does not conceal a missing root.
+4. Adopt into the active document, insert and mutate. Prove stable node
+   identity, changed owning document, correct ranges and observer delivery,
+   and invalidation consumed by Livery. A foreign arena id is rejected rather
+   than resolving to an unrelated node.
+5. Through scripted Ortet, correlate DOM/selection readback with the presented
+   pixels after the mutation. Run on Boa and Nova; the host's inspection must
+   not itself retain nodes indefinitely or bypass production mutation paths.
+6. Remove the subtree and release wrappers, ranges, records and other explicit
+   roots. Drive collection and show it becomes unreachable in the node store;
+   repeat bounded churn and verify live-node retention does not grow each
+   cycle. Test navigation/close with pending records and late work as well.
+
+**Done when:** both-engine runtime tests, release/wasm identity-boundary tests
+where supported, named DOM/Range/MutationObserver regressions, and the headed
+Ortet sequence pass against pinned sources. Retain runner/lock digests,
+semantic snapshots, collection statistics and frame artifacts. Record
+unsupported targets and future shadow/iframe extensions independently.
+G5 runtime work can land before Ortet O5; the headed acceptance remains open
+until that host actually runs the sequence. Mere/Pelt evidence is additional.
+
 ### Ordering and the sooner-than-later cut
 
 G0 is an afternoon and lands now. G1's probe and G4 can start immediately
@@ -453,6 +553,11 @@ front-loads visible wins.
   (rule 3).
 
 ## Progress
+
+- 2026-09-07: Mark agreed to retain the arena and strengthen identity,
+  coordinated mutation and reachability/lifetime guarantees. Added G5 and
+  the longitudinal scripted Ortet sequence. Documentation only; implementation
+  and new validation receipts remain open.
 
 - **2026-06-11** — Plan created. Grounded against the fork
   (`Code/crates/piccolo`, 0.3.3, gc-arena `5a7534b` via git), the slab and
