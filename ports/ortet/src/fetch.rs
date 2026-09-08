@@ -12,6 +12,8 @@
 //! ortet has no trust store, no protocol registry, and no smolweb lane, and
 //! adding one is a product decision that belongs to Mere.
 
+use std::sync::Arc;
+
 use genet_documents::LocalFetcher;
 use genet_host_api::{ResourceFetcher, ResourceResponse};
 
@@ -43,8 +45,9 @@ pub fn lane_for(url: &str) -> FetchLane {
 }
 
 /// The one fetcher the session engine is constructed with.
+#[derive(Clone)]
 pub struct OrtetFetcher {
-    remote: Option<RemoteFetcher>,
+    remote: Option<Arc<RemoteFetcher>>,
 }
 
 impl OrtetFetcher {
@@ -57,7 +60,7 @@ impl OrtetFetcher {
     /// Local schemes plus http(s) over netfetcher.
     pub fn with_network() -> Result<Self, String> {
         Ok(Self {
-            remote: Some(RemoteFetcher::new()?),
+            remote: Some(Arc::new(RemoteFetcher::new()?)),
         })
     }
 }

@@ -21,6 +21,8 @@ use document_session_api::session_engine::{
     SessionSpawnRequest,
 };
 use genet_documents::LiverySessionEngine;
+#[cfg(feature = "scripted")]
+use genet_documents::ScriptedSessionEngine;
 use genet_host_api::navigation::resolve_href;
 use genet_winit_host::{AccessKitBridge, BridgeStatus, SurfaceHost, wheel_delta_from_winit};
 use netrender::{ColorLoad, ExternalTexturePlacement, NetrenderOptions, Scene};
@@ -38,6 +40,12 @@ use crate::receipt;
 /// What a completed run has to say for itself.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Outcome {
+    /// The id claimed by the concrete engine that hosted this run.
+    pub engine_id: String,
+    /// The command-line backend choice. Boa and Nova intentionally have
+    /// different backends even though Boa uses the generic scripted engine id.
+    pub backend: String,
+    pub metadata: BuildMetadata,
     pub address: String,
     pub frames: u32,
     pub size: (u32, u32),
@@ -45,13 +53,46 @@ pub struct Outcome {
     pub digest: Option<u64>,
 }
 
+/// Build facts that a host receipt can report without guessing a source
+/// revision. `GENET_SOURCE_REVISION` is supplied by a release build when it
+/// has one; local builds honestly report it as unknown.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BuildMetadata {
+    pub target: String,
+    pub features: String,
+    pub source_revision: Option<String>,
+}
+
+pub fn build_metadata() -> BuildMetadata {
+    BuildMetadata {
+        target: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
+        features: enabled_features().to_owned(),
+        source_revision: option_env!("GENET_SOURCE_REVISION").map(str::to_owned),
+    }
+}
+
+#[cfg(feature = "scripted-nova")]
+const fn enabled_features() -> &'static str {
+    "scripted,scripted-nova"
+}
+
+#[cfg(all(feature = "scripted", not(feature = "scripted-nova")))]
+const fn enabled_features() -> &'static str {
+    "scripted"
+}
+
+#[cfg(not(feature = "scripted"))]
+const fn enabled_features() -> &'static str {
+    "none"
+}
+
 /// Open the window and run the document until the frame budget or the user
 /// closes it.
 pub fn run(config: Config, fetcher: OrtetFetcher) -> Result<Outcome, String> {
-    let engine = LiverySessionEngine::new(fetcher);
+    let engine = make_engine(config.engine, fetcher)?;
     // Spawn before the window exists so a bad address fails without flashing a
     // window at anyone.
-    let session = spawn(&engine, &config.address, config.size)?;
+    let session = spawn(engine.as_ref(), &config.address, config.size)?;
     let event_loop =
         EventLoop::new().map_err(|error| format!("could not create the event loop: {error}"))?;
     let mut app = Ortet::new(config, engine, session);
@@ -65,7 +106,7 @@ pub fn run(config: Config, fetcher: OrtetFetcher) -> Result<Outcome, String> {
 }
 
 fn spawn(
-    engine: &LiverySessionEngine<OrtetFetcher>,
+    engine: &dyn SessionEngine<Scene>,
     address: &str,
     (width, height): (u32, u32),
 ) -> Result<Box<dyn DocumentSession<Scene>>, String> {
@@ -75,9 +116,66 @@ fn spawn(
         .map_err(|error| format!("could not open {address}: {error}"))
 }
 
+/// Build the selected engine behind the common host contract. This is the O5a
+/// seam: engine choice is explicit host policy, while session construction,
+/// input, pumping, and frames remain the one `SessionEngine<Scene>` path.
+fn make_engine(
+    choice: crate::args::EngineChoice,
+    fetcher: OrtetFetcher,
+) -> Result<Box<dyn SessionEngine<Scene>>, String> {
+    match choice {
+        crate::args::EngineChoice::Livery => Ok(Box::new(LiverySessionEngine::new(fetcher))),
+        crate::args::EngineChoice::Boa => {
+            #[cfg(feature = "scripted")]
+            {
+                Ok(Box::new(ScriptedSessionEngine::<
+                    script_engine_boa::BoaEngine,
+                    _,
+                >::new(
+                    document_session_api::engine_ids::ENGINE_GENET_SCRIPTED,
+                    fetcher,
+                )))
+            }
+            #[cfg(not(feature = "scripted"))]
+            {
+                let _ = fetcher;
+                Err(
+                    "the boa engine is unavailable: rebuild ortet with --features scripted"
+                        .to_owned(),
+                )
+            }
+        },
+        crate::args::EngineChoice::Nova => {
+            #[cfg(all(feature = "scripted-nova", target_pointer_width = "64"))]
+            {
+                Ok(Box::new(ScriptedSessionEngine::<
+                    script_engine_nova::NovaEngine,
+                    _,
+                >::new(
+                    document_session_api::engine_ids::ENGINE_GENET_SCRIPTED_NOVA,
+                    fetcher,
+                )))
+            }
+            #[cfg(all(feature = "scripted-nova", not(target_pointer_width = "64")))]
+            {
+                let _ = fetcher;
+                Err("the nova engine is unavailable on 32-bit targets".to_owned())
+            }
+            #[cfg(not(feature = "scripted-nova"))]
+            {
+                let _ = fetcher;
+                Err(
+                    "the nova engine is unavailable: rebuild ortet with --features scripted-nova"
+                        .to_owned(),
+                )
+            }
+        },
+    }
+}
+
 struct Ortet {
     config: Config,
-    engine: LiverySessionEngine<OrtetFetcher>,
+    engine: Box<dyn SessionEngine<Scene>>,
     address: String,
     session: Box<dyn DocumentSession<Scene>>,
     window: Option<Arc<Window>>,
@@ -104,7 +202,7 @@ struct Ortet {
 impl Ortet {
     fn new(
         config: Config,
-        engine: LiverySessionEngine<OrtetFetcher>,
+        engine: Box<dyn SessionEngine<Scene>>,
         session: Box<dyn DocumentSession<Scene>>,
     ) -> Self {
         Self {
@@ -132,6 +230,9 @@ impl Ortet {
 
     fn outcome(&self) -> Outcome {
         Outcome {
+            engine_id: self.engine.engine_id().to_owned(),
+            backend: self.config.engine.name().to_owned(),
+            metadata: build_metadata(),
             address: self.address.clone(),
             frames: self.frames,
             size: (self.width, self.height),
@@ -170,7 +271,7 @@ impl Ortet {
         if resolved == self.address {
             return;
         }
-        match spawn(&self.engine, &resolved, self.logical_size()) {
+        match spawn(self.engine.as_ref(), &resolved, self.logical_size()) {
             Ok(session) => {
                 self.session = session;
                 self.a11y.replace_session();
@@ -610,5 +711,64 @@ fn ime_from_winit(ime: winit::event::Ime) -> SessionIme {
         winit::event::Ime::Preedit(text, selection) => SessionIme::Preedit { text, selection },
         winit::event::Ime::Commit(text) => SessionIme::Commit(text),
         winit::event::Ime::Disabled => SessionIme::Disabled,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::args::EngineChoice;
+
+    #[test]
+    fn livery_selection_reports_the_concrete_engine_id() {
+        let engine = make_engine(EngineChoice::Livery, OrtetFetcher::local_only())
+            .expect("default Livery engine is available");
+        assert_eq!(
+            engine.engine_id(),
+            document_session_api::engine_ids::ENGINE_GENET_LIVERY
+        );
+    }
+
+    #[cfg(feature = "scripted")]
+    #[test]
+    fn boa_selection_reports_the_concrete_engine_id() {
+        let engine = make_engine(EngineChoice::Boa, OrtetFetcher::local_only())
+            .expect("Boa is available when the scripted feature is enabled");
+        assert_eq!(
+            engine.engine_id(),
+            document_session_api::engine_ids::ENGINE_GENET_SCRIPTED
+        );
+    }
+
+    #[cfg(feature = "scripted-nova")]
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn nova_selection_reports_the_concrete_engine_id() {
+        let engine = make_engine(EngineChoice::Nova, OrtetFetcher::local_only())
+            .expect("Nova is available on 64-bit targets with the feature enabled");
+        assert_eq!(
+            engine.engine_id(),
+            document_session_api::engine_ids::ENGINE_GENET_SCRIPTED_NOVA
+        );
+    }
+
+    #[cfg(not(feature = "scripted"))]
+    #[test]
+    fn unavailable_boa_reports_the_build_feature() {
+        let error = match make_engine(EngineChoice::Boa, OrtetFetcher::local_only()) {
+            Ok(_) => panic!("default Ortet keeps Boa out of its dependency cone"),
+            Err(error) => error,
+        };
+        assert!(error.contains("--features scripted"), "{error}");
+    }
+
+    #[cfg(not(feature = "scripted-nova"))]
+    #[test]
+    fn unavailable_nova_reports_the_build_feature() {
+        let error = match make_engine(EngineChoice::Nova, OrtetFetcher::local_only()) {
+            Ok(_) => panic!("default Ortet keeps Nova out of its dependency cone"),
+            Err(error) => error,
+        };
+        assert!(error.contains("--features scripted-nova"), "{error}");
     }
 }

@@ -9,6 +9,14 @@ rust-version.workspace = true
 repository.workspace = true
 description = "The raw Genet host: one window, one document, no chrome — the reference individual of the engine."
 
+[features]
+default = []
+# O5a is opt-in so the default Ortet target keeps the script-free dependency
+# cone. These only select existing genet-documents lanes; O5b scheduling and
+# host integration remain separate work.
+scripted = ["genet-documents/scripted", "dep:script-engine-boa"]
+scripted-nova = ["scripted", "genet-documents/scripted-nova", "dep:script-engine-nova"]
+
 [lib]
 name = "ortet"
 path = "src/lib.rs"
@@ -37,6 +45,10 @@ netrender = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 accesskit = { workspace = true }
+# Native O5a selection is feature-gated so the default target stays
+# script-free. The shell still defaults to the Livery route.
+script-engine-boa = { path = "../../components/script-engine-boa", optional = true }
+script-engine-nova = { path = "../../components/script-engine-nova", optional = true }
 genet-winit-host = { path = "../../components/genet-winit-host" }
 # http(s) for the fallback fetch lane, over netfetcher's default transport on a
 # background tokio runtime this host owns. Local addresses never reach it.

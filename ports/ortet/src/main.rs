@@ -42,8 +42,18 @@ fn run() -> Result<(), String> {
     println!("ortet: address {}", config.address);
     let outcome = shell::run(config, fetcher)?;
     println!(
-        "ortet: presented {} frame(s) at {}x{}",
-        outcome.frames, outcome.size.0, outcome.size.1
+        "ortet: engine {} backend {} presented {} frame(s) at {}x{}",
+        outcome.engine_id, outcome.backend, outcome.frames, outcome.size.0, outcome.size.1
+    );
+    println!(
+        "ortet: target {} features {} source {}",
+        outcome.metadata.target,
+        outcome.metadata.features,
+        outcome
+            .metadata
+            .source_revision
+            .as_deref()
+            .unwrap_or("unknown")
     );
     // The address the run ended on, which differs from the one it started on
     // exactly when a link was followed. That is the whole of what a navigation

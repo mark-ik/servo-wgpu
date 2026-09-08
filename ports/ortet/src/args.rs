@@ -6,8 +6,8 @@
 
 //! Ortet's command line.
 //!
-//! Five options and no configuration file: an address, a window size, a frame
-//! budget, a receipt artifact, and a small action list that lets a bounded run
+//! Six options and no configuration file: an address, an engine, a window size,
+//! a frame budget, a receipt artifact, and a small action list that lets a bounded run
 //! drive the document the way a person's hands would. Anything larger than this
 //! is a product decision, and product decisions are Mere's.
 
@@ -22,6 +22,7 @@ ortet — the raw Genet host: one window, one document, no chrome.
 usage: ortet --url <address> [options]
 
   --url <address>      A file path, a file:// URL, or an http(s) URL.
+  --engine <name>      Session engine: livery (default), boa, or nova.
   --size <WxH>         Window size in physical pixels (default 960x640).
   --frames <N>         Present exactly N frames, then exit.
   --artifact <path>    Write the captured frame as a PNG and print its digest.
@@ -42,11 +43,35 @@ pub enum Action {
     Click { x: f32, y: f32 },
 }
 
+/// The concrete session engine selected for a native run.
+///
+/// This is host policy. The selected engine still enters the shell through the
+/// shared `SessionEngine<Scene>` contract, and the shell reports the engine's
+/// own id in its outcome.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EngineChoice {
+    #[default]
+    Livery,
+    Boa,
+    Nova,
+}
+
+impl EngineChoice {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Livery => "livery",
+            Self::Boa => "boa",
+            Self::Nova => "nova",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
     /// The address as the session engine will see it: an absolute `file://`
     /// URL for anything that named the filesystem, otherwise as given.
     pub address: String,
+    pub engine: EngineChoice,
     pub size: (u32, u32),
     pub frames: Option<u32>,
     pub artifact: Option<PathBuf>,
@@ -66,6 +91,7 @@ where
     I: IntoIterator<Item = String>,
 {
     let mut url = None;
+    let mut engine = EngineChoice::default();
     let mut size = DEFAULT_SIZE;
     let mut frames = None;
     let mut artifact = None;
@@ -81,6 +107,7 @@ where
         match argument.as_str() {
             "--help" | "-h" => return Ok(Invocation::Help),
             "--url" => url = Some(value("--url")?),
+            "--engine" => engine = parse_engine(&value("--engine")?)?,
             "--size" => size = parse_size(&value("--size")?)?,
             "--frames" => {
                 let raw = value("--frames")?;
@@ -101,11 +128,21 @@ where
     let url = url.ok_or_else(|| "--url is required".to_owned())?;
     Ok(Invocation::Run(Box::new(Config {
         address: address_from_argument(&url)?,
+        engine,
         size,
         frames,
         artifact,
         actions,
     })))
+}
+
+fn parse_engine(raw: &str) -> Result<EngineChoice, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "livery" => Ok(EngineChoice::Livery),
+        "boa" => Ok(EngineChoice::Boa),
+        "nova" => Ok(EngineChoice::Nova),
+        _ => Err(format!("--engine wants livery, boa, or nova, got {raw}")),
+    }
 }
 
 fn parse_size(raw: &str) -> Result<(u32, u32), String> {
@@ -231,6 +268,7 @@ mod tests {
     fn a_bare_url_takes_the_default_window() {
         let config = run(&["--url", "https://example.invalid/a"]);
         assert_eq!(config.address, "https://example.invalid/a");
+        assert_eq!(config.engine, EngineChoice::Livery);
         assert_eq!(config.size, DEFAULT_SIZE);
         assert_eq!(config.frames, None);
         assert_eq!(config.artifact, None);
@@ -252,6 +290,19 @@ mod tests {
         assert_eq!(config.size, (400, 300));
         assert_eq!(config.frames, Some(3));
         assert_eq!(config.artifact, Some(PathBuf::from("out.png")));
+    }
+
+    #[test]
+    fn engine_selection_is_explicit_and_closed() {
+        assert_eq!(
+            run(&["--url", "a.html", "--engine", "boa"]).engine,
+            EngineChoice::Boa
+        );
+        assert_eq!(
+            run(&["--url", "a.html", "--engine", "NOVA"]).engine,
+            EngineChoice::Nova
+        );
+        assert!(parse(args(&["--url", "a.html", "--engine", "other"])).is_err());
     }
 
     #[test]
