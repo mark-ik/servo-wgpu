@@ -517,6 +517,23 @@ fragment replacement call it. Reproduce the retained-reference case before
 claiming a defect fixed. Concurrent arena/runtime changes are not this plan's
 implementation or validation receipt.
 
+**Experiment, 2026-09-08 (Rust arena, not backend or headed acceptance).**
+The pinned `ee0b314b3e9` fixture now reproduces the replacement failure:
+native x64 debug passes 5 assertions and fails the 2 observers-off text/fragment
+replacement assertions, with the retained child absent before collection.
+Ordinary detachment and observers-on replacement controls pass. Disabling
+debug assertions only for `genet-scripted-dom` adds foreign-handle aliasing
+(`NodeId(2)` resolves to another arena's local slot): 4 pass, 3 fail. That is a
+dev-profile configuration probe, not a full optimized-release or wasm run.
+The manifest, lock, runner/source digests and logs live with the shared R2-A
+research receipt at
+`mere/design_docs/mere_docs/testing/receipts/2026-09-08_stack_pillar_probes/arena/R2_A_RECEIPT.md`.
+Restoring baseline debug configuration and deferring reclamation at just the
+two replacement sites makes all 7 assertions pass in the scratch snapshot.
+That diagnostic patch is preserved with the receipt; it does not fix foreign
+handles or establish replacement memory bounds. Direct Rust pins do not close the JS reflector/range/observer root matrix,
+adoption, owning-document or O5 headed gates below. Production source is unchanged.
+
 **Proof sequence: retain → detach → collect → adopt → mutate → render → release.**
 Freeze a fixture manifest and named regressions before implementation:
 
