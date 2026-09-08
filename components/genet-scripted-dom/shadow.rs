@@ -588,7 +588,7 @@ impl ScriptedDom {
     /// use. It is reachable from nothing, so `collect` keeps it alive only
     /// while a template's contents fragment does.
     pub fn template_owner_document(&mut self) -> NodeId {
-        if let Some(id) = self.template_document {
+        if let Some(id) = self.template_document.filter(|id| self.is_live(*id)) {
             return id;
         }
         let id = self.push(crate::Node::new(NodeKind::Document));
@@ -602,8 +602,10 @@ impl ScriptedDom {
             return None;
         }
         self.try_index(id)
+            .filter(|key| self.nodes.contains_key(key))
             .and_then(|key| self.template_contents.get(&key))
             .copied()
+            .filter(|contents| self.is_live(*contents))
     }
 
     /// The contents fragment of template element `id`, creating it if absent.
@@ -615,10 +617,10 @@ impl ScriptedDom {
         let fragment = self.push(crate::Node::new(NodeKind::DocumentFragment));
         let key = self.index(id);
         self.template_contents.insert(key, fragment);
-        // The owner is a real edge for the collector, not a stored field: the
-        // owner document must outlive every fragment it owns.
-        let owner_key = self.index(owner);
-        self.template_contents.entry(owner_key).or_insert(fragment);
+        // Reachable contents retain their owner, not the other way around:
+        // keeping the owner must not keep retired sibling fragments alive.
+        let fragment_key = self.index(fragment);
+        self.template_content_owners.insert(fragment_key, owner);
         fragment
     }
 
@@ -629,19 +631,35 @@ impl ScriptedDom {
     /// proper tops out at the document node. HTML never executes a `<script>`
     /// found in template contents, and this is how the parser driver tells.
     pub fn is_in_template_contents(&self, id: NodeId) -> bool {
-        if self.template_contents.is_empty() {
+        if self.template_content_owners.is_empty() {
             return false;
         }
         let mut node = id;
         while let Some(parent) = LayoutDom::parent(self, node) {
             node = parent;
         }
-        node != self.document() && self.template_contents.values().any(|&f| f == node)
+        self.try_index(node)
+            .is_some_and(|key| self.template_content_owners.contains_key(&key))
     }
 
-    /// The inert document that owns template contents, if one was ever minted.
+    /// The live inert document that owns template contents, if one exists.
     pub fn template_owner_document_if_any(&self) -> Option<NodeId> {
-        self.template_document
+        self.template_document.filter(|id| self.is_live(*id))
+    }
+
+    /// Retire metadata along with swept nodes. A pinned fragment can outlive
+    /// its template, so its owner edge is maintained independently.
+    pub(crate) fn prune_template_tables(&mut self) {
+        let mut contents = std::mem::take(&mut self.template_contents);
+        contents.retain(|template, fragment| {
+            self.nodes.contains_key(template) && self.is_live(*fragment)
+        });
+        self.template_contents = contents;
+
+        let mut owners = std::mem::take(&mut self.template_content_owners);
+        owners.retain(|fragment, owner| self.nodes.contains_key(fragment) && self.is_live(*owner));
+        self.template_content_owners = owners;
+        self.template_document = self.template_owner_document_if_any();
     }
 
     /// Realize declarative shadow roots over the scripted arena: every
@@ -735,5 +753,28 @@ impl ScriptedDom {
                 .name
                 .as_ref()
                 .is_some_and(|name| name.local.as_ref() == local)
+    }
+}
+
+#[cfg(test)]
+mod template_collection_tests {
+    use super::*;
+    use layout_dom_api::LayoutDomMut;
+
+    #[test]
+    fn template_bookkeeping_returns_to_baseline_after_collection() {
+        let mut dom = ScriptedDom::new();
+        for _ in 0..1000 {
+            let template = dom.create_element(QualName::new(
+                None,
+                Namespace::from("http://www.w3.org/1999/xhtml"),
+                LocalName::from("template"),
+            ));
+            dom.ensure_template_contents(template);
+            dom.collect([]);
+            assert!(dom.template_contents.is_empty());
+            assert!(dom.template_content_owners.is_empty());
+            assert!(dom.template_document.is_none());
+        }
     }
 }

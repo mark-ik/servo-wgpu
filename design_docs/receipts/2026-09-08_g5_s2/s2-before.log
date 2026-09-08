@@ -1,0 +1,78 @@
+warning: patch `fontique v0.10.0 (C:\Users\mark_\Code\scratch\pillar-research-20260908\arena\source\support\patches\fontique)` was not used in the crate graph
+warning: patch `genet-taffy v0.14.0 (C:\Users\mark_\Code\scratch\pillar-research-20260908\arena\source\support\patches\taffy)` was not used in the crate graph
+warning: patch `gpu-allocator v0.28.0 (C:\Users\mark_\Code\scratch\pillar-research-20260908\arena\source\support\patches\gpu-allocator)` was not used in the crate graph
+warning: patch `parley v0.10.0 (C:\Users\mark_\Code\scratch\pillar-research-20260908\arena\source\support\patches\parley)` was not used in the crate graph
+warning: patch `sonic-rs v0.5.8 (C:\Users\mark_\Code\scratch\pillar-research-20260908\arena\source\support\patches\sonic-rs-0.5.8)` was not used in the crate graph
+help: Check that the patched package version and available features are compatible
+      with the dependency requirements. If the patch has a different version from
+      what is locked in the Cargo.lock file, run `cargo update` to use the new
+      version. This may also occur with an optional dependency that is not enabled.
+   Compiling arena-research-probe v0.0.0 (C:\Users\mark_\Code\scratch\pillar-research-20260908\arena\probe)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.25s
+     Running unittests src\lib.rs (C:\Users\mark_\Code\scratch\pillar-research-20260908\arena\target\debug\deps\arena_research_probe-70ceee38f692f86e.exe)
+
+running 7 tests
+test probes::control_remove_child_retains_pin_until_release ... ok
+test probes::foreign_handle_refuses_same_local_slot ... ok
+test probes::control_released_ids_do_not_alias_after_churn ... ok
+test probes::fragment_replacement_retains_pin_observers_off ... ok
+test probes::fragment_replacement_retains_pin_observers_on ... ok
+test probes::text_replacement_retains_pin_observers_off ... ok
+test probes::text_replacement_retains_pin_observers_on ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.40s
+
+     Running ..\source\components\genet-scripted-dom\tests\replacement_retention.rs (C:\Users\mark_\Code\scratch\pillar-research-20260908\arena\target\debug\deps\replacement_retention-d36bd2098409a39f.exe)
+
+running 6 tests
+test fragment_replacement_retains_descendants_with_observers ... ok
+test fragment_replacement_retains_descendants_without_observers ... ok
+test text_replacement_retains_descendants_without_observers ... ok
+test text_replacement_retains_descendants_with_observers ... ok
+test replacement_churn_reclaims_after_observer_delivery ... ok
+test replacement_churn_reclaims_without_observers ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.83s
+
+     Running ..\source\components\genet-scripted-dom\tests\root_closure.rs (C:\Users\mark_\Code\scratch\pillar-research-20260908\arena\target\debug\deps\root_closure-638eb8bb1cab0eb7.exe)
+
+running 6 tests
+
+thread 'live_template_retains_its_contents_owner' (34060) panicked at ..\source\components\genet-scripted-dom\tests\root_closure.rs:27:5:
+reachable contents must retain their inert owner
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test live_template_retains_its_contents_owner ... FAILED
+
+thread 'shared_owner_does_not_retain_a_retired_sibling_fragment' (37712) panicked at ..\source\components\genet-scripted-dom\tests\root_closure.rs:109:5:
+assertion failed: dom.is_live(owner) && dom.is_live(second_contents)
+test pinned_shadow_descendant_retains_host_after_replacement ... ok
+test shared_owner_does_not_retain_a_retired_sibling_fragment ... FAILED
+
+thread 'pinned_contents_descendant_retains_owner_without_retaining_template' (29120) panicked at ..\source\components\genet-scripted-dom\tests\root_closure.rs:54:5:
+assertion failed: dom.is_live(owner)
+
+thread 'swept_template_has_no_dangling_contents_lookup' (23792) panicked at ..\source\components\genet-scripted-dom\tests\root_closure.rs:70:5:
+assertion `left == right` failed
+  left: Some(NodeId(1407374883553283))
+ right: None
+
+thread 'template_owner_is_reclaimed_and_reminted_after_churn' (14964) panicked at ..\source\components\genet-scripted-dom\tests\root_closure.rs:90:9:
+assertion `left == right` failed
+  left: Some(NodeId(1688849860263938))
+ right: None
+test pinned_contents_descendant_retains_owner_without_retaining_template ... FAILED
+test swept_template_has_no_dangling_contents_lookup ... FAILED
+test template_owner_is_reclaimed_and_reminted_after_churn ... FAILED
+
+failures:
+
+failures:
+    live_template_retains_its_contents_owner
+    pinned_contents_descendant_retains_owner_without_retaining_template
+    shared_owner_does_not_retain_a_retired_sibling_fragment
+    swept_template_has_no_dangling_contents_lookup
+    template_owner_is_reclaimed_and_reminted_after_churn
+
+test result: FAILED. 1 passed; 5 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
+
+error: test failed, to rerun pass `--test root_closure`

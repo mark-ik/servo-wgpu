@@ -1,0 +1,11 @@
+{
+  "base_revision": "ee0b314b3e9ac4a2fadb07fb7816990fa3f2b71d",
+  "source_overlay": {
+    "components/genet-scripted-dom/lib.rs": "060e466265f050884218f049ec61f418e248de0c63ed2516eec46e4eeffcc3e4",
+    "components/genet-scripted-dom/shadow.rs": "29ea08c4ebdc2150d63319186d45db047fa5e85e58f1feb151a44e743b730444",
+    "components/genet-scripted-dom/tests/replacement_retention.rs": "fe8c3e0a50398492dac04317dcd494ca497b5e34e242409bc1b3b37ef3deb637",
+    "components/genet-scripted-dom/tests/root_closure.rs": "efdb62171a27220822a828d507f0011e3244846688c6bd92bb1bc69d75998ff2"
+  },
+  "before_root_manifest_sha256": "719b7548cc280334513d8f24effdbb8b723d5dadfdb825091d6f0f659cf7d6eb",
+  "excluded": "Concurrent parser/runtime WIP"
+}

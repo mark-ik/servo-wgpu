@@ -551,6 +551,14 @@ in [the S1 receipt](../design_docs/receipts/2026-09-08_g5_s1/receipt.md).
 Concurrent parser/runtime WIP was excluded; the larger G5/backend/Ortet proof
 sequence remains open.
 
+**S2 store correction, 2026-09-08:** five reproduced template-root failures
+are repaired by tracing contents to their inert owner and pruning stale
+metadata. Seven root-closure tests, 38 crate-source tests, six S1 tests and
+seven original assertions pass. [The S2 receipt](../design_docs/receipts/2026-09-08_g5_s2/receipt.md)
+names positive and negative cases, exact source overlays and the failing
+baseline. This preserves the existing one-inert-owner-per-arena representation;
+per-owning-document/adoption semantics and backend-root closure remain open.
+
 Freeze a fixture manifest and named regressions before implementation:
 
 1. Retain a node and descendant through JS references. Record their identity,
