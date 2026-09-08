@@ -1,12 +1,15 @@
 # Ortet founding plan
 
-**Status:** O0 through O4 landed; O5a engine selection landed structurally on
-2026-09-07. Per-engine headed receipts and O5b-O5c remain open. Browser
-http(s) resource provisioning landed structurally in `35efc1985bc` and its
-headed HTTP runtime gate is accepted in `247a52e612a`. The crates.io claim
-stays pending. The `fleece` carve-out is reconciled with the boundary plan's
-§9.1 (see Findings);
-the witness still names fleece on every run.
+**Status:** O0 through O4 and O5a engine selection are landed. O5b has an
+unaccepted integration lane for session wake scheduling and bounded semantic
+completion; O5c's per-engine headed receipts remain open. Browser http(s)
+resource provisioning landed structurally in `35efc1985bc` and its headed HTTP
+runtime gate is accepted in `247a52e612a`. AccessKit session-generation
+custody is landed, while its native bridge-action receipt remains open.
+Crates.io publication is a later packaging precondition: this workspace
+inherits `publish = false`. The `fleece` carve-out is reconciled with the
+boundary plan's §9.1 (see Findings); the witness still names fleece on every
+run.
 
 Ortet is the raw genet host: the one headed port that proves the engine runs
 without Mere. The platform boundary plan
@@ -22,8 +25,9 @@ takes the role a smaller host was always going to take.
 The name is the botanical one. A genet is a whole clonal colony; an ortet is the
 original individual it descends from; a ramet is any member. The raw host is
 the reference individual of the engine. Mark ruled "ortet is fine" on
-2026-09-03; the name is free on crates.io and is claimed with a real publish
-when the crate has one worth publishing (naming ledger rule).
+2026-09-03. A crates.io claim awaits a packaging release that explicitly opts
+the crate out of the workspace's `publish = false` policy; it is not evidence
+of, or a prerequisite for, the host's runtime behavior.
 
 ## What ortet is, and is not
 
@@ -203,13 +207,18 @@ synchronous; O3's reproducible fixture uses a data document and data font.
 
 When Pelt moves to mere (boundary plan P3): ortet becomes the workspace
 `default-members` entry, the witness drops the Pelt manifest assertion and
-keeps ortet's, the boundary plan's ruling 4 records the smaller host as the
-answer, and the naming ledger's claim is made with a real publish if the crate
-is worth one by then.
+keeps ortet's, and the boundary plan's ruling 4 records the smaller host as
+the answer.
 
 **Done when:** genet's root `cargo build` builds ortet, no dependency or
 manifest assertion points at Pelt, and the boundary plan and naming ledger both
 say so. The retained forbidden `pelt` prefix is intentional.
+
+The workspace package policy is `publish = false`, inherited by Ortet. A later
+packaging lane must decide whether Ortet is publishable, opt it into a release,
+clear the package graph for a registry dry-run, and claim its name only by a
+real publication. That work does not change O4's host, session, presentation,
+or dependency-cone done-condition.
 
 The witness's former live positive control was the one thing Pelt's departure took with it.
 `pelt-desktop`'s cone exercised both halves of `is_ortet_forbidden` at once — an
@@ -224,7 +233,7 @@ edges are excluded and retains an allowed graph control. Predicate assertions
 remain a separate guard on the name list; they are not presented as a live
 graph control.
 
-### O5. Scripted platform host (in progress 2026-09-07)
+### O5. Scripted platform host (O5a landed; O5b-O5c in progress 2026-09-08)
 
 Extend the existing host with selectable script-free, Boa and Nova execution
 modes, using the same window, session input, rendering and capture path.
@@ -235,11 +244,11 @@ consume Livery/Buckram. Exact CLI/feature spellings are an implementation
 choice; unsupported combinations must produce a clear diagnostic rather than
 silently choosing another engine.
 
-**O5a: engine selection.** Replace Ortet's concrete engine selection with
-the common session contract or a small mode dispatcher. Preserve its
-script-free route. Instantiate supported scripted modes through
-`genet-documents`; do not import Pelt, Inker or Cambium. Record the actual
-engine, target, features and source revision in each receipt.
+**O5a: engine selection — landed 2026-09-07.** Ortet replaced its concrete
+engine selection with the common session contract while preserving the
+script-free route. It instantiates supported scripted modes through
+`genet-documents` without importing Pelt, Inker or Cambium, and records the
+actual engine, target, features and source revision for receipt callers.
 
 The structural selection slice landed at `07b4e7a40b4`: native Ortet accepts
 `--engine livery|boa|nova`, holds the selected engine behind
@@ -248,10 +257,21 @@ both script engines out of its dependency cone; `scripted` adds Boa and
 `scripted-nova` adds Nova on supported 64-bit native targets. Successful runs
 report the stable engine id, concrete backend, target, enabled features and an
 optional `GENET_SOURCE_REVISION`. A receipt without that revision remains
-unqualified. O5a's per-engine headed receipt is therefore still open.
+unqualified. O5a closes selection and dependency-cone ownership. O5c owns the
+per-engine headed acceptance receipts; they are still open.
 
 **O5b: production session integration.** Resource and scheduling adapters must
 serve the real document session, not a harness-only copy of the runtime.
+
+**Current implementation lane, unaccepted:** integration commits
+`a58a7965854` and `167c9e679c5` add a session pending-work report, winit
+deadline scheduling, bounded artifact completion, engine-owned heading
+readback, and a Boa/Nova native-fixture runner. This is implementation under
+review, not a headed receipt: its wake and settlement policy must agree with
+the shared observability contract, receipt timeouts must wake independently of
+the work source, and the runner must prove an idle `WaitUntil` wake rather
+than only forced redraws. It does not establish live-server completion, Worker
+delivery, cancellation, or stale-result exclusion.
 
 - Provision document/external-script loads and script fetch/worker resource
   requests through the existing host contracts with consistent base URL,
@@ -304,9 +324,15 @@ worker placement need their own target receipts before being advertised.
 Canvas 2D, service workers, IndexedDB and editing use this host as their engine
 lanes become ready; O5 does not claim those APIs or add persistent storage.
 
-**Done when:** O5a-O5c have exact-source, per-engine hosted receipts, including
-the Worker integration gate once its runtime is available. Runtime-only and
-WPT-only results remain useful partial evidence until those gates pass.
+**Done when:** O5a stays selected through the common host contract, and O5b
+drives timers, microtasks, external completions and document replacement through
+one production session lifecycle. O5c then has frozen, exact-source, per-engine
+hosted receipts: semantic completion and a correlated final frame after native
+input, an idle-woken live-server completion, Worker delivery when that runtime
+is available, and replacement/close cancellation with stale updates excluded.
+Each receipt must fail for an unmet condition or timeout. Runtime-only tests,
+a runner that has not passed its acceptance cases, and WPT-only results remain
+partial evidence.
 
 ## Findings
 
@@ -644,9 +670,10 @@ WPT-only results remain useful partial evidence until those gates pass.
   went 887 -> 843 owned sources, exactly the 44 sources in the four removed
   directories, with "without Exhibit A" unmoved at 6 (all in other lanes).
 
-  Still pending: the crates.io claim. Ortet's dependencies are `publish =
-  false` host crates, so there is nothing publishable yet; the naming ledger
-  entry waits on that, not on this commit.
+  Packaging remains separate: the workspace's inherited `publish = false`
+  policy means a registry release needs an explicit package decision and
+  package-graph preparation. That is not pending Ortet runtime work and does
+  not alter this O4 closure.
 
 - 2026-09-05: **O0/O4 witness hardening landed.**
   `support/ci/check_dependency_cones.py` now traverses Cargo resolve package
@@ -817,5 +844,6 @@ WPT-only results remain useful partial evidence until those gates pass.
   two imports, the image, authored Ahem TTF, the 403 resource, and a budget
   overflow request.
 
-  This accepts the browser-runtime boundary. Stable accessibility IDs and
-  publication retain their separate gates.
+  This accepts the browser-runtime boundary. AccessKit's session-generation
+  custody is already implemented; its native bridge-action receipt remains a
+  separate gate. Publication remains a later packaging decision.
