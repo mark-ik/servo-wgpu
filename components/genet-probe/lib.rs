@@ -114,6 +114,22 @@ pub struct Hit {
     pub point: (f32, f32),
 }
 
+/// An application's authoritative answer for a selector it can lay out itself.
+///
+/// [`Unsupported`](Self::Unsupported) retains the ordinary retained-surface
+/// resolver. [`Miss`](Self::Miss) is final: the host knows this selector has no
+/// laid-out target, so probe must not make a second, potentially stale match in
+/// its retained DOM surfaces.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SelectorTarget {
+    /// This app has no host-owned selector geometry for the request.
+    Unsupported,
+    /// The host owns this request and found no current target.
+    Miss,
+    /// The host resolved an exact window-space target.
+    Hit(Hit),
+}
+
 /// A retained text range resolved to window-space drag endpoints.
 ///
 /// The application resolves the range because it owns the live document
@@ -296,6 +312,13 @@ pub trait Automatable {
     /// trait — the mock held a plain DOM and hid it.)
     fn with_surfaces<R>(&self, f: impl FnOnce(&[ProbeSurface<'_>]) -> R) -> R;
 
+    /// Resolve a selector against host-owned layout when the host has an
+    /// authoritative answer. The default leaves resolution to retained probe
+    /// surfaces for existing consumers.
+    fn selector_target(&self, _sel: &Selector) -> SelectorTarget {
+        SelectorTarget::Unsupported
+    }
+
     /// Resolve retained text to window-space drag endpoints.
     ///
     /// Apps without selectable retained text use the default miss. An
@@ -350,7 +373,11 @@ pub trait Automatable {
 pub trait AutomatableExt: Automatable {
     /// Resolve `sel` to a window point across this app's surfaces.
     fn resolve(&self, sel: &Selector) -> Option<Hit> {
-        self.with_surfaces(|surfaces| resolve(surfaces, sel))
+        match self.selector_target(sel) {
+            SelectorTarget::Unsupported => self.with_surfaces(|surfaces| resolve(surfaces, sel)),
+            SelectorTarget::Miss => None,
+            SelectorTarget::Hit(hit) => Some(hit),
+        }
     }
 
     /// Resolve `sel` and click it (press+release at its centre). `true` if it
@@ -619,5 +646,85 @@ mod tests {
         };
         assert!(!app2.click(&Selector::class("tab").containing("Nope")));
         assert_eq!(app2.pressed, None);
+    }
+
+    struct HostSelectorApp {
+        dom: ScriptedDom,
+        target: SelectorTarget,
+        pressed: Option<(f32, f32)>,
+        released: Option<(f32, f32)>,
+    }
+
+    impl Automatable for HostSelectorApp {
+        fn with_surfaces<R>(&self, f: impl FnOnce(&[ProbeSurface<'_>]) -> R) -> R {
+            f(&[ProbeSurface {
+                name: "strip",
+                dom: &self.dom,
+                rect: [500.0, 10.0, 300.0, 200.0],
+                sheet: "",
+            }])
+        }
+
+        fn selector_target(&self, _sel: &Selector) -> SelectorTarget {
+            self.target
+        }
+
+        fn snapshot(&self) -> ProbeSnapshot {
+            ProbeSnapshot::default()
+        }
+
+        fn drain_events(&mut self) -> Vec<String> {
+            Vec::new()
+        }
+
+        fn act(&mut self, _label: &str) -> bool {
+            false
+        }
+
+        fn press(&mut self, x: f32, y: f32) {
+            self.pressed = Some((x, y));
+        }
+
+        fn moved(&mut self, _x: f32, _y: f32) {}
+
+        fn release(&mut self, x: f32, y: f32) {
+            self.released = Some((x, y));
+        }
+    }
+
+    #[test]
+    fn a_host_selector_target_supplies_the_click_point() {
+        let mut app = HostSelectorApp {
+            dom: strip_dom(),
+            target: SelectorTarget::Hit(Hit {
+                surface: "host-canvas",
+                point: (37.0, 91.0),
+            }),
+            pressed: None,
+            released: None,
+        };
+
+        assert!(app.click(&Selector::class("tab").containing("Links")));
+        assert_eq!(app.pressed, Some((37.0, 91.0)));
+        assert_eq!(app.released, Some((37.0, 91.0)));
+    }
+
+    #[test]
+    fn a_host_selector_miss_is_authoritative_over_retained_surfaces() {
+        let mut app = HostSelectorApp {
+            // The retained DOM has this tab, so the legacy resolver would
+            // return (620, 22). A host layout miss must not use that stale
+            // surface geometry.
+            dom: strip_dom(),
+            target: SelectorTarget::Miss,
+            pressed: None,
+            released: None,
+        };
+        let selector = Selector::class("tab").containing("Links");
+
+        assert_eq!(app.resolve(&selector), None);
+        assert!(!app.click(&selector));
+        assert_eq!(app.pressed, None);
+        assert_eq!(app.released, None);
     }
 }
