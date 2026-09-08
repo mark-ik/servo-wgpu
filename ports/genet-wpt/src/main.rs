@@ -474,6 +474,7 @@ fn real_main() {
     };
 
     harness::set_drive_deadline_secs(args.drive_deadline_secs);
+    harness::set_harness_gc(args.harness_gc);
 
     // bench needs only the tests root (for resources/testharness.js), not a subset
     // walk; handle it before the corpus collection below.

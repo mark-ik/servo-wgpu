@@ -60,6 +60,7 @@ older `docs/` corpus without changing their location or governance.
 | [Dedicated Worker](2026-09-07_worker_plan.md) | A second `Runtime` of the same engine on its own thread with `DedicatedWorkerGlobalScope`, `Worker` on the page, `MessagePort` across the boundary, and a JSON encoding of the clone record as the cross-agent wire. Landed 2026-09-07: `workers` 5 to 74 all-pass and 21 to 321 subtests, genet-wpt hosts `.worker.js` and `.any.worker` variants, +972 subtest passes with zero pass-to-fail. Residuals: `SharedWorker`, cross-agent `BroadcastChannel`, module workers, nested-worker relay ordering, real `ArrayBuffer` detachment, and a hosted headed receipt. |
 | [WebSocket](2026-09-07_websocket_plan.md) | The `WebSocket` host object over netfetcher's transport, with the browser policy the Fetch algorithm does not wrap it in enforced on the connection path. Landed 2026-09-07: `websockets` 0 to 1,090 of 1,877 subtests in disk mode, 254 all-pass and 1,144/1,586 in the first server-mode run; `fetch` and `xhr` byte-identical. Residuals: worker-hosted sockets (214 files), `WebSocketStream`, real backpressure. |
 | [Host contract ownership](../docs/2026-08-14_web_platform_host_contract_plan.md) | Genet owns retained session contracts; Mere owns surface orchestration and product adapters. The older S0-S5 receipts need a consumer-side status refresh before resuming those lanes. |
+| [Reflector identity](2026-09-07_reflector_identity_plan.md) | Wrapper liveness follows node reachability: every wrapper has an opaque root, a connected node's wrapper lives as long as its document, a detached subtree's as long as script holds any one of it. Landed 2026-09-07 with zero census movement over six directories under both harness-collection settings; the receipts are the reproducer set and the restored `ErrorEvent` `toStringTag`, not a score. Residual: the between-tick window for detached trees. |
 
 The [Buckram master](../docs/2026-07-26_buckram_css_layout_engine_plan.md)
 defines ownership and the [lane program](../docs/2026-08-21_buckram_livery_lane_program_plan.md)
@@ -87,7 +88,6 @@ completed corpus census or bounded slice does not close its enclosing feature.
 
 ## WPT census — the web platform beyond CSS
 
-- [selection_range_plan](2026-09-07_selection_range_plan.md)
 - [tagname_window_globals_plan](2026-09-07_tagname_window_globals_plan.md)
   (**landed 2026-09-07**: the two shape residuals the interface-table and Worker
   lanes left named. The HTML uppercasing moved out of the arena's `__tagName` /
@@ -166,14 +166,6 @@ completed corpus census or bounded slice does not close its enclosing feature.
   `.any.worker.html` — a dedicated Worker has no socket relay yet. `fetch` and
   `xhr` maps are byte-identical, and there is no pass-to-fail movement anywhere.
   Raw maps under `Code/testing/genet/wpt-ledger/2026-09-07_websocket/`.)
-- [reflector_identity_scoping](2026-09-07_reflector_identity_scoping.md)
-  (**research 2026-09-07**: why a node's JS wrapper, and every expando it
-  carries (listeners, handlers, custom-element state, iframe documents, WebGL
-  contexts), can vanish while the node lives: the wrapper is rooted only by
-  script, so a collection re-mints a blank one. Reproduced on both engines;
-  the headed host collects every frame. Fix options, blast radius and the
-  decision on pinning against the gc-arena soak target are Mark's.)
-
 - [dom_node_model_plan](2026-09-07_dom_node_model_plan.md)
   (**landed 2026-09-07**: the core DOM residuals the MutationObserver and
   Selection/Range plans left to Mark. Inserting a `DocumentFragment` moves its
@@ -200,6 +192,7 @@ completed corpus census or bounded slice does not close its enclosing feature.
   both `error` regressions are throughput walls on files that never passed. Raw
   maps under `Code/testing/genet/wpt-ledger/2026-09-07_dom_node_model/`.)
   (**landed 2026-09-07**: `Range`, `StaticRange`, `AbstractRange`, `Selection`
+- [selection_range_plan](2026-09-07_selection_range_plan.md)
   and `getSelection` over the scripted arena. The DOM's live-range steps run at
   the bootstrap's own twelve-call-site mutation funnel rather than off the
   arena's observer record, because they need the child index and the boundary
@@ -282,6 +275,34 @@ completed corpus census or bounded slice does not close its enclosing feature.
   none from a passing status. Raw maps under
   `Code/testing/genet/wpt-ledger/2026-09-07_harness_repair/`.)
 - [web_platform_wpt_census](2026-09-06_web_platform_wpt_census.md)
+- [reflector_identity_scoping](2026-09-07_reflector_identity_scoping.md)
+  (**research 2026-09-07**: why a node's JS wrapper — and its listeners — could be
+  silently replaced at a GC tick. Establishes the mechanism with receipts on both
+  engines and lays out four fix options. The entry this document recorded as
+  owed, written by the fix lane below.)
+- [reflector_identity_plan](2026-09-07_reflector_identity_plan.md)
+  (**landed 2026-09-07**: the fix Mark chose — wrapper liveness follows **node
+  reachability**, not wrapper state. Every wrapper has an opaque root, the root of
+  its node's tree, and is alive while that root is; a document is always alive.
+  The engine contract gained `minted_reflectors` / `root_reflectors` /
+  `unroot_reflectors` on Boa and Nova, with `drain_dead_reflectors` still the
+  liveness signal for unrooted reflectors. Connected nodes are decided from the
+  arena and host-rooted — on the mint, on insertion, and at each tick, against a
+  tree-root cache keyed on a new structural-mutation epoch. Detached trees cannot
+  be decided by the host at all, because a strong root destroys the evidence for
+  the question, so their liveness is handed to the collector as an ephemeron
+  cycle in the bootstrap. Policy cost over 4,002 touched nodes: 0.5 ms on a
+  quiescent frame, 2–3 ms after a re-parent, against a 16 ms (Boa) / 107 ms
+  (Nova) whole tick. The WPT harness now collects once per drive turn, on by
+  default. `dom`, `custom-elements`, `html/webappapis`, `workers`, `selection`
+  and `html/semantics/interfaces.html` are **byte-identical** before and after
+  under both settings — zero pass-to-fail, zero fail-to-pass — with the one
+  collection-off difference traced to `--jobs 8` scheduling on a worker test that
+  passes both ways in isolation. Seven regression functions on both engines, ten
+  of the twelve confirmed failing with the policy switched off; the gc-arena
+  soak restated to "bounded by reachable touched nodes" and asserting both
+  directions. Baselines `unexpected=0`, Ortet digest unchanged. Raw maps under
+  `Code/testing/genet/wpt-ledger/2026-09-07_reflector_identity/`.)
   (**complete 2026-09-06**: exact `genet-wpt` testharness maps for every
   non-CSS WPT directory a web engine owns, `html` split by subdirectory;
   676 all-pass / 13,845 fail / 2,392 error / 985 no-results / 3,774 skip of
@@ -437,8 +458,6 @@ same session; links out of it are rewritten for its new depth.
   merely failed into hangs, at four times the directory's wall time; keyed by
   node, the same directory ran faster than its baseline. A `post` map that
   slows a directory down is reporting a complexity defect, not noise.
-- **A directory's census can be floored by one missing name.** Two directories
-  in this session reported almost nothing because their shared setup file threw
 - **A subtest that compares two absent things passes.** `Node-baseURI.html`
   scored 4 of 9 for two weeks on `undefined === undefined`; defining
   `document.URL` correctly turned those four into honest failures and the
@@ -448,6 +467,8 @@ same session; links out of it are rewritten for its new depth.
   not of the score.
   on a node type neither lane was about, aborting every file before its first
   subtest. Probe the shared `common.js` of a directory that will not move before
+- **A directory's census can be floored by one missing name.** Two directories
+  in this session reported almost nothing because their shared setup file threw
   concluding anything about the feature under test. Supplying the missing name
   took `selection` from 384 reported subtests to 33,621. The same file floored
   `dom/ranges` **twice**: `CDATASection` and, behind it, a constructible
@@ -459,8 +480,6 @@ same session; links out of it are rewritten for its new depth.
   nothing on the other. Wrap at the bootstrap's own call sites instead — they
   are few, because the bootstrap already funnels — and prove the behavior on
   both backends. See the MutationObserver plan's Findings.
-- **Verify paired forks from a standalone consumer.** Cargo root patches are
-  not inherited by downstream workspaces. A coupled dependency must travel with
 - **A virtual clock and a second agent are incompatible.** The disk drive loop
   jumps to the next timer's due time and never sleeps, which is right while one
   agent owns all the work. The moment a worker thread is live, that jump fires
@@ -471,7 +490,18 @@ same session; links out of it are rewritten for its new depth.
   flight and quiesce the page over live work. See the Worker plan's Findings.
   its caller; prove that resolution before refreshing product revisions.
 - **Parallel work needs commit fences as well as file fences.** Pin one base,
+- **Verify paired forks from a standalone consumer.** Cargo root patches are
+  not inherited by downstream workspaces. A coupled dependency must travel with
   give each worker a disposable detached worktree and disjoint write paths,
+- **A liveness question the host cannot answer belongs to the collector.** If
+  the host takes a strong root to keep something alive, it can no longer ask
+  whether anything else was keeping it alive — the root is the answer's own
+  confounder, and no order of unroot, collect and query recovers it without the
+  collection taking the object the question was about. Express the *relation*
+  instead, as a reference cycle a tracing GC already resolves: a `WeakMap` from
+  each member of a group to a shared array of all members is an ephemeron, so
+  the group lives exactly while any member is reachable. See the reflector
+  identity plan §1.1.
   inspect staged paths before committing, and remove the worktree immediately
   after integration.
 

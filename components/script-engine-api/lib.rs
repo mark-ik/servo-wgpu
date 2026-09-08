@@ -247,6 +247,49 @@ pub trait ScriptEngine: Sized {
     /// collector, so a just-orphaned node is reaped that same tick (the gc-arena soak's
     /// frame-cadence contract).
     fn force_gc(&mut self) {}
+
+    /// Every [`ReflectorData`] the canonical-reflector cache currently holds an
+    /// entry for — the set of nodes script has been handed an object for. The
+    /// opaque-root policy iterates this at the GC tick to decide which reflectors
+    /// the host roots (see [`root_reflectors`]). Order is unspecified. Default
+    /// empty: a backend with no cache has nothing to police.
+    ///
+    /// [`root_reflectors`]: ScriptEngine::root_reflectors
+    fn minted_reflectors(&mut self) -> Vec<ReflectorData> {
+        Vec::new()
+    }
+
+    /// Take a **strong** engine root on each named reflector, so the collector
+    /// cannot take it while the root is held; minting the reflector if the cache
+    /// has no live entry. Idempotent per id.
+    ///
+    /// This is the engine half of the opaque-root policy (see the
+    /// reflector-identity plan). The host pin table pins the *node*; nothing
+    /// pinned the *reflector*, so the (reflector, wrapper) pair was collectable
+    /// while the node was still attached to a live document, and the next handoff
+    /// minted a blank wrapper in place of the one carrying the node's listeners
+    /// and other JS-side state. WebIDL requires exactly one JS object per platform
+    /// object per realm, so a reachable node's wrapper identity must be stable
+    /// across collections; a rooted reflector is what makes it so.
+    ///
+    /// [`drain_dead_reflectors`] must never report a rooted id.
+    ///
+    /// [`drain_dead_reflectors`]: ScriptEngine::drain_dead_reflectors
+    fn root_reflectors(&mut self, _data: &[ReflectorData]) {}
+
+    /// Release the roots taken by [`root_reflectors`](Self::root_reflectors). Each
+    /// reflector becomes collectable again once script drops its own references,
+    /// and `drain_dead_reflectors` resumes reporting its death. Idempotent.
+    fn unroot_reflectors(&mut self, _data: &[ReflectorData]) {}
+
+    /// How many reflectors are currently held by an engine root. A diagnostic
+    /// readout, not a control: the gc-arena soak asserts on it (live wrappers stay
+    /// bounded by the reachable touched nodes) and the reflector-identity
+    /// regression tests assert the root is actually taken and actually released.
+    /// Default 0 — a backend with no rooting.
+    fn rooted_reflector_count(&mut self) -> usize {
+        0
+    }
 }
 
 /// Engines that can clone an idle VM heap into a fresh, independently-owned
@@ -309,6 +352,21 @@ pub trait CallCx {
     /// neutral [`HostData`] without re-coupling the host layer to an engine). It
     /// lives in the same host-defined slot the engine already owns.
     fn reflector_for(&mut self, data: ReflectorData) -> Result<Self::Value, Self::Error>;
+
+    /// Hold a **strong** engine root on the canonical reflector for `data`, the
+    /// in-callback mirror of [`ScriptEngine::root_reflectors`]. Returns whether the
+    /// root was taken. Used on the mint path (`dom::reflect_pinned`): a node that
+    /// is connected to its document is rooted the moment script is handed it, so
+    /// its wrapper identity is stable from the first handoff rather than from the
+    /// next GC tick — the window an engine with an allocation-threshold collector
+    /// (Boa) would otherwise collect in.
+    fn root_reflector(&mut self, _data: ReflectorData) -> bool {
+        false
+    }
+
+    /// Release the root taken by [`root_reflector`](Self::root_reflector).
+    /// Idempotent.
+    fn unroot_reflector(&mut self, _data: ReflectorData) {}
 
     /// Mint a JS string value. The read-surface mirror of [`value_to_string`]: a
     /// callback returning text (`getAttribute`, `tagName`, the `textContent` getter)

@@ -301,6 +301,7 @@ impl<E: ScriptEngine> NativeFn<E> for InsertBefore {
                     r,
                 )
             });
+            super::root_connected_subtree::<E>(cx, NodeId::from_raw(n as usize));
         }
         Ok(cx.undefined())
     }
@@ -329,6 +330,7 @@ impl<E: ScriptEngine> NativeFn<E> for MoveBefore {
                     r,
                 )
             });
+            super::root_connected_subtree::<E>(cx, NodeId::from_raw(n as usize));
         }
         Ok(cx.undefined())
     }

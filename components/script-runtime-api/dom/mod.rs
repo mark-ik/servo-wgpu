@@ -1105,13 +1105,62 @@ impl<E: ScriptEngine> NativeFn<E> for CookieSet {
 /// engine report the reflector dead. Pinning must be complete — a node handed
 /// out unpinned could be swept while script still holds it — which is why this
 /// is the sole node-handoff path (no binding calls `reflector_for` directly).
+/// Take an engine root on every already-reflected node in the subtree rooted at
+/// `node`, if that subtree is now connected to the document.
+///
+/// The mint path roots a node that is *already* connected when script is handed
+/// it, but the common shape is the other order: create detached, decorate, then
+/// insert. Between the insertion and the next GC tick, Boa's allocation-threshold
+/// collector can fire, and without this the just-connected wrapper - carrying the
+/// listeners and the custom-element upgrade state script just put on it - would
+/// be collectable in that window. The host pin table is the list of nodes that
+/// have a reflector, so the walk roots exactly those and skips freshly parsed
+/// subtrees entirely.
+pub(crate) fn root_connected_subtree<E: ScriptEngine>(cx: &mut E::CallCx<'_>, node: NodeId) {
+    let Some(data) = cx.host_data() else { return };
+    let Some(cell) = data.downcast_ref::<RefCell<HostState>>() else {
+        return;
+    };
+    let ids: Vec<u64> = {
+        let mut host = cell.borrow_mut();
+        if !host.is_connected_node(node) {
+            return;
+        }
+        let mut out = Vec::new();
+        let mut stack = vec![node];
+        while let Some(id) = stack.pop() {
+            if host.pins.is_pinned(id) {
+                out.push(id.raw() as u64);
+            }
+            let kids: Vec<NodeId> = host.dom.dom_children(id).collect();
+            stack.extend(kids);
+        }
+        out
+    };
+    for d in ids {
+        cx.root_reflector(d);
+    }
+}
+
 fn reflect_pinned<E: ScriptEngine>(cx: &mut E::CallCx<'_>, raw: u64) -> Result<E::Value, E::Error> {
+    let mut connected = false;
     if let Some(data) = cx.host_data() {
         if let Some(cell) = data.downcast_ref::<RefCell<HostState>>() {
-            cell.borrow_mut().pins.pin(NodeId::from_raw(raw as usize));
+            let id = NodeId::from_raw(raw as usize);
+            let mut host = cell.borrow_mut();
+            host.pins.pin(id);
+            connected = host.is_connected_node(id);
         }
     }
-    cx.reflector_for(raw)
+    let value = cx.reflector_for(raw)?;
+    if connected {
+        // Root on the mint, not only at the next GC tick: Boa collects on its own
+        // allocation threshold, so a wrapper handed out and given listeners
+        // between two ticks would otherwise be collectable in that window. The
+        // tick releases the root again if the node has since left the document.
+        cx.root_reflector(raw);
+    }
+    Ok(value)
 }
 
 /// Depth-first search under `root` for the first element whose null-namespace `id`

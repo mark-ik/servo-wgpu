@@ -167,6 +167,13 @@ pub struct ScriptedDom {
     /// (`replaceChild`) opens a group so the childList records for one target
     /// merge into one.
     observed_group: Option<usize>,
+    /// Monotonic counter of **structural** mutations — every write to a node's
+    /// parent link. The reflector-identity policy caches each reflector's tree
+    /// root and re-derives the cache whenever this moves, so a frame that only
+    /// sets attributes or text pays nothing for the cache. Deliberately narrower
+    /// than the `DomMutation` sequence number, which also advances on attribute
+    /// and character-data facts that cannot move a node between trees.
+    structure_epoch: u64,
     /// Process-unique document tag (G0 fence). Only present where the fence is
     /// active; elsewhere ids are untagged and this field would be dead weight.
     #[cfg(all(debug_assertions, target_pointer_width = "64"))]
@@ -289,6 +296,7 @@ impl ScriptedDom {
             observed: Vec::new(),
             observing: false,
             observed_group: None,
+            structure_epoch: 0,
             #[cfg(all(debug_assertions, target_pointer_width = "64"))]
             doc_tag: fence::next_doc_tag(),
         };
@@ -553,6 +561,7 @@ impl ScriptedDom {
         let removed = existing.clone();
         for child in existing {
             self.node_mut(child).parent = None;
+            self.structure_epoch += 1;
             self.release_subtree(child);
         }
         self.node_mut(node).text = None;
@@ -752,6 +761,7 @@ impl ScriptedDom {
             }
         }
         self.node_mut(child).parent = None;
+        self.structure_epoch += 1;
     }
 
     /// The shared tree surgery behind `insert_before` / `move_before`: detach
@@ -763,6 +773,7 @@ impl ScriptedDom {
     fn attach_at(&mut self, parent: NodeId, child: NodeId, reference: Option<NodeId>) {
         self.detach(child);
         self.node_mut(child).parent = Some(parent);
+        self.structure_epoch += 1;
         let idx = reference.and_then(|r| self.node(parent).children.iter().position(|&c| c == r));
         let kids = &mut self.node_mut(parent).children;
         match idx {
@@ -821,6 +832,33 @@ impl ScriptedDom {
         let before = self.nodes.len();
         self.nodes.retain(|k, _| marked.contains(k));
         before - self.nodes.len()
+    }
+
+    /// The structural-mutation counter (see [`structure_epoch`] on the struct).
+    /// A consumer that caches anything derived from the parent links — the
+    /// reflector-identity policy's tree-root cache — holds this alongside the
+    /// cache and rebuilds when it moves.
+    ///
+    /// [`structure_epoch`]: Self::structure_epoch
+    pub fn structure_epoch(&self) -> u64 {
+        self.structure_epoch
+    }
+
+    /// The root of `id`'s tree: the topmost ancestor reachable by parent links.
+    /// For a node in the document that is the document node; for a detached
+    /// subtree it is the subtree's top. `None` if `id` is not live.
+    ///
+    /// This is the *opaque root* of the reflector-identity policy: a wrapper is
+    /// alive while its opaque root is alive, and the document is always alive.
+    pub fn tree_root(&self, id: NodeId) -> Option<NodeId> {
+        let mut cursor = self.try_index(id).filter(|i| self.nodes.contains_key(i))?;
+        let mut out = id;
+        // Bounded by tree depth; the store is acyclic by construction.
+        while let Some(parent) = self.nodes.get(&cursor).and_then(|n| n.parent) {
+            out = parent;
+            cursor = self.index(parent);
+        }
+        Some(out)
     }
 
     /// The number of live nodes currently in the store. Bounded by `collect`
@@ -889,6 +927,7 @@ impl ScriptedDom {
     /// building a parsed subtree, which is covered by one `SubtreeReplaced`.
     fn attach_silent(&mut self, parent: NodeId, child: NodeId) {
         self.node_mut(child).parent = Some(parent);
+        self.structure_epoch += 1;
         self.node_mut(parent).children.push(child);
     }
 
@@ -1080,6 +1119,7 @@ impl LayoutDomMut for ScriptedDom {
         }
         self.detach(child);
         self.node_mut(child).parent = Some(parent);
+        self.structure_epoch += 1;
         self.node_mut(parent).children.push(child);
         self.mutations.push(DomMutation::Inserted {
             node: child,
@@ -1224,6 +1264,7 @@ impl LayoutDomMut for ScriptedDom {
         let removed = existing.clone();
         for child in existing {
             self.node_mut(child).parent = None;
+            self.structure_epoch += 1;
             self.release_subtree(child);
         }
         // Parse via the static parser (a LayoutDom) and copy the explicitly

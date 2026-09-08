@@ -2260,3 +2260,445 @@ fn generated_interface_shape_on_boa() {
 fn generated_interface_shape_on_nova() {
     generated_interface_shape_works::<script_engine_nova::NovaEngine>();
 }
+
+// ---------------------------------------------------------------------------
+// Reflector identity: wrapper liveness follows node reachability
+// (design_docs/2026-09-07_reflector_identity_plan.md).
+//
+// Every wrapper has an opaque root, the root of its node's tree, and is alive
+// while that root is. A document is always alive, so a connected node's wrapper
+// - and every listener, handler, expando and custom-element state hung on it -
+// lives as long as its document. A detached subtree's wrappers live as long as
+// script holds any one of them. Nothing is kept for a node script never touched.
+// ---------------------------------------------------------------------------
+
+/// A listener registered without holding the element still fires after a
+/// collection. The scoping document's harness-free reproducer, verbatim; it
+/// failed on both engines before the opaque-root policy.
+fn listener_survives_gc<E: ScriptEngine>() {
+    let mut rt = Runtime::<E>::new().expect("runtime");
+    rt.eval(
+        "var d = document.createElement('div');\
+         d.setAttribute('id','t');\
+         document.appendChild(d);\
+         d = null;\
+         globalThis.hits = 0;\
+         document.getElementById('t').addEventListener('click', function(){ globalThis.hits++; });",
+    )
+    .expect("register");
+    rt.run_microtasks();
+    let _ = rt.collect_garbage();
+    rt.eval(
+        "document.getElementById('t').dispatchEvent(new Event('click'));\
+         console.log('hits:' + String(globalThis.hits));",
+    )
+    .expect("dispatch");
+    assert_eq!(rt.host().borrow().console[0], "hits:1");
+}
+
+/// WebIDL: one JS object per platform object per realm. A connected node held by
+/// nobody must hand back the *same* wrapper across a collection.
+fn connected_wrapper_identity_survives_gc<E: ScriptEngine>() {
+    let mut rt = Runtime::<E>::new().expect("runtime");
+    rt.eval(
+        "var d = document.createElement('div');\
+         d.setAttribute('id','t');\
+         document.appendChild(d);\
+         d = null;\
+         globalThis.first = document.getElementById('t');",
+    )
+    .expect("setup");
+    rt.run_microtasks();
+    // `first` is a global, so it is script-reachable; the identity question is
+    // whether a *second* lookup after a collection is the same object. Drop it to
+    // make the question honest, and keep only a marker on the wrapper.
+    rt.eval("globalThis.first.__mark = 'a'; globalThis.first = null;")
+        .expect("mark");
+    let rooted_before = rt.rooted_reflector_count();
+    let _ = rt.collect_garbage();
+    rt.eval(
+        "var again = document.getElementById('t');\
+         console.log('mark:' + String(again.__mark));\
+         console.log('same:' + String(document.getElementById('t') === again));",
+    )
+    .expect("re-read");
+    let host = rt.host();
+    let console = &host.borrow().console;
+    assert_eq!(console[0], "mark:a", "expando lost across a collection");
+    assert_eq!(console[1], "same:true");
+    assert!(
+        rooted_before > 0,
+        "the connected node's reflector was never rooted"
+    );
+}
+
+/// A user `WeakMap` keyed on an element survives a collection: the element the
+/// key was taken from is still the same object afterwards, so the entry is still
+/// found. This is the observable that no amount of re-registration can paper over.
+fn user_weakmap_key_survives_gc<E: ScriptEngine>() {
+    let mut rt = Runtime::<E>::new().expect("runtime");
+    rt.eval(
+        "var d = document.createElement('div');\
+         d.setAttribute('id','t');\
+         document.appendChild(d);\
+         d = null;\
+         globalThis.wm = new WeakMap();\
+         globalThis.wm.set(document.getElementById('t'), 'kept');",
+    )
+    .expect("setup");
+    rt.run_microtasks();
+    let _ = rt.collect_garbage();
+    rt.eval("console.log('wm:' + String(globalThis.wm.get(document.getElementById('t'))));")
+        .expect("read back");
+    assert_eq!(rt.host().borrow().console[0], "wm:kept");
+}
+
+/// A detached subtree lives as long as script holds *any one* of its wrappers.
+/// The sibling and the child here are referenced by nothing but the group, and
+/// their identity and state must survive because the parent is held.
+fn detached_subtree_keeps_sibling_identity<E: ScriptEngine>() {
+    let mut rt = Runtime::<E>::new().expect("runtime");
+    rt.eval(
+        "globalThis.held = document.createElement('div');\
+         var a = document.createElement('span');\
+         var b = document.createElement('span');\
+         globalThis.held.appendChild(a);\
+         globalThis.held.appendChild(b);\
+         a.__mark = 'a'; b.__mark = 'b';\
+         a = null; b = null;",
+    )
+    .expect("setup");
+    rt.run_microtasks();
+    let _ = rt.collect_garbage();
+    let _ = rt.collect_garbage();
+    rt.eval(
+        "var kids = globalThis.held.childNodes;\
+         console.log('marks:' + String(kids[0].__mark) + String(kids[1].__mark));\
+         console.log('same:' + String(globalThis.held.firstChild === kids[0]));",
+    )
+    .expect("read back");
+    let host = rt.host();
+    let console = &host.borrow().console;
+    assert_eq!(
+        console[0], "marks:ab",
+        "a detached sibling's wrapper was replaced"
+    );
+    assert_eq!(console[1], "same:true");
+}
+
+/// The other direction, which is what keeps the gc-arena soak meaningful: a
+/// subtree removed from the document and referenced by nothing is reclaimed at
+/// the next tick. Nothing about the policy pins a node script has let go of.
+fn removed_unreferenced_subtree_is_reclaimed<E: ScriptEngine>() {
+    let mut rt = Runtime::<E>::new().expect("runtime");
+    rt.eval(
+        "var d = document.createElement('div');\
+         d.setAttribute('id','gone');\
+         d.appendChild(document.createElement('span'));\
+         d.appendChild(document.createElement('span'));\
+         document.appendChild(d);\
+         d.setAttribute('touched','1');\
+         d = null;",
+    )
+    .expect("setup");
+    rt.run_microtasks();
+    let _ = rt.collect_garbage();
+    let live_before = rt.host().borrow().dom.live_node_count();
+    rt.eval("document.removeChild(document.getElementById('gone'));")
+        .expect("remove");
+    rt.run_microtasks();
+    // Two ticks: the first releases the roots and observes the deaths, the second
+    // sweeps the arena once the pins have been retired.
+    let _ = rt.collect_garbage();
+    let _ = rt.collect_garbage();
+    let live_after = rt.host().borrow().dom.live_node_count();
+    assert!(
+        live_after < live_before,
+        "removed unreferenced subtree was not reclaimed: {live_before} -> {live_after} live nodes"
+    );
+    assert_eq!(
+        rt.host().borrow().dom.live_node_count(),
+        live_after,
+        "collection is not idempotent"
+    );
+}
+
+/// A detached custom element held by nothing is reclaimed, and a fresh wrapper on
+/// re-access is spec-correct because the element itself went with it. One held by
+/// script keeps its identity and its constructor-set state, and is never upgraded
+/// twice.
+fn custom_element_upgrade_is_not_repeated<E: ScriptEngine>() {
+    let mut rt = Runtime::<E>::new().expect("runtime");
+    rt.eval(
+        "globalThis.ctorCount = 0; globalThis.connectedCount = 0;\
+         class Cell extends HTMLElement {\
+           constructor(){ super(); globalThis.ctorCount++; this.__state = 'ctor'; }\
+           connectedCallback(){ globalThis.connectedCount++; }\
+         }\
+         customElements.define('x-cell', Cell);\
+         var c = document.createElement('x-cell');\
+         c.setAttribute('id','c');\
+         document.appendChild(c);\
+         c = null;",
+    )
+    .expect("define + connect");
+    rt.run_microtasks();
+    let _ = rt.collect_garbage();
+    let _ = rt.collect_garbage();
+    rt.eval(
+        "var back = document.getElementById('c');\
+         console.log('ctor:' + globalThis.ctorCount + ',connected:' + globalThis.connectedCount + ',state:' + String(back.__state));",
+    )
+    .expect("re-access");
+    assert_eq!(
+        rt.host().borrow().console[0],
+        "ctor:1,connected:1,state:ctor",
+        "a connected custom element was upgraded twice across a collection"
+    );
+
+    // Detached and held: identity and state persist.
+    rt.eval(
+        "globalThis.kept = document.getElementById('c');\
+         document.removeChild(globalThis.kept);\
+         globalThis.kept.__state = 'held';",
+    )
+    .expect("detach held");
+    let _ = rt.collect_garbage();
+    rt.eval(
+        "console.log('held:' + String(globalThis.kept.__state) + ',ctor:' + globalThis.ctorCount);",
+    )
+    .expect("read held");
+    assert_eq!(rt.host().borrow().console[1], "held:held,ctor:1");
+}
+
+#[test]
+fn listener_survives_gc_on_boa() {
+    listener_survives_gc::<script_engine_boa::BoaEngine>();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn listener_survives_gc_on_nova() {
+    listener_survives_gc::<script_engine_nova::NovaEngine>();
+}
+
+#[test]
+fn connected_wrapper_identity_survives_gc_on_boa() {
+    connected_wrapper_identity_survives_gc::<script_engine_boa::BoaEngine>();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn connected_wrapper_identity_survives_gc_on_nova() {
+    connected_wrapper_identity_survives_gc::<script_engine_nova::NovaEngine>();
+}
+
+#[test]
+fn user_weakmap_key_survives_gc_on_boa() {
+    user_weakmap_key_survives_gc::<script_engine_boa::BoaEngine>();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn user_weakmap_key_survives_gc_on_nova() {
+    user_weakmap_key_survives_gc::<script_engine_nova::NovaEngine>();
+}
+
+#[test]
+fn detached_subtree_keeps_sibling_identity_on_boa() {
+    detached_subtree_keeps_sibling_identity::<script_engine_boa::BoaEngine>();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn detached_subtree_keeps_sibling_identity_on_nova() {
+    detached_subtree_keeps_sibling_identity::<script_engine_nova::NovaEngine>();
+}
+
+#[test]
+fn removed_unreferenced_subtree_is_reclaimed_on_boa() {
+    removed_unreferenced_subtree_is_reclaimed::<script_engine_boa::BoaEngine>();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn removed_unreferenced_subtree_is_reclaimed_on_nova() {
+    removed_unreferenced_subtree_is_reclaimed::<script_engine_nova::NovaEngine>();
+}
+
+#[test]
+fn custom_element_upgrade_is_not_repeated_on_boa() {
+    custom_element_upgrade_is_not_repeated::<script_engine_boa::BoaEngine>();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn custom_element_upgrade_is_not_repeated_on_nova() {
+    custom_element_upgrade_is_not_repeated::<script_engine_nova::NovaEngine>();
+}
+
+/// The gc-arena soak, restated for the opaque-root policy and asserted in **both
+/// directions**.
+///
+/// The old target was "bounded live nodes under churn". The policy changes what
+/// the bound is made of, so the target is now **bounded by reachable touched
+/// nodes**: a node script has been handed an object for is kept alive while it is
+/// reachable, and reclaimed once it is not. Both halves are load-bearing, so both
+/// are asserted here — a fix that kept everything would pass a memory bound only
+/// by accident of the run length, and a fix that kept nothing would pass an
+/// identity check only until the first collection.
+///
+/// Frame cadence, driven through `Runtime::collect_garbage` — the same call
+/// `ScriptedDocument::pump` makes at the end of every frame.
+fn gc_soak_bounds_reachable_touched_nodes<E: ScriptEngine>() {
+    let mut rt = Runtime::<E>::new().expect("runtime");
+    rt.eval(
+        "var host = document.createElement('div');\
+         host.setAttribute('id','host');\
+         document.appendChild(host);\
+         var keeper = document.createElement('p');\
+         keeper.setAttribute('id','keep');\
+         document.appendChild(keeper);\
+         keeper.__mark = 'k';\
+         keeper.addEventListener('ping', function(){ globalThis.pings++; });\
+         keeper = null;\
+         globalThis.pings = 0;\
+         function churn() {\
+           for (var i = 0; i < 50; i++) {\
+             var n = document.createElement('span');\
+             n.appendChild(document.createTextNode('x'));\
+             n.setAttribute('data-i', String(i));\
+             host.appendChild(n);\
+           }\
+           while (host.firstChild) { host.removeChild(host.firstChild); }\
+         }",
+    )
+    .expect("soak setup");
+
+    let mut peak_live = 0usize;
+    let mut peak_rooted = 0usize;
+    for _ in 0..60 {
+        rt.eval("churn()").expect("churn");
+        rt.run_microtasks();
+        let _ = rt.collect_garbage();
+        peak_live = peak_live.max(rt.host().borrow().dom.live_node_count());
+        peak_rooted = peak_rooted.max(rt.rooted_reflector_count());
+    }
+
+    // Direction one — reclamation. 60 turns x 100 nodes is 6,000 touched nodes;
+    // every one of them was connected (so rooted) and then removed (so unrooted
+    // and collected). Nothing about wrapper rooting may hold a node script has let
+    // go of.
+    assert!(
+        peak_live < 1000,
+        "removed unreferenced subtrees are reclaimed; peak live = {peak_live}"
+    );
+    assert!(
+        peak_rooted < 1000,
+        "engine roots track reachable touched nodes; peak rooted = {peak_rooted}"
+    );
+
+    // Direction two — identity. The keeper is connected and held by nobody, and it
+    // has survived 60 collections with its expando and its listener.
+    rt.eval(
+        "var k = document.getElementById('keep');\
+         k.dispatchEvent(new Event('ping'));\
+         console.log('keep:' + String(k.__mark) + ',pings:' + String(globalThis.pings));",
+    )
+    .expect("keeper read-back");
+    assert_eq!(
+        rt.host().borrow().console.last().map(String::as_str),
+        Some("keep:k,pings:1"),
+        "a connected touched node lost its wrapper across the soak"
+    );
+}
+
+/// What the policy costs per GC tick on a document with thousands of touched
+/// nodes, which is the shape it was asked to be cheap on.
+///
+/// Two regimes are timed because they are the two the policy distinguishes: a
+/// tick after a frame that re-parented nothing (the tree-root cache holds, no
+/// parent links are walked, nothing crosses either boundary) and a tick after a
+/// frame that moved a node (the cache is dropped and every reflector's root is
+/// re-derived). The numbers are printed rather than only asserted, because the
+/// plan records them; the assertion is a loose ceiling that catches a regression
+/// into per-tick quadratic work, not a benchmark gate.
+fn opaque_root_policy_cost_is_bounded<E: ScriptEngine>() {
+    use std::time::Instant;
+    let mut rt = Runtime::<E>::new().expect("runtime");
+    rt.eval(
+        "var host = document.createElement('div');\
+         document.appendChild(host);\
+         globalThis.touched = 0;\
+         for (var i = 0; i < 4000; i++) {\
+           var n = document.createElement('span');\
+           n.setAttribute('data-i', String(i));\
+           host.appendChild(n);\
+           globalThis.touched++;\
+         }",
+    )
+    .expect("build");
+    rt.run_microtasks();
+    // First tick classifies everything; time the steady state after it.
+    let _ = rt.collect_garbage();
+    let touched = rt.rooted_reflector_count();
+    assert!(
+        touched >= 4000,
+        "expected the built nodes to be touched and rooted, got {touched}"
+    );
+
+    // The policy alone, not the collection it precedes: `force_gc` is a full heap
+    // mark on both engines and dominates a whole `collect_garbage` call, so timing
+    // the tick would say nothing about what this lane added.
+    let quiet = Instant::now();
+    for _ in 0..20 {
+        rt.apply_opaque_root_policy();
+    }
+    let quiet_us = quiet.elapsed().as_micros() as f64 / 20.0;
+
+    let churny = Instant::now();
+    for _ in 0..20 {
+        rt.eval("host.appendChild(host.firstChild);")
+            .expect("re-parent");
+        rt.apply_opaque_root_policy();
+    }
+    let churny_us = churny.elapsed().as_micros() as f64 / 20.0;
+
+    // The whole tick once, for scale.
+    let full = Instant::now();
+    let _ = rt.collect_garbage();
+    let full_us = full.elapsed().as_micros() as f64;
+
+    eprintln!(
+        "[opaque-root cost] {touched} touched nodes: policy on a quiescent frame \
+         {quiet_us:.0}us, policy after a re-parent {churny_us:.0}us, one whole \
+         collect_garbage {full_us:.0}us"
+    );
+    assert!(
+        quiet_us < 50_000.0 && churny_us < 50_000.0,
+        "per-tick policy cost over {touched} touched nodes: quiescent {quiet_us:.0}us, \
+         after a re-parent {churny_us:.0}us"
+    );
+}
+
+#[test]
+fn gc_soak_bounds_reachable_touched_nodes_on_boa() {
+    gc_soak_bounds_reachable_touched_nodes::<script_engine_boa::BoaEngine>();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn gc_soak_bounds_reachable_touched_nodes_on_nova() {
+    gc_soak_bounds_reachable_touched_nodes::<script_engine_nova::NovaEngine>();
+}
+
+#[test]
+fn opaque_root_policy_cost_is_bounded_on_boa() {
+    opaque_root_policy_cost_is_bounded::<script_engine_boa::BoaEngine>();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn opaque_root_policy_cost_is_bounded_on_nova() {
+    opaque_root_policy_cost_is_bounded::<script_engine_nova::NovaEngine>();
+}

@@ -39,6 +39,27 @@
   // under churn; weak-keyed, it stays bounded.)
   var wrappers = new WeakMap();
 
+  // Opaque-root groups for **detached** subtrees (the reflector-identity policy).
+  //
+  // WebIDL wants exactly one JS object per platform object per realm, so a
+  // reachable node's wrapper identity has to survive a collection. A connected
+  // node is handled by the host: it takes a strong engine root on the reflector,
+  // because "connected" is decided by the arena and needs no liveness question.
+  // A detached subtree cannot be decided that way — it must live exactly as long
+  // as script holds *any one* of its wrappers, and no host-side query can answer
+  // that without asking the collector.
+  //
+  // So it is asked with a cycle the collector already understands. Each detached
+  // tree gets one array holding every member wrapper strongly, and each member is
+  // a WeakMap key mapping to that array. A `WeakMap` entry is an ephemeron: the
+  // value is reachable exactly while the key is. So any reachable member keeps the
+  // array alive, the array keeps every sibling alive, and when the last member
+  // goes the whole group is unreachable and is collected together — which is the
+  // opaque-root rule, resolved by the GC rather than approximated by the host.
+  // The host rebuilds the groups at each GC tick (`__gcPolicy`), sending only what
+  // changed since the last one.
+  var wrapperGroups = new WeakMap();
+
   // Name validation (DOM "validate" / XML Name + QName productions), used by
   // createElement(NS) / setAttribute(NS) to throw the spec exceptions. The ranges
   // are the XML NameStartChar / NameChar sets; a colon is allowed in a plain Name
@@ -4776,6 +4797,47 @@
   // global the host calls with a raw NodeId (e.g. from a hit-test) and an event
   // type. Returns dispatchEvent's value: false iff preventDefault was called, so
   // the host knows whether to run the default action (follow the link, etc.).
+  // The GC tick's half of the opaque-root policy, called by
+  // `Runtime::collect_garbage` before it forces a collection.
+  //
+  // `clear` is a comma-separated list of raw node ids that are now **connected**:
+  // the host holds a strong engine root on each, so they must leave whatever
+  // detached group they were in — otherwise an immortal connected wrapper would
+  // hold its old group's array and keep a removed subtree alive forever.
+  //
+  // `spec` is `root=id,id,id;root=id,id`: one clause per detached tree whose
+  // membership changed, listing every member that has a wrapper. Both arguments
+  // are empty in the steady state, so a frame that moves nothing costs one call
+  // and two empty-string tests.
+  globalThis.__gcPolicy = function(clear, spec) {
+    var i, ref, w;
+    if (clear) {
+      var cleared = String(clear).split(',');
+      for (i = 0; i < cleared.length; i++) {
+        if (!cleared[i]) continue;
+        ref = __reflectNode(cleared[i]);
+        if (ref === undefined || ref === null || !wrappers.has(ref)) continue;
+        wrapperGroups.delete(wrappers.get(ref));
+      }
+    }
+    if (!spec) return;
+    var groups = String(spec).split(';');
+    for (var g = 0; g < groups.length; g++) {
+      var eq = groups[g].indexOf('=');
+      if (eq < 0) continue;
+      var members = groups[g].slice(eq + 1).split(',');
+      var arr = [];
+      for (i = 0; i < members.length; i++) {
+        if (!members[i]) continue;
+        ref = __reflectNode(members[i]);
+        if (ref === undefined || ref === null || !wrappers.has(ref)) continue;
+        w = wrappers.get(ref);
+        arr.push(w);
+        wrapperGroups.set(w, arr);
+      }
+    }
+  };
+
   globalThis.__dispatchSynthetic = function(rawId, type, opts) {
     var node = wrapNode(__reflectNode(String(rawId)));
     if (!node) { return false; }

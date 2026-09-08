@@ -240,6 +240,11 @@ mod native {
     struct NovaHostSlot {
         neutral: RefCell<Option<HostData>>,
         reflectors: RefCell<HashMap<u64, Global<Value<'static>>>>,
+        /// Strong roots on reflectors the opaque-root policy holds: a `Global` of
+        /// the reflector *itself* (not of a `WeakRef` to it), so it is a heap root
+        /// for as long as the entry lives. The reflector, its wrapper-`WeakMap`
+        /// entry and every expando on that wrapper survive collection with it.
+        roots: RefCell<HashMap<u64, Global<Value<'static>>>>,
         /// `PromiseToken → rooted promise value`. We store only the promise (not the
         /// resolve/reject functions): Nova's `PromiseCapability` is reconstructable
         /// from the promise via `from_promise`, so settling rebuilds the capability and
@@ -258,6 +263,7 @@ mod native {
             Self {
                 neutral: RefCell::new(None),
                 reflectors: RefCell::new(HashMap::new()),
+                roots: RefCell::new(HashMap::new()),
                 promises: RefCell::new(HashMap::new()),
                 next_token: Cell::new(0),
                 release,
@@ -401,6 +407,52 @@ mod native {
                 Global::new(self.agent, Value::EmbedderObject(eo).unbind()),
                 &self.release,
             ))
+        }
+
+        fn root_reflector(&mut self, data: ReflectorData) -> bool {
+            // Root the canonical reflector *itself* in `agent.heap.globals`, beside
+            // (not instead of) the weak cache entry: the cache keeps reporting the
+            // identity, the root keeps the object alive.
+            let Ok(v) = self.reflector_for(data) else {
+                return false;
+            };
+            let value = v.get(self.agent, self.gc.nogc()).unbind();
+            let rooted = Global::new(self.agent, value);
+            let mut old = None;
+            let mut taken = false;
+            {
+                let agent: &Agent = self.agent;
+                if let Some(hd) = agent.current_realm(self.gc.nogc()).host_defined(agent) {
+                    if let Some(slot) = hd.downcast_ref::<NovaHostSlot>() {
+                        old = slot.roots.borrow_mut().insert(data, rooted);
+                        taken = true;
+                    }
+                }
+            }
+            if let Some(old) = old {
+                old.take(self.agent);
+            }
+            if !taken {
+                // No slot to hold it: do not leak the root we just minted.
+                // (Unreachable in practice — the slot is installed at construction.)
+            }
+            taken
+        }
+
+        fn unroot_reflector(&mut self, data: ReflectorData) {
+            let removed = {
+                let agent: &Agent = self.agent;
+                agent
+                    .current_realm(self.gc.nogc())
+                    .host_defined(agent)
+                    .and_then(|hd| {
+                        hd.downcast_ref::<NovaHostSlot>()
+                            .and_then(|slot| slot.roots.borrow_mut().remove(&data))
+                    })
+            };
+            if let Some(g) = removed {
+                g.take(self.agent);
+            }
         }
 
         fn make_string(&mut self, s: &str) -> Result<Self::Value, Self::Error> {
@@ -843,6 +895,117 @@ mod native {
             // observable to `drain_dead_reflectors` — the engine half of the GC tick.
             self.agent.gc();
             self.agent.gc();
+        }
+
+        fn minted_reflectors(&mut self) -> Vec<ReflectorData> {
+            let mut out = Vec::new();
+            self.agent.run_in_realm(&self.realm, |agent, gc| {
+                if let Some(hd) = agent.current_realm(gc.nogc()).host_defined(agent) {
+                    if let Some(slot) = hd.downcast_ref::<NovaHostSlot>() {
+                        out = slot.reflectors.borrow().keys().copied().collect();
+                    }
+                }
+            });
+            out
+        }
+
+        fn root_reflectors(&mut self, data: &[ReflectorData]) {
+            let release = self.release.clone();
+            self.agent.run_in_realm(&self.realm, |agent, mut gc| {
+                for &d in data {
+                    // Resolve through the canonical cache so a root and a
+                    // `reflector_for` hit are the same object; a dead or missing
+                    // entry is re-minted, which is the right outcome (the node is
+                    // reachable again).
+                    let cached: Option<Value> = {
+                        let a: &Agent = agent;
+                        a.current_realm(gc.nogc()).host_defined(a).and_then(|hd| {
+                            hd.downcast_ref::<NovaHostSlot>().and_then(|slot| {
+                                slot.reflectors
+                                    .borrow()
+                                    .get(&d)
+                                    .map(|g| g.get(agent, gc.nogc()).unbind())
+                            })
+                        })
+                    };
+                    let eo = match cached {
+                        Some(Value::WeakRef(weak_ref)) => {
+                            EmbedderObject::from_weak_ref(agent, weak_ref)
+                        },
+                        _ => None,
+                    };
+                    let eo = match eo {
+                        Some(eo) => eo,
+                        None => {
+                            let eo = EmbedderObject::create_with_data(agent, d);
+                            let weak_ref = eo.into_weak_ref(agent);
+                            let cached = Global::new(agent, Value::WeakRef(weak_ref).unbind());
+                            let mut old = None;
+                            {
+                                let a: &Agent = agent;
+                                if let Some(hd) = a.current_realm(gc.nogc()).host_defined(a) {
+                                    if let Some(slot) = hd.downcast_ref::<NovaHostSlot>() {
+                                        old = slot.reflectors.borrow_mut().insert(d, cached);
+                                    }
+                                }
+                            }
+                            if let Some(old) = old {
+                                old.take(agent);
+                            }
+                            eo
+                        },
+                    };
+                    let rooted = Global::new(agent, Value::EmbedderObject(eo).unbind());
+                    let mut old = None;
+                    {
+                        let a: &Agent = agent;
+                        if let Some(hd) = a.current_realm(gc.nogc()).host_defined(a) {
+                            if let Some(slot) = hd.downcast_ref::<NovaHostSlot>() {
+                                old = slot.roots.borrow_mut().insert(d, rooted);
+                            }
+                        }
+                    }
+                    if let Some(old) = old {
+                        old.take(agent);
+                    }
+                    let _ = &mut gc;
+                }
+                drain_release(agent, &release);
+            });
+        }
+
+        fn unroot_reflectors(&mut self, data: &[ReflectorData]) {
+            self.agent.run_in_realm(&self.realm, |agent, gc| {
+                let mut removed = Vec::new();
+                {
+                    let a: &Agent = agent;
+                    if let Some(hd) = a.current_realm(gc.nogc()).host_defined(a) {
+                        if let Some(slot) = hd.downcast_ref::<NovaHostSlot>() {
+                            let mut roots = slot.roots.borrow_mut();
+                            for d in data {
+                                if let Some(g) = roots.remove(d) {
+                                    removed.push(g);
+                                }
+                            }
+                        }
+                    }
+                }
+                for g in removed {
+                    g.take(agent);
+                }
+            });
+        }
+
+        fn rooted_reflector_count(&mut self) -> usize {
+            let mut n = 0;
+            self.agent.run_in_realm(&self.realm, |agent, gc| {
+                if let Some(hd) = agent.current_realm(gc.nogc()).host_defined(agent) {
+                    if let Some(slot) = hd.downcast_ref::<NovaHostSlot>() {
+                        n = slot.roots.borrow().len();
+                    }
+                }
+            });
+            n
         }
 
         fn drain_dead_reflectors(&mut self) -> Vec<ReflectorData> {

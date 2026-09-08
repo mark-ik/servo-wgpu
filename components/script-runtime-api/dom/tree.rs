@@ -71,6 +71,7 @@ impl<E: ScriptEngine> NativeFn<E> for AppendChild {
             with_dom::<E, _>(cx, |dom| {
                 dom.append_child(NodeId::from_raw(p as usize), NodeId::from_raw(c as usize))
             });
+            super::root_connected_subtree::<E>(cx, NodeId::from_raw(c as usize));
         }
         Ok(cx.undefined())
     }

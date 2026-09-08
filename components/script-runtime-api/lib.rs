@@ -37,7 +37,7 @@ use std::rc::Rc;
 
 use genet_scripted_dom::{NodeId, ScriptedDom};
 use layout_dom_api::LayoutDom;
-use script_engine_api::{CallCx, NativeFn, ScriptEngine, ScriptEngineSnapshot};
+use script_engine_api::{CallCx, NativeFn, ReflectorData, ScriptEngine, ScriptEngineSnapshot};
 
 mod crypto;
 mod dom;
@@ -106,6 +106,14 @@ pub struct HostState {
     /// [`ScriptedDom::collect`] as extra roots, so an orphan script can no longer
     /// reach is reaped.
     pub pins: genet_scripted_dom::Pins,
+    /// Per-node tree-root cache for the reflector-identity (opaque-root) policy,
+    /// valid only while [`tree_root_epoch`](Self::tree_root_epoch) matches the
+    /// arena's `structure_epoch`. Reached through
+    /// [`tree_root_of`](Self::tree_root_of), which rebuilds on a mismatch, so a
+    /// frame with no structural mutation walks no parent links at all.
+    pub tree_roots: std::collections::HashMap<NodeId, NodeId>,
+    /// The arena `structure_epoch` [`tree_roots`](Self::tree_roots) was built at.
+    pub tree_root_epoch: u64,
     /// Per-subtest results collected from `testharness.js` via the completion
     /// callback (the results bridge). Populated by [`Runtime::run_testharness`].
     pub results: Vec<TestResult>,
@@ -217,6 +225,31 @@ pub struct HostState {
 }
 
 impl HostState {
+    /// The tree root (opaque root) of `id`, memoised against the arena's
+    /// structural-mutation epoch. A hit is a hash lookup; a miss walks the parent
+    /// links once. The whole cache is dropped when the epoch moves, because a
+    /// single re-parent can change the answer for an unbounded number of nodes and
+    /// a per-entry invalidation would have to walk to find out which.
+    pub fn tree_root_of(&mut self, id: NodeId) -> Option<NodeId> {
+        let epoch = self.dom.structure_epoch();
+        if epoch != self.tree_root_epoch {
+            self.tree_roots.clear();
+            self.tree_root_epoch = epoch;
+        }
+        if let Some(&root) = self.tree_roots.get(&id) {
+            return Some(root);
+        }
+        let root = self.dom.tree_root(id)?;
+        self.tree_roots.insert(id, root);
+        Some(root)
+    }
+
+    /// Whether `id` is connected: its tree root is the primary document node.
+    pub fn is_connected_node(&mut self, id: NodeId) -> bool {
+        let doc = LayoutDom::document(&self.dom);
+        self.tree_root_of(id) == Some(doc)
+    }
+
     /// The worker a cross-agent port id belongs to.
     fn port_route(&self, id: &str) -> Option<usize> {
         self.port_routes
@@ -238,6 +271,32 @@ pub struct Runtime<E: ScriptEngine> {
     host: SharedHost,
     scheduler_trace: Vec<SchedulerTraceEvent>,
     next_trace_seq: u64,
+    /// The opaque-root policy's memory of the last GC tick's classification, so a
+    /// tick only tells the engine and the bootstrap what *changed*.
+    opaque_roots: OpaqueRootState,
+}
+
+/// The reflector-identity policy's per-tick bookkeeping.
+///
+/// The rule is that wrapper liveness follows **node reachability**, not wrapper
+/// state: every wrapper has an opaque root, the root of its node's tree, and it
+/// is alive while that root is. A document is always alive, so a connected node's
+/// wrapper lives as long as its document; a detached subtree's wrappers live as
+/// long as script holds any one of them; a node script never touched has no
+/// wrapper and costs nothing.
+///
+/// The two halves are enforced differently because only one of them is a
+/// liveness question. "Connected" is decided by the arena, so the host takes a
+/// strong engine root and is done. "Some member of this detached tree is still
+/// held" cannot be decided by the host at all - a strong root would make the
+/// answer permanently yes - so it is delegated to the collector through the
+/// bootstrap's ephemeron groups (`__gcPolicy`).
+#[derive(Default)]
+struct OpaqueRootState {
+    /// Reflectors currently held by a strong engine root (connected last tick).
+    rooted: std::collections::HashSet<ReflectorData>,
+    /// Detached reflectors and the tree root they were grouped under last tick.
+    grouped: std::collections::HashMap<ReflectorData, ReflectorData>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -311,6 +370,7 @@ impl<E: ScriptEngine> Runtime<E> {
             host,
             scheduler_trace: Vec::new(),
             next_trace_seq: 0,
+            opaque_roots: OpaqueRootState::default(),
         })
     }
 
@@ -565,6 +625,138 @@ impl<E: ScriptEngine> Runtime<E> {
         Ok(())
     }
 
+    /// Re-derive the opaque root of every minted reflector and apply it.
+    ///
+    /// For each reflector the engine has a cache entry for, the node's tree root
+    /// is read from the arena (memoised against its structural-mutation epoch, so
+    /// a frame that re-parents nothing walks no parent links). A reflector whose
+    /// tree root is the document is **rooted** in the engine; every other one is
+    /// unrooted and joined instead to its detached tree's ephemeron group in the
+    /// bootstrap, where the collector decides the group's fate as a whole.
+    ///
+    /// Only differences from the previous tick cross either boundary, so the
+    /// steady-state cost over a document with thousands of touched nodes is one
+    /// `minted_reflectors` walk plus one hash lookup per reflector.
+    pub(crate) fn apply_opaque_root_policy(&mut self) {
+        let minted = self.engine.minted_reflectors();
+
+        // Classify. `None` = the node is gone from the arena; such a reflector is
+        // left alone (it is about to be reported dead and unpinned).
+        let mut connected: Vec<ReflectorData> = Vec::new();
+        let mut detached: Vec<(ReflectorData, ReflectorData)> = Vec::new();
+        {
+            let mut host = self.host.borrow_mut();
+            let doc = LayoutDom::document(&host.dom);
+            for &d in &minted {
+                let id = NodeId::from_raw(d as usize);
+                match host.tree_root_of(id) {
+                    Some(root) if root == doc => connected.push(d),
+                    Some(root) => detached.push((d, root.raw() as ReflectorData)),
+                    None => {},
+                }
+            }
+        }
+
+        // Engine roots: take the newly connected, release everything else.
+        let now_rooted: std::collections::HashSet<ReflectorData> =
+            connected.iter().copied().collect();
+        let to_root: Vec<ReflectorData> = connected
+            .iter()
+            .copied()
+            .filter(|d| !self.opaque_roots.rooted.contains(d))
+            .collect();
+        // Everything not connected is unrooted, not only what *this* pass rooted:
+        // `dom::reflect_pinned` also roots on the mint, so a node created and
+        // removed between two ticks carries a root this pass has no record of.
+        let mut to_unroot: Vec<ReflectorData> = detached.iter().map(|&(d, _)| d).collect();
+        to_unroot.extend(
+            self.opaque_roots
+                .rooted
+                .iter()
+                .copied()
+                .filter(|d| !now_rooted.contains(d)),
+        );
+        if !to_root.is_empty() {
+            self.engine.root_reflectors(&to_root);
+        }
+        if !to_unroot.is_empty() {
+            self.engine.unroot_reflectors(&to_unroot);
+        }
+
+        // Bootstrap groups: a detached tree is re-linked only when its membership
+        // changed. A reflector that became connected must also be dropped from its
+        // old group, or the now-immortal connected wrapper would hold the group
+        // array and keep a removed subtree alive for the document's life.
+        let mut now_grouped: std::collections::HashMap<ReflectorData, ReflectorData> =
+            std::collections::HashMap::with_capacity(detached.len());
+        let mut dirty_roots: std::collections::HashSet<ReflectorData> =
+            std::collections::HashSet::new();
+        for &(d, root) in &detached {
+            if self.opaque_roots.grouped.get(&d) != Some(&root) {
+                dirty_roots.insert(root);
+                if let Some(&old) = self.opaque_roots.grouped.get(&d) {
+                    dirty_roots.insert(old);
+                }
+            }
+            now_grouped.insert(d, root);
+        }
+        let mut clear: Vec<ReflectorData> = Vec::new();
+        for (&d, &root) in &self.opaque_roots.grouped {
+            if !now_grouped.contains_key(&d) {
+                dirty_roots.insert(root);
+                if now_rooted.contains(&d) {
+                    clear.push(d);
+                }
+            }
+        }
+        self.opaque_roots.rooted = now_rooted;
+        self.opaque_roots.grouped = now_grouped;
+
+        if dirty_roots.is_empty() && clear.is_empty() {
+            return;
+        }
+        let mut by_root: std::collections::HashMap<ReflectorData, Vec<ReflectorData>> =
+            std::collections::HashMap::new();
+        for &(d, root) in &detached {
+            if dirty_roots.contains(&root) {
+                by_root.entry(root).or_default().push(d);
+            }
+        }
+        let mut spec = String::new();
+        for (root, members) in &by_root {
+            if !spec.is_empty() {
+                spec.push(';');
+            }
+            spec.push_str(&root.to_string());
+            spec.push('=');
+            for (i, m) in members.iter().enumerate() {
+                if i > 0 {
+                    spec.push(',');
+                }
+                spec.push_str(&m.to_string());
+            }
+        }
+        let clear_arg = clear
+            .iter()
+            .map(ReflectorData::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        // The arguments are decimal digits built here, never authored text, so no
+        // literal can break out of the call expression.
+        let expr = format!(
+            "__gcPolicy({CLEAR}, {SPEC})",
+            CLEAR = js_str(&clear_arg),
+            SPEC = js_str(&spec)
+        );
+        let _ = self.engine.eval(&expr);
+    }
+
+    /// How many reflectors the opaque-root policy currently holds an engine root
+    /// on - the count of touched, connected nodes. The soak's bound.
+    pub fn rooted_reflector_count(&mut self) -> usize {
+        self.engine.rooted_reflector_count()
+    }
+
     /// The scripted-tier GC tick (G3): retire the reflectors the engine reports
     /// dead (unpinning their nodes), then mark-sweep the live document with the
     /// surviving pins as extra roots. An orphan script can no longer reach is
@@ -577,7 +769,12 @@ impl<E: ScriptEngine> Runtime<E> {
     /// complete: every node handoff in the `document`/`Node` surface goes through
     /// `dom::reflect_pinned`, and there is no `make_reflector` (unpinned) path.
     pub fn collect_garbage(&mut self) -> (usize, usize) {
-        // Force the engine GC first, so reflector wrappers script has dropped are
+        // Re-derive the opaque roots first: which minted reflectors are connected
+        // (host-rooted) and which detached tree each of the rest belongs to. This
+        // runs *before* the collection, because it is what decides which wrappers
+        // the collection is allowed to take.
+        self.apply_opaque_root_policy();
+        // Force the engine GC, so reflector wrappers script has dropped are
         // observed dead this tick (the epoch-pin default no-ops, losing nothing).
         self.engine.force_gc();
         let dead = self.engine.drain_dead_reflectors();
@@ -1136,6 +1333,7 @@ impl<E: ScriptEngineSnapshot> Runtime<E> {
             host,
             scheduler_trace: Vec::new(),
             next_trace_seq: 0,
+            opaque_roots: OpaqueRootState::default(),
         })
     }
 }

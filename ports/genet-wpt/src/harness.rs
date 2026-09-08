@@ -112,6 +112,36 @@ fn drive_deadline() -> Duration {
 }
 /// Timers fired per drive turn before re-checking the completion channel.
 const TIMER_BUDGET: u32 = 64;
+
+/// Whether the drive loop runs `Runtime::collect_garbage` at a fixed cadence.
+///
+/// On by default, and that default is the honest one. Boa's collector fires on
+/// its own allocation threshold, so a Boa run is collected whether the harness
+/// asks or not; Nova's heap is collected only when the host asks, and the harness
+/// never asked. The two engines were therefore being scored on different
+/// questions, and the headed host — which collects every frame in
+/// `ScriptedDocument::pump` — matched neither. Turning it on makes the harness
+/// report what the headed host actually does.
+static HARNESS_GC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+/// Drive turns between GC ticks. One, because a testharness test's drive loop is
+/// only a handful of turns long: at 30 the tick fired **zero** times over the
+/// whole of `custom-elements/reactions` (171 turns across 57 files), which is a
+/// flag that does nothing. One turn is also the cadence the headed host runs at,
+/// since `ScriptedDocument::pump` collects at the end of every frame. Measured
+/// cost on that directory: 14.9s to 16.2s wall, same 49/534 subtests.
+const GC_TURN_INTERVAL: u64 = 1;
+
+/// Set whether the drive loop collects (`--no-harness-gc` clears it).
+pub fn set_harness_gc(on: bool) {
+    HARNESS_GC.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// One GC tick every [`GC_TURN_INTERVAL`] drive turns, when enabled.
+fn harness_gc_turn<E: ScriptEngine>(rt: &mut Runtime<E>, turns: u64) {
+    if turns % GC_TURN_INTERVAL == 0 && HARNESS_GC.load(std::sync::atomic::Ordering::Relaxed) {
+        let _ = rt.collect_garbage();
+    }
+}
 /// The WPT viewport, in CSS px. One constant so the three consumers cannot
 /// drift: the layout session, the media-query evaluator (`matchMedia`), and
 /// `window.innerWidth`/`innerHeight` (which the wheel cluster computes its hit
@@ -945,11 +975,14 @@ fn drive_virtual<E: ScriptEngine>(rt: &mut Runtime<E>, render: &RenderSession) -
     // time, and a virtual jump to testharness's own 10s timeout would time the
     // test out before the worker had started.
     let mut skipped_ms = 0.0f64;
+    let mut turns = 0u64;
     loop {
         if start.elapsed() >= drive_deadline() {
             rt.fail_all_pending("test timed out");
             break;
         }
+        turns += 1;
+        harness_gc_turn(rt, turns);
         rt.run_microtasks();
         let fired = rt.run_timers(TIMER_BUDGET, now_ms);
         let rendered = render.turn(rt, now_ms);
@@ -1022,7 +1055,10 @@ fn drive_wall<E: ScriptEngine>(
     let mut skipped_ms = 0.0f64;
     let elapsed_ms =
         |start: Instant| (Instant::now().saturating_duration_since(start)).as_millis() as f64;
+    let mut turns = 0u64;
     loop {
+        turns += 1;
+        harness_gc_turn(rt, turns);
         if elapsed_ms(start) >= deadline.as_millis() as f64 {
             rt.fail_all_pending("test timed out");
             // A socket the peer never answered on fails the same way an

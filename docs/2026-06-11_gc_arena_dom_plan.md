@@ -293,6 +293,27 @@ suite and meerkat's 44+63 stay green; and a soak (the orrery's 400-frame
 pattern plus DOM churn) shows no `collect`-pause regression in the A4-style
 frame timings.
 
+> **Soak target restated 2026-09-07 (reflector identity).** "Bounded live nodes
+> under churn" is now **bounded by *reachable touched* nodes**. The wrapper
+> liveness rule changed under the reflector-identity plan
+> (`design_docs/2026-09-07_reflector_identity_plan.md`): a node script has been
+> handed an object for is kept alive while it is *reachable* — connected to a
+> document, or in a detached subtree script still holds part of — and reclaimed
+> once it is not. That does not weaken the bound; it names what the bound is made
+> of. The live soak is
+> `script_runtime_api::dom::tests::gc_soak_bounds_reachable_touched_nodes` (both
+> engines), and it asserts **both directions**, because either one alone passes
+> for the wrong reason: 6,000 churned connected-then-removed nodes stay under
+> 1,000 live and under 1,000 engine roots, *and* a connected node held by nobody
+> keeps its wrapper, its expando and its listener across every collection in the
+> run.
+>
+> The soak in `genet-scripted/document.rs` (`gc_soak_bounds_memory`) is **not**
+> the one that runs: its whole `mod tests` is gated on `feature = "render"`,
+> which no crate in the workspace enables, and the module no longer compiles when
+> it is enabled. That is recorded here rather than fixed — reviving it is its own
+> lane — and is why the restated soak was written where it runs.
+
 **Landed (2026-06-12).** `genet-scripted-dom`'s store is now
 `HashMap<usize, Node>` over a no-dep deterministic FNV `BuildHasherDefault`,
 keyed by a monotonic `next_id`; the G0 fence's pack/index feed it unchanged.

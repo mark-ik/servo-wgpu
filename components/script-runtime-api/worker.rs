@@ -763,9 +763,9 @@ const WORKER_HOST_BOOTSTRAP: &str = r#"
   }
   ErrorEvent.prototype = Object.create(Event.prototype);
   ErrorEvent.prototype.constructor = ErrorEvent;
-  // No `Symbol.toStringTag` here: adding one to a second `Event`-derived
-  // prototype makes the testdriver click regression time out (see the plan's
-  // Findings). Avoided, not explained.
+  if (typeof Symbol !== 'undefined' && Symbol.toStringTag) {
+    ErrorEvent.prototype[Symbol.toStringTag] = 'ErrorEvent';
+  }
   globalThis.ErrorEvent = ErrorEvent;
 
   function Worker(scriptURL, options) {

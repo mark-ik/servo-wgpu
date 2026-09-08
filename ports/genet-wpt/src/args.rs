@@ -30,6 +30,12 @@ pub(crate) struct Args {
     /// mode spends this on any test awaiting something that never settles, so a run
     /// over a network-shaped directory wants it short.
     pub(crate) drive_deadline_secs: u64,
+    /// Run a GC tick at a fixed cadence inside each `testharness` test's drive
+    /// loop. **On by default**: without it Nova never collects during a test (its
+    /// heap is collected only when the host asks) while Boa's allocation-threshold
+    /// collector fires anyway, so the two engines were not being asked the same
+    /// question. `--no-harness-gc` restores the old asymmetry for a measurement.
+    pub(crate) harness_gc: bool,
     /// Run every `testharness` test in the parent process, the pre-isolation path. A
     /// test that blocks inside the engine then hangs the whole run.
     pub(crate) in_process: bool,
@@ -86,6 +92,7 @@ pub(crate) fn parse_args() -> Result<Args, String> {
     let mut spawn_server = false;
     let mut timeout_secs = 30u64;
     let mut drive_deadline_secs = 15u64;
+    let mut harness_gc = true;
     let mut in_process = false;
     let mut jobs = 1usize;
     let mut test_path = None;
@@ -148,6 +155,7 @@ pub(crate) fn parse_args() -> Result<Args, String> {
                         format!("invalid --drive-deadline: {v} (expected 1 or more)")
                     })?;
             },
+            "--no-harness-gc" => harness_gc = false,
             "--in-process" => in_process = true,
             "--jobs" => {
                 let v = it.next().ok_or("--jobs needs a value")?;
@@ -232,6 +240,7 @@ pub(crate) fn parse_args() -> Result<Args, String> {
         spawn_server,
         timeout_secs,
         drive_deadline_secs,
+        harness_gc,
         in_process,
         jobs,
         test_path,
@@ -272,6 +281,7 @@ Options:
                          for the `testharness` worker subprocesses
     --drive-deadline <secs>
                          per-test testharness drive-loop deadline (default: 15)
+    --no-harness-gc      do not run a GC tick inside the testharness drive loop
     --in-process         run `testharness` tests without worker isolation
     --jobs <n>           `testharness` worker subprocesses in flight (default: 1)
     --worklist-out <f>   write the full `test262` Nova-gap + timeout list to <f>

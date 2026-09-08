@@ -77,6 +77,11 @@ struct HostCell {
     #[unsafe_ignore_trace]
     data: RefCell<Option<HostData>>,
     reflectors: GcRefCell<HashMap<u64, WeakJsObject>>,
+    /// Strong roots on reflectors the opaque-root policy holds. Traced, so a
+    /// rooted reflector — and through the bootstrap's wrapper `WeakMap`, its
+    /// wrapper and every expando on it — survives collection for as long as its
+    /// node is reachable.
+    roots: GcRefCell<HashMap<u64, JsObject>>,
     pending: GcRefCell<HashMap<u64, PendingPromise>>,
     #[unsafe_ignore_trace]
     next_token: Cell<u64>,
@@ -87,6 +92,7 @@ impl HostCell {
         Self {
             data: RefCell::new(None),
             reflectors: GcRefCell::new(HashMap::new()),
+            roots: GcRefCell::new(HashMap::new()),
             pending: GcRefCell::new(HashMap::new()),
             next_token: Cell::new(0),
         }
@@ -248,6 +254,28 @@ impl CallCx for BoaCallCx<'_> {
             }
         }
         Ok(v)
+    }
+
+    fn root_reflector(&mut self, data: ReflectorData) -> bool {
+        let Ok(v) = self.reflector_for(data) else {
+            return false;
+        };
+        let Some(obj) = v.as_object() else {
+            return false;
+        };
+        match self.ctx.get_data::<HostCell>() {
+            Some(cell) => {
+                cell.roots.borrow_mut().insert(data, obj);
+                true
+            },
+            None => false,
+        }
+    }
+
+    fn unroot_reflector(&mut self, data: ReflectorData) {
+        if let Some(cell) = self.ctx.get_data::<HostCell>() {
+            cell.roots.borrow_mut().remove(&data);
+        }
     }
 
     fn value_to_string(&mut self, value: &JsValue) -> Result<String, JsError> {
@@ -433,10 +461,66 @@ impl ScriptEngine for BoaEngine {
         boa_gc::force_collect();
     }
 
+    fn minted_reflectors(&mut self) -> Vec<ReflectorData> {
+        self.ctx
+            .get_data::<HostCell>()
+            .map(|cell| cell.reflectors.borrow().keys().copied().collect())
+            .unwrap_or_default()
+    }
+
+    fn root_reflectors(&mut self, data: &[ReflectorData]) {
+        for &d in data {
+            // Through the canonical cache, so a root and a `reflector_for` hit are
+            // the same object; an id whose weak has already died is re-minted here,
+            // which is the correct outcome (the node is reachable again).
+            let obj = match self.ctx.get_data::<HostCell>() {
+                Some(cell) => cell
+                    .reflectors
+                    .borrow()
+                    .get(&d)
+                    .and_then(WeakJsObject::upgrade),
+                None => None,
+            };
+            let obj = match obj {
+                Some(o) => o,
+                None => {
+                    let Ok(v) = ScriptEngineLive::make_reflector(self, d) else {
+                        continue;
+                    };
+                    let Some(o) = v.as_object() else { continue };
+                    if let Some(cell) = self.ctx.get_data::<HostCell>() {
+                        cell.reflectors.borrow_mut().insert(d, o.downgrade());
+                    }
+                    o
+                },
+            };
+            if let Some(cell) = self.ctx.get_data::<HostCell>() {
+                cell.roots.borrow_mut().insert(d, obj);
+            }
+        }
+    }
+
+    fn unroot_reflectors(&mut self, data: &[ReflectorData]) {
+        if let Some(cell) = self.ctx.get_data::<HostCell>() {
+            let mut roots = cell.roots.borrow_mut();
+            for d in data {
+                roots.remove(d);
+            }
+        }
+    }
+
+    fn rooted_reflector_count(&mut self) -> usize {
+        self.ctx
+            .get_data::<HostCell>()
+            .map(|cell| cell.roots.borrow().len())
+            .unwrap_or(0)
+    }
+
     fn drain_dead_reflectors(&mut self) -> Vec<ReflectorData> {
         // Real death-reporting: sweep the weak canonical cache and report (and
         // forget) the reflectors whose JS objects have been collected since the
-        // last call. Backed by the vendored boa patch (`JsObject::downgrade` /
+        // last call. A rooted reflector (`root_reflectors`) cannot appear here:
+        // its strong root keeps the weak upgradeable. Backed by the vendored boa patch (`JsObject::downgrade` /
         // `WeakJsObject::upgrade`). The host unpins each returned id, freeing the
         // underlying detached node for collection (G3).
         let mut dead = Vec::new();

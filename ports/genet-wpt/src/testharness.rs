@@ -579,6 +579,9 @@ fn run_worker(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
+    if !args.harness_gc {
+        command.arg("--no-harness-gc");
+    }
     if let Some(base) = server_base {
         command.arg("--server-base").arg(base);
     }
