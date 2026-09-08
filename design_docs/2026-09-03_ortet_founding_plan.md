@@ -1,10 +1,11 @@
 # Ortet founding plan
 
-**Status:** O0 through O4 landed; O5 scripted platform host planned, updated
-2026-09-07. Browser http(s) resource
-provisioning landed structurally in `35efc1985bc` and its headed HTTP runtime
-gate is accepted in `247a52e612a`. The crates.io claim stays pending. The
-`fleece` carve-out is reconciled with the boundary plan's §9.1 (see Findings);
+**Status:** O0 through O4 landed; O5a engine selection landed structurally on
+2026-09-07. Per-engine headed receipts and O5b-O5c remain open. Browser
+http(s) resource provisioning landed structurally in `35efc1985bc` and its
+headed HTTP runtime gate is accepted in `247a52e612a`. The crates.io claim
+stays pending. The `fleece` carve-out is reconciled with the boundary plan's
+§9.1 (see Findings);
 the witness still names fleece on every run.
 
 Ortet is the raw genet host: the one headed port that proves the engine runs
@@ -223,7 +224,7 @@ edges are excluded and retains an allowed graph control. Predicate assertions
 remain a separate guard on the name list; they are not presented as a live
 graph control.
 
-### O5. Scripted platform host (planned 2026-09-07)
+### O5. Scripted platform host (in progress 2026-09-07)
 
 Extend the existing host with selectable script-free, Boa and Nova execution
 modes, using the same window, session input, rendering and capture path.
@@ -239,6 +240,15 @@ the common session contract or a small mode dispatcher. Preserve its
 script-free route. Instantiate supported scripted modes through
 `genet-documents`; do not import Pelt, Inker or Cambium. Record the actual
 engine, target, features and source revision in each receipt.
+
+The structural selection slice landed at `07b4e7a40b4`: native Ortet accepts
+`--engine livery|boa|nova`, holds the selected engine behind
+`SessionEngine<Scene>`, and reuses it for navigation. The default build keeps
+both script engines out of its dependency cone; `scripted` adds Boa and
+`scripted-nova` adds Nova on supported 64-bit native targets. Successful runs
+report the stable engine id, concrete backend, target, enabled features and an
+optional `GENET_SOURCE_REVISION`. A receipt without that revision remains
+unqualified. O5a's per-engine headed receipt is therefore still open.
 
 **O5b: production session integration.** Resource and scheduling adapters must
 serve the real document session, not a harness-only copy of the runtime.
@@ -504,6 +514,17 @@ WPT-only results remain useful partial evidence until those gates pass.
   rather than a self-test that reimplements the old rule.
 
 ## Progress
+
+- 2026-09-07: **O5a structural engine selection landed** at `07b4e7a40b4`.
+  The real Ortet shell now selects feature-gated Livery, Boa or Nova engines
+  through the shared `SessionEngine<Scene>` contract, keeps the script-free
+  default cone, reports backend/build provenance, and reuses the selected
+  engine across navigation. Native default, Boa and Nova unit cones passed 19
+  tests each; the default wasm32 check passed. Direct cone inspection found no
+  script engine in default Ortet, Boa only under `scripted`, Boa plus Nova under
+  `scripted-nova`, and no forbidden Mere/product crate in any of the three.
+  Headed per-engine mutation receipts, deadline wake, asynchronous fetch,
+  cancellation and Worker integration remain O5b-O5c work.
 
 - 2026-09-07: Recorded Mark's platform-testing role ruling and planned O5
   scripted Ortet modes through the shared session seam. Genet retains its
