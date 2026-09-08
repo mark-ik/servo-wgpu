@@ -94,6 +94,36 @@ fallback and backend-sizing call sites, so deletion is not a condition for
 Wave 2. Its stronger receipt is zero CSS-facing fallback for admitted
 table/flow-root cases.
 
+## 2026-09-08 RTL body geometry probe
+
+The held marker branch's 16-pixel body shift is not reproduced by the basic
+Buckram block-sizing case. On published base
+`54f5d163555276eec09e3de0263ff3af15fb5735`, the new native probe gives an
+800-pixel horizontal RTL containing block an auto-width RTL child with
+8-pixel physical margins. Both boxes use Buckram's block algorithm; the
+child's physical x is 8 and its width is 784, without a production change.
+
+The focused test passes in a standalone component harness containing the
+base's Buckram source and vendored `support/patches/taffy`. Its dependency
+lock and validation artifacts live under the workspace testing root at
+`testing/genet/rtl-body-geometry-20260908/`. This is component evidence,
+not a Genet workspace or WPT receipt, and does not close Row 17.
+
+Validation: the focused probe passes, and the full standalone Buckram suite
+passes 262 tests with no failures or ignored tests. Strict all-target Clippy
+remains blocked by five diagnostics in unchanged `fragmentation.rs` and
+`taffy_adapter.rs`; package formatting also reports existing `block.rs`
+drift. The changed test file passes its direct formatting check, and the
+patch passes `git diff --check`.
+
+The next reproduction belongs at Livery's root/body style lowering and
+layout consumption: use CSS `html { direction: rtl }`, record the selected
+algorithms, solved child inline size, returned child size, and physical
+fragments. Compare those against an LTR control before changing Buckram.
+The passing simple case does not rule out more complex block shapes.
+The accepted marker branch and broader held RTL branch remain separate;
+this probe does not integrate either or validate their text changes.
+
 ## Stop rules
 
 - Stop on an unexplained WPT loss.
