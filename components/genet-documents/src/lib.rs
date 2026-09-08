@@ -17,6 +17,14 @@
 
 mod fetch;
 
+/// HTML's browsing-context tree: parent, children, top, each context's active
+/// document and its own session history (the iframes plan, phase one).
+pub mod browsing_context;
+/// Cross-context policy: same-origin access, sandbox gates, the cross-origin
+/// WindowProxy member list, and the two isolation headers with their named
+/// single-process residuals.
+pub mod frame_policy;
+
 // Dependency-free link resolution, shared by `document`, the scripted lane,
 // and hosts' chrome (moved with the lanes from pelt).
 pub mod href;
@@ -29,10 +37,15 @@ pub use genet_scripted::{
 
 pub mod engines;
 
+pub use browsing_context::{
+    ActiveDocument, BrowsingContext, BrowsingContextId, BrowsingContextTree, FrameAttributes,
+    FrameLoading, HistoryEntry, Origin, SandboxFlags, SessionHistory,
+};
 #[cfg(feature = "livery")]
 pub use engines::{LiveryDocumentSession, LiveryResourcePreparation, LiverySessionEngine};
 #[cfg(feature = "scripted")]
 pub use engines::{ScriptedDocumentSession, ScriptedSessionEngine};
 pub use fetch::{LocalFetcher, LocalFetcherWith, ResourceFetchPolicy};
+pub use frame_policy::{CrossOriginIsolation, DocumentAccess, EmbedderPolicy, OpenerPolicy};
 pub use genet_host_api::ResourceFetcher;
 pub use href::resolve_href;

@@ -242,12 +242,62 @@ impl Default for ResourceLimits {
     }
 }
 
+/// Where a child browsing context's initial document came from.
+///
+/// The three are not interchangeable: `srcdoc` and `about:blank` produce a
+/// document without a fetch at all, and only `Src` can fail.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum FrameSource {
+    /// A `src` attribute, fetched through the document's own resource route.
+    Src,
+    /// A `srcdoc` attribute. Its document URL is `about:srcdoc`.
+    SrcDoc,
+    /// No usable `src` or `srcdoc`: the initial `about:blank` stands.
+    AboutBlank,
+}
+
+/// One `<iframe>`'s child document, discovered and (for `src`) fetched
+/// through the same resource route as its parent.
+///
+/// This is *one level*. A child's own frames are discovered when the caller
+/// parses `source` into a document and resolves that document's resources —
+/// the recursion belongs to whoever owns an HTML parser, which this crate
+/// deliberately does not.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedFrame {
+    /// `LayoutDom::opaque_id` of the `<iframe>` element in the parent
+    /// document. The renderer joins scene to context by this value.
+    pub owner_node: u64,
+    pub source_kind: FrameSource,
+    /// The `src` spelling as authored, when there was one.
+    pub authored_url: Option<String>,
+    /// The child document's URL: the resolved `src`, `about:srcdoc`, or
+    /// `about:blank`.
+    pub resolved_url: String,
+    /// The child document's HTML source. Empty for `about:blank` and for a
+    /// `src` that could not be fetched.
+    pub source: String,
+    pub content_type: Option<String>,
+    /// True when a `src` was named and the fetch produced nothing. The
+    /// element fires `error` rather than `load` (HTML actually specifies a
+    /// `load` event for a *network* error too, but genet's fetch seam cannot
+    /// distinguish a 404 from an unreachable host, so this lane reports the
+    /// miss and the session decides — see the plan's loading section).
+    pub failed: bool,
+    pub name: Option<String>,
+    pub sandbox: Option<String>,
+    pub allow: Option<String>,
+    pub loading: Option<String>,
+}
+
 /// The host-owned resource view of one parsed HTML document.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ResolvedDocumentResources {
     pub document_url: Option<String>,
     pub stylesheets: Vec<ResolvedStylesheet>,
     pub resources: Vec<ResolvedResource>,
+    /// Child browsing contexts discovered in this document, in tree order.
+    pub frames: Vec<ResolvedFrame>,
     pub diagnostics: Vec<ResourceDiagnostic>,
 }
 
@@ -1114,6 +1164,12 @@ fn collect_document_resources<D>(
         Some("video") => Some("poster"),
         _ => None,
     };
+    if dom
+        .element_name(node)
+        .is_some_and(|name| name.local.as_ref().eq_ignore_ascii_case("iframe"))
+    {
+        collect_frame(dom, node, document_url, fetch, cached, result);
+    }
     let lazy = dom
         .element_name(node)
         .is_some_and(|name| name.local.as_ref().eq_ignore_ascii_case("img"))
@@ -1139,6 +1195,92 @@ fn collect_document_resources<D>(
     for child in dom.dom_children(node) {
         collect_document_resources(dom, child, document_url, fetch, cached, result);
     }
+}
+
+/// Discover one `<iframe>`'s child document.
+///
+/// HTML's order is `srcdoc` first, then `src`, then the initial `about:blank`
+/// that the nested context already holds. A `lazy` frame is discovered but not
+/// fetched: the element exists and its context exists, and only the load is
+/// deferred, so recording it with an empty `about:blank` source is the honest
+/// shape rather than omitting the frame entirely.
+fn collect_frame<D>(
+    dom: &D,
+    node: D::NodeId,
+    document_url: Option<&str>,
+    fetch: &mut Option<&mut ResponseFetcher<'_>>,
+    cached: &mut HashMap<String, Option<ResourceResponse>>,
+    result: &mut ResolvedDocumentResources,
+) where
+    D: LayoutDom,
+{
+    let namespace = Namespace::default();
+    let attribute = |name: &str| {
+        dom.attribute(node, &namespace, &LocalName::from(name))
+            .map(str::to_owned)
+    };
+    let mut frame = ResolvedFrame {
+        owner_node: dom.opaque_id(node),
+        source_kind: FrameSource::AboutBlank,
+        authored_url: None,
+        resolved_url: "about:blank".to_owned(),
+        source: String::new(),
+        content_type: None,
+        failed: false,
+        name: attribute("name"),
+        sandbox: attribute("sandbox"),
+        allow: attribute("allow"),
+        loading: attribute("loading"),
+    };
+    let lazy = frame
+        .loading
+        .as_deref()
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("lazy"));
+
+    if let Some(srcdoc) = attribute("srcdoc") {
+        frame.source_kind = FrameSource::SrcDoc;
+        // `about:srcdoc` is the child document's URL; its *base* URL is the
+        // parent's, which is why the parent's `document_url` travels with the
+        // frame rather than the literal `about:srcdoc`.
+        frame.resolved_url = "about:srcdoc".to_owned();
+        frame.content_type = Some("text/html".to_owned());
+        frame.source = srcdoc;
+        result.frames.push(frame);
+        return;
+    }
+
+    let src = attribute("src")
+        .map(|src| src.trim().to_owned())
+        .filter(|src| !src.is_empty());
+    let Some(src) = src else {
+        result.frames.push(frame);
+        return;
+    };
+    let resolved = resolve_url(document_url, &src);
+    frame.source_kind = FrameSource::Src;
+    frame.authored_url = Some(src);
+    frame.resolved_url = resolved.clone();
+    if lazy {
+        result.frames.push(frame);
+        return;
+    }
+    let Some(fetch) = fetch.as_deref_mut() else {
+        frame.failed = true;
+        result.frames.push(frame);
+        return;
+    };
+    let response = cached
+        .entry(resolved.clone())
+        .or_insert_with(|| fetch(&resolved));
+    match response {
+        Some(response) => {
+            frame.resolved_url = response.final_url.clone();
+            frame.content_type = response.content_type.clone();
+            frame.source = String::from_utf8_lossy(&response.bytes).into_owned();
+        },
+        None => frame.failed = true,
+    }
+    result.frames.push(frame);
 }
 
 fn collect_stylesheet_resources(
@@ -1460,6 +1602,119 @@ mod tests {
                 .resources
                 .iter()
                 .any(|resource| resource.kind == ResourceKind::Font)
+        );
+    }
+
+    struct FrameFetch;
+    impl ResourceFetcher for FrameFetch {
+        fn fetch(&self, url: &str) -> Option<Vec<u8>> {
+            match url {
+                "https://example.test/page/child.html" => Some(b"<p>child</p>".to_vec()),
+                _ => None,
+            }
+        }
+    }
+
+    #[test]
+    fn a_frame_src_is_fetched_through_the_documents_own_resource_route() {
+        let document = StaticDocument::parse(
+            r#"<iframe src="child.html" name="c" sandbox="allow-scripts" allow="camera"></iframe>"#,
+        );
+        let resources = ResolvedDocumentResources::resolve(
+            &document,
+            Some("https://example.test/page/index.html"),
+            &FrameFetch,
+        );
+        assert_eq!(resources.frames.len(), 1);
+        let frame = &resources.frames[0];
+        assert_eq!(frame.source_kind, FrameSource::Src);
+        assert_eq!(frame.authored_url.as_deref(), Some("child.html"));
+        assert_eq!(frame.resolved_url, "https://example.test/page/child.html");
+        assert_eq!(frame.source, "<p>child</p>");
+        assert!(!frame.failed);
+        assert_eq!(frame.name.as_deref(), Some("c"));
+        assert_eq!(frame.sandbox.as_deref(), Some("allow-scripts"));
+        assert_eq!(frame.allow.as_deref(), Some("camera"));
+    }
+
+    #[test]
+    fn srcdoc_wins_over_src_and_needs_no_fetch() {
+        let document =
+            StaticDocument::parse(r#"<iframe src="child.html" srcdoc="<b>inline</b>"></iframe>"#);
+        let resources = ResolvedDocumentResources::resolve(
+            &document,
+            Some("https://example.test/page/index.html"),
+            &FrameFetch,
+        );
+        let frame = &resources.frames[0];
+        assert_eq!(frame.source_kind, FrameSource::SrcDoc);
+        assert_eq!(frame.resolved_url, "about:srcdoc");
+        assert_eq!(frame.source, "<b>inline</b>");
+        assert!(frame.authored_url.is_none());
+    }
+
+    #[test]
+    fn an_absent_or_empty_src_leaves_the_initial_about_blank() {
+        let document = StaticDocument::parse(r#"<iframe></iframe><iframe src="  "></iframe>"#);
+        let resources = ResolvedDocumentResources::resolve(
+            &document,
+            Some("https://example.test/page/index.html"),
+            &FrameFetch,
+        );
+        assert_eq!(resources.frames.len(), 2);
+        for frame in &resources.frames {
+            assert_eq!(frame.source_kind, FrameSource::AboutBlank);
+            assert_eq!(frame.resolved_url, "about:blank");
+            assert!(frame.source.is_empty());
+            assert!(!frame.failed);
+        }
+    }
+
+    #[test]
+    fn a_src_that_cannot_be_fetched_is_recorded_as_a_failure_not_a_blank() {
+        let document = StaticDocument::parse(r#"<iframe src="missing.html"></iframe>"#);
+        let resources = ResolvedDocumentResources::resolve(
+            &document,
+            Some("https://example.test/page/index.html"),
+            &FrameFetch,
+        );
+        let frame = &resources.frames[0];
+        assert_eq!(frame.source_kind, FrameSource::Src);
+        assert!(frame.failed);
+        assert!(frame.source.is_empty());
+    }
+
+    #[test]
+    fn a_lazy_frame_is_discovered_but_not_fetched() {
+        let document =
+            StaticDocument::parse(r#"<iframe src="child.html" loading="LAZY"></iframe>"#);
+        let resources = ResolvedDocumentResources::resolve(
+            &document,
+            Some("https://example.test/page/index.html"),
+            &FrameFetch,
+        );
+        let frame = &resources.frames[0];
+        assert_eq!(frame.loading.as_deref(), Some("LAZY"));
+        assert!(frame.source.is_empty());
+        assert!(!frame.failed);
+        assert_eq!(frame.resolved_url, "https://example.test/page/child.html");
+    }
+
+    #[test]
+    fn frames_are_discovered_in_tree_order_with_distinct_owner_nodes() {
+        let document = StaticDocument::parse(
+            r#"<div><iframe name="a"></iframe></div><iframe name="b"></iframe>"#,
+        );
+        let resources = ResolvedDocumentResources::discover(&document, None);
+        let names: Vec<_> = resources
+            .frames
+            .iter()
+            .map(|frame| frame.name.as_deref().unwrap_or_default())
+            .collect();
+        assert_eq!(names, vec!["a", "b"]);
+        assert_ne!(
+            resources.frames[0].owner_node,
+            resources.frames[1].owner_node
         );
     }
 

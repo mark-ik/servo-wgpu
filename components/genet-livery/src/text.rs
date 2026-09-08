@@ -2522,6 +2522,7 @@ where
         && dom.element_name(id).is_some_and(|name| {
             name.local.as_ref().eq_ignore_ascii_case("img")
                 || name.local.as_ref().eq_ignore_ascii_case("canvas")
+                || name.local.as_ref().eq_ignore_ascii_case("iframe")
         })
 }
 

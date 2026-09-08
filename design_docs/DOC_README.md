@@ -64,9 +64,10 @@ older `docs/` corpus without changing their location or governance.
 | [Shadow DOM](2026-09-07_shadow_dom_plan.md) | A parentless shadow root in both DOMs, a per-host slot assignment table maintained at the mutation, `flat_children` under Livery's rendering traversals, per-rule tree-scope matching with `:host` / `:host()` / `::slotted()` / `::part()`, event retargeting and `composedPath()`, and the declarative post-parse pass with `<template>.content` in one shared inert document. Landed 2026-09-07/08: `shadow-dom` 6 to 45 all-pass and 24 to 1,512 subtests, +1,761 subtest passes over four directories, one explained pass-to-fail. Residuals: `:host-context()`, `adoptedStyleSheets`, focus delegation, and declarative attachment consulting the custom-element registry (which needs parser/script interleaving — Mark's call). |
 | [Parser/script interleaving](2026-09-08_parser_script_interleaving_plan.md) | HTML's parsing model with scripts run at the point the tree builder pops them: an html5ever `TreeSink` over the live arena, `document.write` at the tokenizer's insertion point, `currentScript`, the `readyState` transitions with `DOMContentLoaded` and `load`, parse-time custom-element upgrade, and declarative shadow roots consulting the registry. Landed 2026-09-08 in the engine (part one: +68 subtest passes over eight directories, 30 files `fail -> pass`, zero pass-to-fail, no repins). **Part two, 2026-09-08**, routed the WPT runner and `LiveryScriptedDocument` through the same parse and closed the named residuals: `testharness.js` as a prelude and one `load` dispatch, a two-phase `LiveryCssom` that resolves author sheets from the arena as the parser fills it, `document.write` tokenized inside the call so its markup is visible to the writing script and a written `<script>` runs, the open stream appending through one live tokenizer, upgrades at element creation, foreign-namespace scripts, and scripts in template contents left inert. +181 subtest passes over ten directories and +439 across the 79-directory disk census (excluding two identified timing artifacts), 19 census `pass -> fail` all attributed, six baselines repinned forward-only, all fourteen at `unexpected=0`, Ortet digest unchanged. **Both Shadow DOM declarative regressions now recover in WPT** — the open gate is closed. |
 
-defines ownership and the [lane program](../docs/2026-08-21_buckram_livery_lane_program_plan.md)
+| [iframes and nested browsing contexts](2026-09-08_iframes_plan.md) | HTML's browsing-context tree in `genet-documents` (parent, children, top, each context's active document, origin, sandbox flags and its own session history), loading through the parent's own resource route (`src`, `srcdoc`, `about:blank`, the initial-`about:blank` rules, `sandbox` / `allow` / `loading`), and the child's scene composited into the parent's replaced box as a **paint-list splice** rather than a producer texture, clipped to the content box, with hit testing descending into it. Landed 2026-09-08: +23 subtest passes over eight directories, two files `fail -> pass`, zero pass-to-fail, three baselines repinned forward with six named entries, all fourteen at `unexpected=0` and both reftest guards at `unexpected=0`. Ortet composites child frames through the script-free Livery route with no Ortet code change; the article digest is unchanged at `0x6377ba8a6bf4dbc9` and the new `frames.html` receipt is `0x2e7dd44b19907205`. **The per-context `Runtime` and the cross-origin `WindowProxy` are a decision for Mark**: two `Runtime`s are two engine instances and this stack's cross-instance boundary marshals strings, which cannot carry the same-origin object identity `contentWindow` requires. |
 The [Buckram master](../docs/2026-07-26_buckram_css_layout_engine_plan.md)
 assigns residuals. The linked execution plans carry their current gate; a
+defines ownership and the [lane program](../docs/2026-08-21_buckram_livery_lane_program_plan.md)
 completed corpus census or bounded slice does not close its enclosing feature.
 
 ## Servo cone retirement
@@ -140,6 +141,48 @@ completed corpus census or bounded slice does not close its enclosing feature.
   previously unenumerated variants now reporting, and zero pass-to-fail. Raw
   maps under `Code/testing/genet/wpt-ledger/2026-09-07_worker/`.)
 - [websocket_plan](2026-09-07_websocket_plan.md)
+- [iframes_plan](2026-09-08_iframes_plan.md)
+  (**landed 2026-09-08**: nested browsing contexts. `BrowsingContextTree` in
+  `genet-documents` is deliberately *data*, not a session — identity, origin,
+  sandbox flags and one session history per context, joined to whichever engine
+  renders the document by `BrowsingContextId`, so the script-free and scripted
+  routes share one tree without importing each other. An opaque origin carries a
+  serial, because HTML's opaque origin is same-origin with nothing but itself;
+  `initial_about_blank` is a bit rather than a URL test, because a document can
+  navigate to `about:blank` deliberately and that one neither inherits its
+  container's origin nor lets its successor replace. `ResolvedDocumentResources`
+  gained `frames`, so a child is fetched through **exactly** the route its parent
+  used; nesting recurses one level up where an HTML parser lives, guarded by
+  HTML's matching-nested-contexts rule and a depth bound. The composite is a
+  **paint-list splice**, not the `ExternalTextureDraw` path `paint_list_api` names
+  as an iframe candidate: an external texture is composed *after* the scene, so it
+  sits outside the scene's clip and transform stack and is invisible to a software
+  rasterizer — the reftest lane and Ortet's own capture would both see an empty
+  box. Livery already recorded the right position for a custom leaf while its
+  ancestors' clips were live, so `<iframe>` got its own `FrameSlot` list (a
+  separate key space, because a custom leaf's key is an author attribute and a
+  frame's is a node id). Two findings fell out: image keys are per-list ordinals
+  while font keys are content-hashed, so splicing a child without re-keying its
+  images draws *the parent's* picture inside the frame — a plausible wrong answer,
+  not an error; and a recorded index into a command stream is invalidated by every
+  later insertion, which `translated` and `scaled_to` both perform at index 0.
+  `<iframe>` also became a real replaced element with a **default object size** and
+  no natural ratio, which needed its own branch before every ratio rule —
+  `width: 600px; height: auto` is 600x150, not 600x300. On the script side
+  `window.length` and `window[i]` now read the document (which makes a templated
+  frame correctly absent with nothing checking for a template), `frameElement` is
+  `null`, and `postMessage` enforces `targetOrigin`. `webmessaging` 65 -> 67
+  all-pass, `the-window-object` 62 -> 69 subtests, `dom` +12; +23 over eight
+  directories with zero pass-to-fail. The reftest maps are byte-identical, and
+  four composite tests in `genet-wpt` prove that means *no reftest exercises a
+  frame* rather than *the composite never ran* — two iframe reftests run in those
+  directories and neither discriminates. Raw maps under
+  `Code/testing/genet/wpt-ledger/2026-09-08_iframes/`. Residuals: the second
+  `Runtime` and `contentWindow` — **Mark's call**, because two `Runtime`s are two
+  engine instances and `CallCx` marshals strings, so a same-origin
+  `contentWindow` needs realms in `ScriptEngine` or stays permanently partial —
+  plus `document.domain`, the cross-origin `WindowProxy`, COOP/COEP enforcement,
+  child navigation, lazy loading, focus, and a headed script-driven receipt.)
   (**landed 2026-09-07**: `WebSocket` and `CloseEvent` as a script-visible state
   machine over an extended netfetcher transport. Two halves, because WebSocket is
   not a shape of `fetch()`: the Fetch algorithm does not wrap the connection
@@ -196,9 +239,9 @@ completed corpus census or bounded slice does not close its enclosing feature.
 - [selection_range_plan](2026-09-07_selection_range_plan.md)
   (**landed 2026-09-07**: `Range`, `StaticRange`, `AbstractRange`, `Selection`
   and `getSelection` over the scripted arena. The DOM's live-range steps run at
-  arena's observer record, because they need the child index and the boundary
   the bootstrap's own twelve-call-site mutation funnel rather than off the
   offsets as they stood *before* the mutation; boundaries are indexed by the
+  arena's observer record, because they need the child index and the boundary
   node they sit in, since a flat list is quadratic and hung eight
   `editing/run/*` files in the first `post` map. One source of truth: the
   script-owned `Range` is it, and Livery's `TextRange` selection is a projection
@@ -536,24 +579,11 @@ same session; links out of it are rewritten for its new depth.
   is one script too early: the definition the next stretch of tokenizing asks
   about is the one the script that is about to run has not made yet. See the
   parser/script interleaving plan's Findings.
-  inspect staged paths before committing, and remove the worktree immediately
-  after integration.
-
-## Status
-
-Founded 2026-08-24; current work map reconciled 2026-09-07, including the IDL
-interface-table, cheap-globals, MutationObserver, Selection/Range and DOM node
-model lanes. The index covers
-the flat plans sectioned above and two archived plans; the count in this line
-was stale before 2026-09-07 and is now stated by the sections themselves.
-All three former component area roots now live in Mere. The older `docs/`
-corpus has selected execution entry points above; its full migration and
-governance remain deferred under the policy's local addendum.
-  on a node type neither lane was about, aborting every file before its first
-  subtest. Probe the shared `common.js` of a directory that will not move before
 - **A model no consumer exercises is not validated by the tests that do not
   exercise it.** The parser/script lane's part one queued `document.write`
   source until the calling script returned, and passed 22 runtime cases and a
+  on a node type neither lane was about, aborting every file before its first
+  subtest. Probe the shared `common.js` of a directory that will not move before
   whole WPT directory doing it — because on both routes the DOM was never read
   back inside the writing script. The first honest consumer turned 21
   `document-write/0xx` files from `pass` to `fail` in one step. When a design
@@ -578,3 +608,53 @@ governance remain deferred under the policy's local addendum.
   wrong silently.
 - **Parallel work needs commit fences as well as file fences.** Pin one base,
   give each worker a disposable detached worktree and disjoint write paths,
+- **A headed digest is not a receipt until it repeats, and a moved digest is not
+  a verdict until a control renders the same page without the feature.** An
+  Ortet page built for the iframes lane produced a different digest on every
+  run; two captures differed by **one pixel** at a glyph edge in 9px text, in
+  the parent, outside every frame. The same page with the frames replaced by
+  plain boxes was equally unstable and `article.html` was byte-stable, so the
+  cause was genet's glyph rasterization at very small sizes, not the new code.
+  Take a digest three times before recording it, and keep receipt pages out of
+  sub-10px type.
+- **A composite that happens after the scene is outside the scene.** An external
+  texture is composed by the host in its own pass, so no CSS clip, transform or
+  stacking order reaches it and no software rasterizer sees it. Anything that must
+  be clipped by its container, travel under an ancestor transform, or appear in a
+  captured frame belongs *in* the paint list. See the iframes plan §3.
+- **Two resource tables, two key-minting rules, and only one fails loudly.**
+  Merging a child paint list into a parent's is a dedupe for content-hashed font
+  keys and a re-keying for per-list ordinal image keys. Skip the re-keying and the
+  frame draws the parent's image: a plausible wrong picture, never an error. Read
+  how a key is minted before merging two lists that carry them.
+- **A recorded index into a command stream is a position, and positions move.**
+  Livery's host-leaf slots survived for months because nothing wrapped the list
+  while a slot was outstanding; `translated` and `scaled_to` both insert at index
+  0, so the moment a second slot kind existed the bug was one page-zoom away.
+  Every insertion has to shift every outstanding slot.
+- **A default object size is not an intrinsic size.** Giving a replaced element
+  with no natural dimensions a 300x150 "intrinsic size" hands it a 2:1 natural
+  ratio, and `width: 600px; height: auto` then renders 600x300. Axes that never
+  speak to each other need their own branch *before* every ratio rule, not a value
+  threaded through them.
+- **A cross-instance boundary that marshals strings cannot carry object
+  identity.** The Worker lane could live with it, because the specification's
+  worker boundary is a message queue. A same-origin iframe cannot, because the
+  specification's boundary there is a shared object graph:
+  `iframe.contentWindow.document.getElementById(x)` must return the node the
+  child's own script sees. When a surface's contract is identity rather than
+  transport, a marshalled proxy is not a partial implementation of it — it is a
+  different thing that scores well. See the iframes plan §4.
+  inspect staged paths before committing, and remove the worktree immediately
+  after integration.
+
+## Status
+
+Founded 2026-08-24; current work map reconciled 2026-09-07, including the IDL
+interface-table, cheap-globals, MutationObserver, Selection/Range and DOM node
+model lanes. The index covers
+the flat plans sectioned above and two archived plans; the count in this line
+was stale before 2026-09-07 and is now stated by the sections themselves.
+All three former component area roots now live in Mere. The older `docs/`
+corpus has selected execution entry points above; its full migration and
+governance remain deferred under the policy's local addendum.

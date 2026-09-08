@@ -4,7 +4,7 @@
   "manifest_sha256": "d5ec5be9bf1a75ed00d7e7ab28afe8a694a55e11682ba74305874d70b18dd422",
   "policy": "exact",
   "renderer": "livery",
-  "runner_sha256": "50d4f8be4696046cbd186ee15e3b6480edf45b352636e4ea4d5c22a23550b2f5",
+  "runner_sha256": "d14c8c9886f146a2c9ea3c8904ff95278c86a68ec66cc240271fae5a6309b60b",
   "subset": "dom/nodes",
   "tests": {
     "dom/nodes/CharacterData-appendChild.html": {
@@ -18942,8 +18942,15 @@
       "subtests_total": 38
     },
     "dom/nodes/MutationObserver-cross-realm-callback-report-exception.html": {
-      "reason": "no-subtests",
-      "status": "no-results"
+      "status": "fail",
+      "subtests": [
+        {
+          "name": "MutationObserver reports the exception from its callback in the callback's global object",
+          "status": "fail"
+        }
+      ],
+      "subtests_passed": 0,
+      "subtests_total": 1
     },
     "dom/nodes/MutationObserver-disconnect.html": {
       "status": "pass",
@@ -19159,14 +19166,14 @@
         },
         {
           "name": "Adopting an orphan",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "Adopting a non-orphan",
           "status": "fail"
         }
       ],
-      "subtests_passed": 5,
+      "subtests_passed": 6,
       "subtests_total": 11
     },
     "dom/nodes/Node-baseURI.html": {
@@ -35392,39 +35399,39 @@
         },
         {
           "name": "Passing a detached element from a frame document to removeChild should not affect it.",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "Passing a non-detached element from a frame document to removeChild should not affect it.",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "Calling removeChild on a element from a frame document with no children should throw NOT_FOUND_ERR.",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "Passing a detached text from a frame document to removeChild should not affect it.",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "Passing a non-detached text from a frame document to removeChild should not affect it.",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "Calling removeChild on a text from a frame document with no children should throw NOT_FOUND_ERR.",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "Passing a detached comment from a frame document to removeChild should not affect it.",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "Passing a non-detached comment from a frame document to removeChild should not affect it.",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "Calling removeChild on a comment from a frame document with no children should throw NOT_FOUND_ERR.",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "Passing a detached element from a synthetic document to removeChild should not affect it.",
@@ -35467,7 +35474,7 @@
           "status": "fail"
         }
       ],
-      "subtests_passed": 18,
+      "subtests_passed": 27,
       "subtests_total": 28
     },
     "dom/nodes/Node-replaceChild.html": {
@@ -38860,18 +38867,18 @@
         },
         {
           "name": "Removing steps (innerHTML): script does not run synchronously during iframe destruction",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "Removing steps (replaceChildren): script does not run synchronously during iframe destruction",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "Removing steps (remove): script does not run synchronously during iframe destruction",
           "status": "pass"
         }
       ],
-      "subtests_passed": 1,
+      "subtests_passed": 3,
       "subtests_total": 4
     },
     "dom/nodes/insertion-removing-steps/insertion-removing-steps-script.window.html": {

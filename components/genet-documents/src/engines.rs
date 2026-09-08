@@ -32,6 +32,8 @@ fn retained_document_capabilities(find_reason: impl Into<String>) -> DocumentCap
 #[cfg(any(feature = "livery", feature = "scripted"))]
 mod clip;
 #[cfg(feature = "livery")]
+mod frames;
+#[cfg(feature = "livery")]
 mod livery;
 #[cfg(feature = "scripted")]
 mod scripted;

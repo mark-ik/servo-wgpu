@@ -15,6 +15,7 @@ default = []
 # Clean-room Livery implementation of the static HTML session lane.
 livery = [
     "dep:genet-livery", "dep:genet-scripted-dom", "dep:paint_list_render",
+    "dep:paint_list_api",
     "dep:genet-render", "dep:unicode-segmentation", "dep:url",
 ]
 # The scripted lane: a live LiveryScriptedDocument on Boa.
@@ -42,6 +43,7 @@ genet-livery = { path = "../genet-livery", optional = true }
 genet-render = { path = "../genet-render", optional = true, default-features = false, features = ["livery"] }
 genet-scripted-dom = { path = "../genet-scripted-dom", optional = true }
 paint_list_render = { workspace = true, optional = true }
+paint_list_api = { workspace = true, optional = true }
 data-url = { workspace = true }
 
 genet-scripted = { path = "../genet-scripted", optional = true, default-features = false }

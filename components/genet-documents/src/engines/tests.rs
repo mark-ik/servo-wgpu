@@ -1843,3 +1843,366 @@ fn prepared_livery_session_uses_redirect_final_identity_and_requested_fragment()
         "https://cdn.example.test/final/index.html#proof"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Child browsing contexts on the Livery route (the iframes plan, phases 1-3)
+// ---------------------------------------------------------------------------
+
+/// A fetcher over a small in-memory site, so a frame's `src` travels the same
+/// route as the parent's stylesheets and images.
+#[cfg(feature = "livery")]
+#[derive(Clone)]
+struct SiteFetch;
+
+#[cfg(feature = "livery")]
+impl ResourceFetcher for SiteFetch {
+    fn fetch(&self, url: &str) -> Option<Vec<u8>> {
+        match url {
+            "https://example.test/child.html" => Some(
+                br#"<body style="margin:0"><div id="mark" style="width:40px;height:40px;background:rgb(0,128,0)"></div></body>"#
+                    .to_vec(),
+            ),
+            "https://example.test/outer.html" => Some(
+                br#"<body style="margin:0"><iframe src="child.html" style="width:120px;height:80px;border:0;padding:0;display:block"></iframe></body>"#
+                    .to_vec(),
+            ),
+            "https://example.test/self.html" => {
+                Some(br#"<body><iframe src="self.html"></iframe></body>"#.to_vec())
+            },
+            "https://example.test/child.css" => Some(b"div { background: rgb(0,0,255) }".to_vec()),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(feature = "livery")]
+fn spawn_site(address: &str, body: Option<&str>) -> Box<dyn DocumentSession<Scene>> {
+    let engine = LiverySessionEngine::new(SiteFetch);
+    let mut request = SessionSpawnRequest::new(address).with_viewport(400, 300);
+    if let Some(body) = body {
+        request = request.with_body(body);
+    }
+    engine.spawn(&request).expect("livery session spawns")
+}
+
+#[cfg(feature = "livery")]
+fn livery(session: &mut Box<dyn DocumentSession<Scene>>) -> &mut LiveryDocumentSession {
+    session
+        .as_any()
+        .downcast_mut::<LiveryDocumentSession>()
+        .expect("a Livery session")
+}
+
+/// A frame's `src` is fetched through the parent's own route, becomes a child
+/// browsing context in the tree, and reports `load`.
+#[cfg(feature = "livery")]
+#[test]
+fn a_frame_src_becomes_a_child_context_through_the_parents_resource_route() {
+    let mut session = spawn_site(
+        "https://example.test/index.html",
+        Some(
+            r#"<body style="margin:0"><iframe src="child.html" style="width:120px;height:80px;border:0"></iframe></body>"#,
+        ),
+    );
+    let session = livery(&mut session);
+    let reports = session.frame_load_reports();
+    assert_eq!(reports.len(), 1, "one child context: {reports:?}");
+    assert_eq!(
+        reports[0].outcome,
+        crate::engines::frames::FrameOutcome::Load
+    );
+    assert_eq!(reports[0].url, "https://example.test/child.html");
+
+    let tree = session.browsing_contexts();
+    let top = tree.top();
+    assert_eq!(tree.frames_of(top).len(), 1);
+    let child = tree.frames_of(top)[0];
+    assert_eq!(tree.parent_of(child), Some(top));
+    assert_eq!(tree.top_of(child), Some(top));
+    // Same-origin, so the scripted route would get full access.
+    assert!(tree.is_same_origin(top, child));
+    assert_eq!(tree.get(child).unwrap().history().len(), 1);
+}
+
+/// The child's scene is composited into the parent's replaced box: its content
+/// appears in the parent's frame, offset by the frame's position.
+#[cfg(feature = "livery")]
+#[test]
+fn the_childs_scene_is_composited_into_the_parents_replaced_box() {
+    let mut session = spawn_site(
+        "https://example.test/index.html",
+        Some(
+            r#"<body style="margin:0"><div style="height:30px"></div><iframe src="child.html" style="width:120px;height:80px;border:0;padding:0;display:block"></iframe></body>"#,
+        ),
+    );
+    let session = livery(&mut session);
+    let scene = session.frame(400, 300);
+    let green = scene
+        .ops
+        .iter()
+        .filter_map(|op| scene_rect_color_and_bounds(&scene, op))
+        .find(|(color, _)| *color == [0.0, 128.0 / 255.0, 0.0, 1.0]);
+    let (_, bounds) = green.expect("the child's green square reaches the parent's scene");
+    // The child's div is at its own (0, 0); the frame starts 30px down.
+    assert!(
+        (bounds[1] - 30.0).abs() < 1.5,
+        "the child is translated to the frame's content origin: {bounds:?}"
+    );
+    assert!(bounds[0].abs() < 1.5, "and to its x: {bounds:?}");
+}
+
+/// A child larger than its frame is cut off at the frame's edge.
+#[cfg(feature = "livery")]
+#[test]
+fn the_child_is_clipped_to_the_frames_content_box() {
+    let mut session = spawn_site(
+        "https://example.test/index.html",
+        Some(
+            r#"<body style="margin:0"><iframe src="child.html" style="width:20px;height:20px;border:0;padding:0;display:block"></iframe></body>"#,
+        ),
+    );
+    let session = livery(&mut session);
+    let scene = session.frame(400, 300);
+    assert!(
+        scene
+            .ops
+            .iter()
+            .filter_map(|op| scene_rect_color_and_bounds(&scene, op))
+            .any(|(color, _)| color == [0.0, 128.0 / 255.0, 0.0, 1.0]),
+        "the child still paints"
+    );
+    assert!(
+        scene_has_layer_clip_of_size(&scene, 20.0, 20.0),
+        "a layer clipped to the frame's 20x20 content box wraps the child"
+    );
+}
+
+/// A `srcdoc` frame needs no fetch and resolves its own relative URLs against
+/// the *parent's* base URL, not `about:srcdoc`.
+#[cfg(feature = "livery")]
+#[test]
+fn a_srcdoc_frame_loads_without_a_fetch_and_keeps_the_parents_base_url() {
+    let mut session = spawn_site(
+        "https://example.test/index.html",
+        Some(
+            r#"<iframe srcdoc="<link rel=stylesheet href=child.css><div style='width:20px;height:20px'></div>"></iframe>"#,
+        ),
+    );
+    let session = livery(&mut session);
+    let reports = session.frame_load_reports();
+    assert_eq!(reports.len(), 1);
+    assert_eq!(
+        reports[0].outcome,
+        crate::engines::frames::FrameOutcome::Load
+    );
+    assert_eq!(reports[0].url, "about:srcdoc");
+    // `child.css` resolved against the parent, so the child's div is blue.
+    let scene = session.frame(400, 300);
+    assert!(
+        scene
+            .ops
+            .iter()
+            .filter_map(|op| scene_rect_color_and_bounds(&scene, op))
+            .any(|(color, _)| color == [0.0, 0.0, 1.0, 1.0]),
+        "the srcdoc child's parent-relative stylesheet applied"
+    );
+}
+
+/// A `src` that cannot be fetched reports `error` and leaves the box empty
+/// rather than failing the parent's frame.
+#[cfg(feature = "livery")]
+#[test]
+fn an_unfetchable_frame_reports_error_and_leaves_an_empty_box() {
+    let mut session = spawn_site(
+        "https://example.test/index.html",
+        Some(r#"<iframe src="missing.html"></iframe>"#),
+    );
+    let session = livery(&mut session);
+    let reports = session.frame_load_reports();
+    assert_eq!(
+        reports[0].outcome,
+        crate::engines::frames::FrameOutcome::Error
+    );
+    let scene = session.frame(400, 300);
+    assert!(!scene.ops.is_empty(), "the parent still renders");
+}
+
+/// An empty `src` leaves the initial `about:blank`, which is a `load`.
+#[cfg(feature = "livery")]
+#[test]
+fn an_about_blank_frame_is_a_context_that_loaded() {
+    let mut session = spawn_site("https://example.test/index.html", Some("<iframe></iframe>"));
+    let session = livery(&mut session);
+    let reports = session.frame_load_reports();
+    assert_eq!(
+        reports[0].outcome,
+        crate::engines::frames::FrameOutcome::Load
+    );
+    assert_eq!(reports[0].url, "about:blank");
+    // The initial about:blank inherits the container's origin.
+    let tree = session.browsing_contexts();
+    assert!(tree.is_same_origin(tree.top(), reports[0].context));
+}
+
+/// A nested frame is a grandchild context, and its scene reaches the top
+/// document through two composites.
+#[cfg(feature = "livery")]
+#[test]
+fn a_nested_frame_is_a_grandchild_context_composited_through_both_levels() {
+    let mut session = spawn_site(
+        "https://example.test/index.html",
+        Some(
+            r#"<body style="margin:0"><iframe src="outer.html" style="width:200px;height:150px;border:0;padding:0;display:block"></iframe></body>"#,
+        ),
+    );
+    let session = livery(&mut session);
+    let reports = session.frame_load_reports();
+    assert_eq!(reports.len(), 2, "parent then child: {reports:?}");
+    assert_eq!(reports[0].url, "https://example.test/outer.html");
+    assert_eq!(reports[1].url, "https://example.test/child.html");
+    let tree = session.browsing_contexts();
+    assert_eq!(tree.top_of(reports[1].context), Some(tree.top()));
+    assert_eq!(tree.parent_of(reports[1].context), Some(reports[0].context));
+
+    let scene = session.frame(400, 300);
+    assert!(
+        scene
+            .ops
+            .iter()
+            .filter_map(|op| scene_rect_color_and_bounds(&scene, op))
+            .any(|(color, _)| color == [0.0, 128.0 / 255.0, 0.0, 1.0]),
+        "the grandchild's content reaches the top document"
+    );
+}
+
+/// A frame whose `src` is already open in an ancestor loads `about:blank`
+/// instead of recursing.
+#[cfg(feature = "livery")]
+#[test]
+fn a_self_referencing_frame_stops_rather_than_recursing() {
+    let mut session = spawn_site("https://example.test/self.html", None);
+    let session = livery(&mut session);
+    let reports = session.frame_load_reports();
+    assert_eq!(reports.len(), 1, "the recursion stops at one: {reports:?}");
+    assert_eq!(
+        reports[0].outcome,
+        crate::engines::frames::FrameOutcome::Load
+    );
+    let _ = session.frame(400, 300);
+}
+
+/// Sandbox flags are stored on the context, and a sandbox without
+/// `allow-same-origin` takes the child's origin away.
+#[cfg(feature = "livery")]
+#[test]
+fn a_sandboxed_frame_loses_its_origin_and_its_script_permission() {
+    let mut session = spawn_site(
+        "https://example.test/index.html",
+        Some(r#"<iframe src="child.html" sandbox="allow-forms"></iframe>"#),
+    );
+    let session = livery(&mut session);
+    let reports = session.frame_load_reports();
+    let tree = session.browsing_contexts();
+    assert!(!tree.is_same_origin(tree.top(), reports[0].context));
+    assert!(
+        tree.get(reports[0].context)
+            .unwrap()
+            .document()
+            .origin
+            .is_opaque()
+    );
+    assert!(!crate::frame_policy::scripts_allowed(reports[0].sandbox));
+    assert!(crate::frame_policy::forms_allowed(reports[0].sandbox));
+}
+
+/// A `loading="lazy"` frame is a real context that has not loaded, so it
+/// fires neither event.
+#[cfg(feature = "livery")]
+#[test]
+fn a_lazy_frame_is_a_context_that_has_not_loaded() {
+    let mut session = spawn_site(
+        "https://example.test/index.html",
+        Some(r#"<iframe src="child.html" loading="lazy"></iframe>"#),
+    );
+    let session = livery(&mut session);
+    let reports = session.frame_load_reports();
+    assert_eq!(
+        reports[0].outcome,
+        crate::engines::frames::FrameOutcome::Deferred
+    );
+    let tree = session.browsing_contexts();
+    assert_eq!(
+        tree.frames_of(tree.top()).len(),
+        1,
+        "the context exists even though the load is deferred"
+    );
+}
+
+/// Hit testing descends into a child context and answers with the node *and*
+/// the context that node belongs to.
+#[cfg(feature = "livery")]
+#[test]
+fn hit_testing_descends_into_the_child_context() {
+    let mut session = spawn_site(
+        "https://example.test/index.html",
+        Some(
+            r#"<body style="margin:0"><iframe src="child.html" style="width:120px;height:80px;border:0;padding:0;display:block"></iframe></body>"#,
+        ),
+    );
+    let session = livery(&mut session);
+    let _ = session.frame(400, 300);
+    let top = session.browsing_contexts().top();
+    let child_context = session.browsing_contexts().frames_of(top)[0];
+    let (context, _node) = session
+        .hit_test_frames(10.0, 10.0)
+        .expect("a point inside the frame hits something");
+    assert_eq!(
+        context, child_context,
+        "the point lands in the child browsing context, not the parent"
+    );
+    // A point outside the frame stays in the top-level context.
+    if let Some((outer, _)) = session.hit_test_frames(300.0, 200.0) {
+        assert_eq!(outer, top);
+    }
+}
+
+#[cfg(feature = "livery")]
+fn scene_rect_color_and_bounds(
+    scene: &Scene,
+    op: &netrender::SceneOp,
+) -> Option<([f32; 4], [f32; 4])> {
+    let netrender::SceneOp::Rect(rect) = op else {
+        return None;
+    };
+    let (tx, ty) = scene_translation(scene, rect.transform_id);
+    Some((
+        rect.color,
+        [rect.x0 + tx, rect.y0 + ty, rect.x1 + tx, rect.y1 + ty],
+    ))
+}
+
+/// Whether some layer in the scene is clipped to a `width` x `height` rect.
+///
+/// The paint-list translator lowers `PushClip` to a netrender **layer** with a
+/// `SceneClip::Rect`, not to a per-primitive `clip_rect`, so the frame's clip
+/// is proved by finding that layer.
+#[cfg(feature = "livery")]
+fn scene_has_layer_clip_of_size(scene: &Scene, width: f32, height: f32) -> bool {
+    scene.ops.iter().any(|op| match op {
+        netrender::SceneOp::PushLayer(layer) => match &layer.clip {
+            netrender::SceneClip::Rect { rect, .. } => {
+                (rect[2] - rect[0] - width).abs() < 1.5 && (rect[3] - rect[1] - height).abs() < 1.5
+            },
+            _ => false,
+        },
+        _ => false,
+    })
+}
+
+#[cfg(feature = "livery")]
+fn scene_translation(scene: &Scene, transform_id: u32) -> (f32, f32) {
+    scene
+        .transforms
+        .get(transform_id as usize)
+        .map_or((0.0, 0.0), |transform| (transform.m[12], transform.m[13]))
+}

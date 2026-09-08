@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ortet — a static parent with a static child</title>
+<style>
+  body { margin: 0; padding: 8px 10px; background: #fbf9f4; color: #2f2a24;
+         font: 13px/1.4 Georgia, "Times New Roman", serif; }
+  h1 { font-size: 17px; margin: 0 0 4px; color: #8c2f1c; }
+  p  { margin: 0 0 6px; }
+  .frames { display: flex; gap: 8px; align-items: flex-start; margin: 0 0 4px; }
+  .frames iframe { background: #ffffff; }
+  .caption { font-size: 11px; color: #6b6357; margin-top: 2px; width: 138px; }
+  .box { width: 134px; height: 88px; }
+</style>
+</head>
+<body>
+<h1>Nested browsing contexts</h1>
+<p>The parent. Each box is a child browsing context with its own document and
+its own layout, composited into the parent's replaced box and clipped to it.</p>
+
+<div class="frames">
+  <div>
+    <iframe class="box" src="frames-child.html" name="child"></iframe>
+    <div class="caption">src, through the parent's route</div>
+  </div>
+  <div>
+    <iframe class="box" srcdoc="&lt;link rel=stylesheet href=frames-child.css&gt;&lt;h3&gt;srcdoc&lt;/h3&gt;&lt;p&gt;No fetch, and a relative stylesheet that resolves against the parent.&lt;/p&gt;&lt;div class=swatch&gt;&lt;/div&gt;"></iframe>
+    <div class="caption">srcdoc, parent-relative stylesheet</div>
+  </div>
+  <div>
+    <iframe class="box" src="frames-nested.html" name="outer"></iframe>
+    <div class="caption">a frame inside a frame</div>
+  </div>
+</div>
+
+<div class="frames">
+  <div>
+    <iframe class="box" src="no-such-document.html"></iframe>
+    <div class="caption">a src that misses: an empty box</div>
+  </div>
+  <div>
+    <iframe class="box"></iframe>
+    <div class="caption">no src: the initial about:blank</div>
+  </div>
+  <div>
+    <iframe class="box" src="frames-child.html" sandbox="allow-forms"></iframe>
+    <div class="caption">sandboxed: an opaque origin</div>
+  </div>
+</div>
+</body>
+</html>

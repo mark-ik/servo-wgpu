@@ -997,6 +997,36 @@ pub fn content_box_size(style: &ComputedValues, fragment: &TreeFragment) -> (f32
     )
 }
 
+/// A fragment's physical content box: its border-box rectangle inset by the
+/// computed borders and padding.
+///
+/// The size half is [`content_box_size`]; this adds the origin, which the
+/// iframe composite needs because a child browsing context is laid out and
+/// painted in the *content* box, not the border box the fragment records.
+pub fn content_box_rect(style: &ComputedValues, fragment: &TreeFragment) -> (f32, f32, f32, f32) {
+    let em = match style.font_size {
+        FontSize::Value(CssLengthPercentage::Length(Length {
+            value,
+            unit: livery::values::LengthUnit::Px,
+        })) => value,
+        _ => 16.0,
+    };
+    // Percentage padding resolves against the containing block's inline size;
+    // Livery's fragment width is the closest value available here, and the
+    // same approximation `content_box_size` already makes.
+    let padding_left = length_percentage_px(style.padding_left.0, em, fragment.width);
+    let padding_top = length_percentage_px(style.padding_top.0, em, fragment.width);
+    let border_left = border_width_px(style.border_left_style, style.border_left_width, em);
+    let border_top = border_width_px(style.border_top_style, style.border_top_width, em);
+    let (width, height) = content_box_size(style, fragment);
+    (
+        fragment.x + border_left + padding_left,
+        fragment.y + border_top + padding_top,
+        width,
+        height,
+    )
+}
+
 struct FragmentOutput<'a> {
     fragments: &'a mut FragmentTree,
 }
@@ -2116,8 +2146,30 @@ where
         && dom.element_name(id).is_some_and(|name| {
             name.local.as_ref().eq_ignore_ascii_case("img")
                 || name.local.as_ref().eq_ignore_ascii_case("canvas")
+                || name.local.as_ref().eq_ignore_ascii_case("iframe")
         })
 }
+
+/// An `<iframe>` is a replaced element with a *default object size* and no
+/// natural size or ratio at all (CSS Images 3 section 5.1, HTML rendering
+/// section 14.4). That distinction is the whole reason it cannot go through
+/// the natural-size path: with a ratio, `width: 600px; height: auto` would be
+/// 600x300; with only a default object size it is 600x150, because the two
+/// axes never speak to each other.
+fn has_default_object_size_only<D>(dom: &D, id: D::NodeId) -> bool
+where
+    D: LayoutDom,
+    D::NodeId: Copy,
+{
+    dom.kind(id) == NodeKind::Element
+        && dom
+            .element_name(id)
+            .is_some_and(|name| name.local.as_ref().eq_ignore_ascii_case("iframe"))
+}
+
+/// The CSS default object size, used when a replaced element has no natural
+/// size and the used value would otherwise be indefinite.
+const DEFAULT_OBJECT_SIZE: (f32, f32) = (300.0, 150.0);
 
 /// Whether the nearest non-anonymous ancestor establishes a flex or grid
 /// formatting context, in which `auto` sizing may stretch. Anonymous boxes
@@ -2208,6 +2260,22 @@ where
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
 {
+    // A frame has only a default object size, so it leaves this function
+    // before every rule below: none of them applies without a natural size,
+    // and `style.aspect_ratio` must stay unset so the two axes stay
+    // independent. An `auto` axis takes the default; a specified one already
+    // reached `taffy_style` (including through the `width`/`height` content
+    // attributes, which are presentational hints).
+    if has_default_object_size_only(dom, id) {
+        let (default_width, default_height) = DEFAULT_OBJECT_SIZE;
+        if matches!(computed.width, CssSize::Auto) {
+            style.size.width = Dimension::length(default_width);
+        }
+        if matches!(computed.height, CssSize::Auto) {
+            style.size.height = Dimension::length(default_height);
+        }
+        return Some(DEFAULT_OBJECT_SIZE);
+    }
     let intrinsic = replaced_intrinsic_size(dom, id, image_sources);
     let natural_ratio = intrinsic
         .filter(|(width, height)| *width > 0.0 && *height > 0.0)

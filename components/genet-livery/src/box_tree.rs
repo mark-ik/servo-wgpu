@@ -89,8 +89,16 @@ where
                 NodeKind::Element => {
                     let computed = styles.get(node).cloned().unwrap_or_default();
                     let mut children = Vec::new();
-                    for child in dom.flat_children(node) {
-                        collect(dom, styles, child, Some(&computed), &mut children);
+                    // An `<iframe>`'s content model is transparent for legacy
+                    // reasons, but its fallback children are never rendered:
+                    // the box's content is the child browsing context, which
+                    // the paint walk splices in. Generating boxes for them
+                    // would both paint the fallback and stop the element being
+                    // a measured replaced leaf.
+                    if !is_frame_container(dom, node) {
+                        for child in dom.flat_children(node) {
+                            collect(dom, styles, child, Some(&computed), &mut children);
+                        }
                     }
                     output.push(
                         BoxTreeInput::new(
@@ -262,6 +270,16 @@ fn flow_axes(computed: &ComputedValues) -> FlowAxes {
     FlowAxes::new(writing_mode, direction)
 }
 
+/// Whether this element's box content is a nested browsing context rather
+/// than its own children.
+fn is_frame_container<D>(dom: &D, node: D::NodeId) -> bool
+where
+    D: LayoutDom,
+{
+    dom.element_name(node)
+        .is_some_and(|name| name.local.as_ref().eq_ignore_ascii_case("iframe"))
+}
+
 fn is_replaced_element<D>(dom: &D, node: D::NodeId) -> bool
 where
     D: LayoutDom,
@@ -269,6 +287,7 @@ where
     dom.element_name(node).is_some_and(|name| {
         name.local.as_ref().eq_ignore_ascii_case("img")
             || name.local.as_ref().eq_ignore_ascii_case("canvas")
+            || name.local.as_ref().eq_ignore_ascii_case("iframe")
     })
 }
 

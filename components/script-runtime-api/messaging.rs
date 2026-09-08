@@ -323,6 +323,12 @@ const MESSAGING_BOOTSTRAP: &str = r#"
     var data = globalThis.__structuredClone(message, transfer);
     var id = String(nextMessageId++);
     __traceProtocol('post_message', 'enqueue', id);
+    // The origin check is part of the algorithm, not of delivery: if
+    // `targetOrigin` names an origin that is not the target's, the message is
+    // **discarded silently** -- no event, no error. The clone still happens
+    // first, so a payload that cannot be cloned throws whatever the target
+    // origin was.
+    if (!targetOriginPermits(targetOrigin)) return;
     setTimeout(function() {
       __traceProtocol('post_message', 'deliver', id);
       dispatchEvent(internalMessageEvent(data, {
@@ -330,6 +336,22 @@ const MESSAGING_BOOTSTRAP: &str = r#"
       }));
     }, 0);
   };
+
+  // Whether `targetOrigin` permits delivery to *this* window. `'*'` always
+  // does; `'/'` means the sender's own origin, which for a same-window post is
+  // always true; anything else is compared as a serialized origin. A document
+  // with an opaque origin (`about:`, `data:`, `file:`) serializes to nothing,
+  // so an explicit target origin never matches it -- which is the specified
+  // behaviour and not a gap.
+  function targetOriginPermits(targetOrigin) {
+    if (targetOrigin === '*' || targetOrigin === '/') return true;
+    var here = originOfDocument();
+    if (!here) return false;
+    var parsed = globalThis.URL && globalThis.URL.parse
+      ? globalThis.URL.parse(targetOrigin)
+      : null;
+    return !!parsed && parsed.origin === here;
+  }
   defineHandler(globalThis, 'message', null);
   defineHandler(globalThis, 'messageerror', null);
 

@@ -1,0 +1,10 @@
+/* The stylesheet a child browsing context links. It is fetched through the
+   same resource route as the parent's own resources, and a `srcdoc` child
+   resolves this relative URL against the *parent's* base URL rather than
+   against `about:srcdoc`. */
+body { margin: 0; padding: 8px 10px; background: #ffffff; color: #2f2a24;
+       font: 13px/1.4 Georgia, "Times New Roman", serif; }
+h3 { margin: 0 0 6px; font-size: 14px; color: #1c5c8c; }
+p { margin: 0 0 6px; }
+code { font-family: Consolas, monospace; font-size: 12px; background: #eef3f7; }
+.swatch { width: 44px; height: 44px; background: #1c5c8c; }

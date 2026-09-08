@@ -60,6 +60,31 @@ pub struct LiveryPaintList {
     image_sources: HashMap<String, Vec<u8>>,
     #[serde(skip)]
     host_leaf_slots: Vec<HostLeafSlot>,
+    #[serde(skip)]
+    frame_slots: Vec<FrameSlot>,
+}
+
+/// A child browsing context's place in the parent document's paint order.
+///
+/// Recorded while the parent's clips, transforms and stacking context are
+/// still live, exactly as [`HostLeafSlot`] is, so a spliced child scene is
+/// clipped by the parent's `overflow` and travels under the parent's
+/// transforms without either side rewriting a primitive.
+///
+/// It is a separate list from [`HostLeafSlot`] rather than another
+/// `custom-leaf` key because the two key spaces are unrelated: a custom leaf's
+/// key is an author attribute, and a frame's is the DOM node's `opaque_id`.
+/// Sharing one `u64` space would let a page collide with a frame by writing an
+/// integer into an attribute.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrameSlot {
+    /// `LayoutDom::opaque_id` of the `<iframe>` element.
+    pub owner_node: u64,
+    /// The element's content box, in the parent document's coordinates. This
+    /// is the child's viewport: its origin is where the child's `(0, 0)` goes
+    /// and its size is what the child lays out at.
+    pub content_rect: LayoutRect,
+    command_index: usize,
 }
 
 /// A custom leaf's content position in the CSS paint order.
@@ -129,7 +154,118 @@ impl LiveryPaintList {
             };
             let index = slot.command_index + inserted;
             inserted += replacement.len();
+            let added = replacement.len();
             self.commands.splice(index..index, replacement);
+            self.shift_slots_after(index, added);
+        }
+    }
+
+    /// Every child browsing context this frame painted, in paint order.
+    ///
+    /// A caller reads this *after* the parent frame is laid out and before it
+    /// calls [`Self::splice_frame_slots`]: the child's viewport is the
+    /// parent's used content box, so the parent must be laid out first.
+    pub fn frame_slots(&self) -> &[FrameSlot] {
+        &self.frame_slots
+    }
+
+    /// Take a child browsing context's commands into this list's resource
+    /// tables, returning them with every resource key rewritten to this
+    /// list's.
+    ///
+    /// The two resource kinds behave differently and both had to be checked:
+    ///
+    /// - **Font keys are content-hashed** (`text::content_key`), so the same
+    ///   face has the same key in every list. Merging is a dedupe by key, and
+    ///   a face the parent already uses costs nothing.
+    /// - **Image keys are per-list ordinals** (`image_key_for` allocates
+    ///   `images.len() + 1`), so the child's key 1 and the parent's key 1 are
+    ///   different pictures. Every child image is re-keyed here, and every
+    ///   command that names one is rewritten. Splicing without this does not
+    ///   fail loudly: it draws the *parent's* image inside the frame.
+    pub fn absorb_frame_commands(&mut self, child: &LiveryPaintList) -> Vec<PaintCmd> {
+        for font in &child.fonts {
+            if !self.fonts.iter().any(|existing| existing.key == font.key) {
+                self.fonts.push(font.clone());
+            }
+        }
+        let mut remap = HashMap::new();
+        for image in &child.images {
+            let key = ImageKey::new(IdNamespace(0), self.images.len() as u32 + 1);
+            self.images.push(ImageResource {
+                key,
+                width: image.width,
+                height: image.height,
+                data: image.data.clone(),
+            });
+            remap.insert(image.key, key);
+        }
+        let mut commands = child.commands.clone();
+        if !remap.is_empty() {
+            for command in &mut commands {
+                rewrite_image_keys(command, &remap);
+            }
+        }
+        commands
+    }
+
+    /// Fill child-browsing-context slots with each child's own paint commands.
+    ///
+    /// The child's commands are in *its* document coordinates, so they are
+    /// wrapped in a clip to the content box and a translation to its origin.
+    /// The clip is what makes the child a viewport rather than a hole: a child
+    /// document taller than the frame is cut off at the frame's edge, and its
+    /// own scroll offset is a translation the child's paint list already
+    /// carries.
+    pub fn splice_frame_slots<F>(&mut self, mut child: F)
+    where
+        F: FnMut(u64) -> Option<Vec<PaintCmd>>,
+    {
+        let slots = std::mem::take(&mut self.frame_slots);
+        let mut inserted = 0usize;
+        for slot in slots {
+            let Some(commands) = child(slot.owner_node) else {
+                continue;
+            };
+            if commands.is_empty() || slot.content_rect.is_empty() {
+                continue;
+            }
+            let mut replacement = Vec::with_capacity(commands.len() + 4);
+            replacement.push(PaintCmd::PushClip(ClipSpec {
+                kind: ClipKind::Rect(slot.content_rect),
+            }));
+            replacement.push(PaintCmd::PushTransform(TransformSpec {
+                origin: slot.content_rect.min,
+                transform: LayoutTransform::identity(),
+                kind: TransformKind::Standard,
+            }));
+            replacement.extend(commands);
+            replacement.push(PaintCmd::PopTransform);
+            replacement.push(PaintCmd::PopClip);
+            let index = slot.command_index + inserted;
+            inserted += replacement.len();
+            let added = replacement.len();
+            self.commands.splice(index..index, replacement);
+            self.shift_slots_after(index, added);
+        }
+    }
+
+    /// Shift recorded slot positions after a command insertion at `index`.
+    ///
+    /// Every recorded position is an index into `commands`, so any insertion
+    /// before it invalidates it. The two splice methods and the two whole-list
+    /// wrappers ([`Self::translated`], [`Self::scaled_to`]) are the only
+    /// insertions that can happen while a slot is still outstanding.
+    fn shift_slots_after(&mut self, index: usize, by: usize) {
+        for slot in &mut self.frame_slots {
+            if slot.command_index >= index {
+                slot.command_index += by;
+            }
+        }
+        for slot in &mut self.host_leaf_slots {
+            if slot.command_index >= index {
+                slot.command_index += by;
+            }
         }
     }
 
@@ -172,6 +308,7 @@ impl LiveryPaintList {
             image_keys: HashMap::new(),
             image_sources: image_sources.clone(),
             host_leaf_slots: Vec::new(),
+            frame_slots: Vec::new(),
         }
     }
 
@@ -217,6 +354,7 @@ impl LiveryPaintList {
         };
         self.commands.insert(0, PaintCmd::PushTransform(transform));
         self.commands.push(PaintCmd::PopTransform);
+        self.shift_slots_after(0, 1);
         self
     }
 
@@ -241,6 +379,7 @@ impl LiveryPaintList {
         };
         self.commands.insert(0, PaintCmd::PushTransform(transform));
         self.commands.push(PaintCmd::PopTransform);
+        self.shift_slots_after(0, 1);
         self
     }
 }
@@ -471,6 +610,7 @@ fn emit_node<D>(
         .filter(|table| table.is_collapsed())
         .map(DeferredCollapsedBorders::new);
     record_host_leaf_slot(dom, fragments, id, list);
+    record_frame_slot(dom, styles, fragments, id, list);
     emit_children_in_stacking_order(
         dom,
         styles,
@@ -541,6 +681,79 @@ fn record_host_leaf_slot<D>(
             origin: LayoutPoint::new(fragment.x, fragment.y),
         });
     }
+}
+
+/// Point every image key in one command at its absorbed replacement.
+fn rewrite_image_keys(command: &mut PaintCmd, remap: &HashMap<ImageKey, ImageKey>) {
+    let swap = |key: &mut ImageKey| {
+        if let Some(replacement) = remap.get(key) {
+            *key = *replacement;
+        }
+    };
+    match command {
+        PaintCmd::DrawImage(item) => swap(&mut item.image_key),
+        PaintCmd::DrawRepeatingImage(item) => swap(&mut item.image_key),
+        PaintCmd::DrawBorder(item) => {
+            if let paint_list_api::BorderDetails::NinePatch(nine) = &mut item.details
+                && let paint_list_api::NinePatchSource::Image(key, _) = &mut nine.source
+            {
+                swap(key);
+            }
+        },
+        PaintCmd::PushLayer(spec) => {
+            if let Some(mask) = spec.mask.as_mut()
+                && let Some(key) = mask.image_mask.as_mut()
+            {
+                swap(key);
+            }
+        },
+        _ => {},
+    }
+}
+
+/// Mark an `<iframe>`'s child browsing context in the current paint phase.
+///
+/// Recorded from the same two call sites as [`record_host_leaf_slot`], for the
+/// same reason: a positioned frame arrives through `emit_node` and a
+/// normal-flow one through `emit_normal_node`, and a marker left in only one
+/// of them silently drops half the frames on a page.
+///
+/// The recorded rectangle is the element's **content box**, which is both the
+/// child's viewport and the clip the composite applies. A frame with no
+/// computed style, no fragment, or an empty content box records nothing, so a
+/// `display: none` frame costs the composite nothing.
+fn record_frame_slot<D>(
+    dom: &D,
+    styles: &StylePlane<D::NodeId>,
+    fragments: &LiveryLayout<D::NodeId>,
+    id: D::NodeId,
+    list: &mut LiveryPaintList,
+) where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    if dom.kind(id) != NodeKind::Element
+        || !dom
+            .element_name(id)
+            .is_some_and(|name| name.local.as_ref().eq_ignore_ascii_case("iframe"))
+    {
+        return;
+    }
+    let (Some(style), Some(fragment)) = (styles.get(id), fragments.get(id)) else {
+        return;
+    };
+    let (x, y, width, height) = crate::layout::content_box_rect(style, fragment);
+    if width <= 0.0 || height <= 0.0 {
+        return;
+    }
+    list.frame_slots.push(FrameSlot {
+        owner_node: dom.opaque_id(id),
+        content_rect: LayoutRect::new(
+            LayoutPoint::new(x, y),
+            LayoutPoint::new(x + width, y + height),
+        ),
+        command_index: list.commands.len(),
+    });
 }
 
 /// Flex and grid items are blockified for layout and paint even when their
@@ -1255,6 +1468,204 @@ mod collapsed_border_paint_tests {
             }),
             "the phase-002 collapsed edge covers the foreground: {green_rects:?} vs {red_rect:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod frame_slot_tests {
+    use super::*;
+    use crate::{Device, LiveryDocument, StyleSet};
+    use genet_static_dom::StaticDocument;
+
+    fn render(html: &str) -> LiveryPaintList {
+        let document = StaticDocument::parse(html);
+        let mut session = LiveryDocument::new(
+            document,
+            StyleSet::cambium(&[]),
+            Device::screen(800.0, 600.0),
+        );
+        session.frame(800, 600).expect("frame layout")
+    }
+
+    /// The user-agent default: 300x150 content, inside the 2px inset border
+    /// the user-agent sheet gives an `<iframe>`. That the *content* box is
+    /// recorded (not the 304x154 border box) is the whole point — the child's
+    /// viewport is its content box.
+    #[test]
+    fn a_default_frame_records_a_three_hundred_by_one_fifty_content_box() {
+        let list = render(r#"<!DOCTYPE html><iframe></iframe>"#);
+        let slots = list.frame_slots();
+        assert_eq!(slots.len(), 1, "one slot per frame: {slots:?}");
+        let rect = slots[0].content_rect;
+        assert!(
+            (rect.width() - 300.0).abs() < 0.5 && (rect.height() - 150.0).abs() < 0.5,
+            "default object size reaches the slot: {rect:?}"
+        );
+    }
+
+    /// The two axes are independent because a frame has no natural ratio: a
+    /// specified width does not transfer to the height.
+    #[test]
+    fn a_specified_width_does_not_transfer_to_the_frames_height() {
+        let list = render(
+            r#"<!DOCTYPE html><iframe style="width: 600px; border: 0; padding: 0"></iframe>"#,
+        );
+        let rect = list.frame_slots()[0].content_rect;
+        assert!((rect.width() - 600.0).abs() < 0.5, "{rect:?}");
+        assert!(
+            (rect.height() - 150.0).abs() < 0.5,
+            "no natural ratio, so the height stays at the default: {rect:?}"
+        );
+    }
+
+    /// Borders and padding are removed, and the recorded origin is the content
+    /// box's, not the fragment's.
+    #[test]
+    fn the_slot_is_inset_by_the_frames_own_border_and_padding() {
+        let list = render(
+            r#"<!DOCTYPE html><body style="margin: 0">
+               <iframe style="width: 100px; height: 80px; border: 5px solid black;
+                              padding: 10px; box-sizing: border-box"></iframe></body>"#,
+        );
+        let rect = list.frame_slots()[0].content_rect;
+        assert!(
+            (rect.width() - 70.0).abs() < 0.5,
+            "100 - 2*(5+10): {rect:?}"
+        );
+        assert!(
+            (rect.height() - 50.0).abs() < 0.5,
+            "80 - 2*(5+10): {rect:?}"
+        );
+        assert!(
+            rect.min.x >= 15.0 && rect.min.y >= 15.0,
+            "the origin moves inside the border and padding: {rect:?}"
+        );
+    }
+
+    /// A `display: none` frame has no fragment, so it records no slot and the
+    /// composite costs nothing.
+    #[test]
+    fn a_display_none_frame_records_no_slot() {
+        let list = render(r#"<!DOCTYPE html><iframe style="display: none"></iframe>"#);
+        assert!(list.frame_slots().is_empty());
+    }
+
+    /// Fallback children never become boxes, so nothing of them paints.
+    #[test]
+    fn frame_fallback_content_generates_no_boxes() {
+        let list = render(
+            r#"<!DOCTYPE html><iframe><span style="background: rgb(255, 0, 0)">fallback</span></iframe>"#,
+        );
+        assert_eq!(list.frame_slots().len(), 1);
+        let red = ColorF::new(1.0, 0.0, 0.0, 1.0);
+        assert!(
+            !list.commands().iter().any(|command| matches!(
+                command,
+                PaintCmd::DrawRect(rect) if rect.color == red
+            )),
+            "the fallback subtree paints nothing"
+        );
+    }
+
+    /// The splice puts the child's commands inside a clip to the content box
+    /// and under a translation to its origin, and leaves the parent's own
+    /// commands in order around them.
+    #[test]
+    fn splicing_a_child_clips_and_translates_it_into_the_content_box() {
+        let mut list = render(
+            r#"<!DOCTYPE html><body style="margin: 0">
+               <iframe style="width: 200px; height: 100px; border: 0; padding: 0"></iframe>
+               <div style="background: rgb(0, 0, 255); width: 10px; height: 10px"></div></body>"#,
+        );
+        let owner = list.frame_slots()[0].owner_node;
+        let child_marker = ColorF::new(0.0, 1.0, 0.0, 1.0);
+        let before = list.commands().len();
+        list.splice_frame_slots(|node| {
+            (node == owner).then(|| {
+                vec![PaintCmd::DrawRect(RectItem {
+                    placement: CommonPlacement::new(LayoutRect::new(
+                        LayoutPoint::new(0.0, 0.0),
+                        LayoutPoint::new(400.0, 400.0),
+                    )),
+                    color: child_marker,
+                })]
+            })
+        });
+        assert_eq!(
+            list.commands().len(),
+            before + 5,
+            "clip, transform, one draw, pop, pop"
+        );
+        let index = list
+            .commands()
+            .iter()
+            .position(
+                |command| matches!(command, PaintCmd::DrawRect(rect) if rect.color == child_marker),
+            )
+            .expect("the child's command is spliced in");
+        let clip = match &list.commands()[index - 2] {
+            PaintCmd::PushClip(spec) => &spec.kind,
+            other => panic!("expected a clip before the child: {other:?}"),
+        };
+        match clip {
+            ClipKind::Rect(rect) => {
+                assert!((rect.width() - 200.0).abs() < 0.5, "{rect:?}");
+                assert!((rect.height() - 100.0).abs() < 0.5, "{rect:?}");
+            },
+            other => panic!("the frame clip is a plain rectangle: {other:?}"),
+        }
+        assert!(matches!(
+            &list.commands()[index - 1],
+            PaintCmd::PushTransform(_)
+        ));
+        assert!(matches!(
+            &list.commands()[index + 1],
+            PaintCmd::PopTransform
+        ));
+        assert!(matches!(&list.commands()[index + 2], PaintCmd::PopClip));
+        // A second splice finds no slots left, so nothing doubles.
+        let after = list.commands().len();
+        list.splice_frame_slots(|_| Some(vec![PaintCmd::PopClip]));
+        assert_eq!(list.commands().len(), after);
+    }
+
+    /// A frame with no child scene leaves the parent's command stream
+    /// untouched, so an unfetched or lazy frame is a hole, not a panic.
+    #[test]
+    fn a_frame_with_no_child_scene_splices_nothing() {
+        let mut list = render(r#"<!DOCTYPE html><iframe></iframe>"#);
+        let before = list.commands().len();
+        list.splice_frame_slots(|_| None);
+        assert_eq!(list.commands().len(), before);
+    }
+
+    /// `translated` and `scaled_to` each insert one command at the head, so a
+    /// slot recorded before them must move with it or the child lands in the
+    /// wrong place.
+    #[test]
+    fn wrapping_the_list_keeps_the_slot_pointing_at_the_same_command() {
+        let list = render(r#"<!DOCTYPE html><p>x</p><iframe></iframe>"#);
+        let original = list.frame_slots()[0].command_index;
+        let mut wrapped = list.translated(0.0, -40.0).scaled_to(2.0, 1600, 1200);
+        assert_eq!(wrapped.frame_slots()[0].command_index, original + 2);
+        let marker = ColorF::new(0.0, 1.0, 0.0, 1.0);
+        wrapped.splice_frame_slots(|_| {
+            Some(vec![PaintCmd::DrawRect(RectItem {
+                placement: CommonPlacement::new(LayoutRect::new(
+                    LayoutPoint::new(0.0, 0.0),
+                    LayoutPoint::new(1.0, 1.0),
+                )),
+                color: marker,
+            })])
+        });
+        let index = wrapped
+            .commands()
+            .iter()
+            .position(|command| matches!(command, PaintCmd::DrawRect(rect) if rect.color == marker))
+            .expect("the child still splices in");
+        // The two wrappers' `PushTransform`s are commands 0 and 1; the child
+        // must land after both of them, inside the scroll and zoom frames.
+        assert!(index > 2, "the child stays inside both wrappers: {index}");
     }
 }
 
@@ -1976,6 +2387,7 @@ fn emit_normal_node<'a, D>(
             .push(PaintCmd::PushTransform(transform.clone()));
     }
     record_host_leaf_slot(dom, fragments, id, list);
+    record_frame_slot(dom, styles, fragments, id, list);
     if let Some(table) = fragments.table_paint_for_node(id) {
         if let Some(deferred) = deferred_collapsed.as_deref_mut() {
             deferred.flush(styles, fragments, list);

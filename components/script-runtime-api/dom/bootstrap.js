@@ -4877,7 +4877,30 @@
   // mid-file and the next `test(...)` call would throw "not a callable
   // function".
   var installedNamedProperties = [];
+  // How many `window[i]` child-context accessors the last refresh installed.
+  // Indexed access is refreshed alongside the named properties because both
+  // are reads of the document tree and both must be taken back before they are
+  // reinstalled -- a frame removed from the document must stop answering at its
+  // old index, and the count is the only thing that says which indices were
+  // ours to remove.
+  var installedFrameIndices = 0;
   globalThis.__refreshNamedProperties = function() {
+    for (var frameIndex = 0; frameIndex < installedFrameIndices; frameIndex++) {
+      try { delete globalThis[String(frameIndex)]; } catch (_) {}
+    }
+    installedFrameIndices = 0;
+    var frameElements;
+    try { frameElements = document.querySelectorAll('iframe'); } catch (_) { frameElements = []; }
+    for (var newIndex = 0; newIndex < frameElements.length; newIndex++) {
+      (function(container) {
+        Object.defineProperty(globalThis, String(installedFrameIndices), {
+          configurable: true,
+          enumerable: true,
+          get: function() { return container.contentWindow; }
+        });
+      })(frameElements[newIndex]);
+      installedFrameIndices += 1;
+    }
     for (var oldIndex = 0; oldIndex < installedNamedProperties.length; oldIndex++) {
       var entry = installedNamedProperties[oldIndex];
       var current = Object.getOwnPropertyDescriptor(globalThis, entry.name);
@@ -5182,9 +5205,47 @@
     };
   })();
 
-  // window.frames is the window itself when there are no child browsing
-  // contexts (the static-DOM harness has none).
+  // ---- Child browsing contexts on the Window --------------------------------
+  //
+  // `window.frames` *is* the window (HTML): the child browsing contexts are the
+  // window's own indexed properties and `window.length` is how many there are.
+  // So `frames` staying `globalThis` was already right; what was missing is
+  // that `length` always read as `undefined` and `window[0]` never existed.
+  //
+  // The count is taken from the document rather than from a registry, and that
+  // is load-bearing rather than lazy: a nested browsing context exists only for
+  // an `<iframe>` **in the document tree**, and a `<template>`'s contents have
+  // no parent by construction (the Shadow DOM lane's shape), so no walk of the
+  // document reaches them and a templated frame is correctly absent.
   globalThis.frames = globalThis.window || globalThis;
+  function childFrameElements() {
+    try {
+      return document.querySelectorAll('iframe');
+    } catch (_) {
+      return [];
+    }
+  }
+  Object.defineProperty(globalThis, 'length', {
+    configurable: true,
+    enumerable: false,
+    get: function() { return childFrameElements().length; },
+    // `[Replaceable]`: assignment shadows with a data property rather than
+    // silently failing on a getter-only accessor.
+    set: function(value) {
+      Object.defineProperty(globalThis, 'length', {
+        configurable: true, enumerable: true, writable: true, value: value
+      });
+    }
+  });
+  // A top-level browsing context has no container element. Every document this
+  // runtime hosts is top-level today — one Runtime per browsing context is the
+  // agreed shape, and the second Runtime is a named residual — so `null` is the
+  // correct answer here rather than a placeholder.
+  Object.defineProperty(globalThis, 'frameElement', {
+    configurable: true,
+    enumerable: false,
+    get: function() { return null; }
+  });
 
   // Minimal CustomElementRegistry: define/get/getName/whenDefined/upgrade plus
   // a first customized-built-ins slice over the HTML interface table.

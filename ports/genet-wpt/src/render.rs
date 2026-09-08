@@ -87,6 +87,144 @@ fn document_resources<D: LayoutDom>(
     resolve_with(dom, Some(&document_url), &mut fetch)
 }
 
+/// One child browsing context in the reftest lane: its retained document and
+/// its own children.
+///
+/// The reftest lane builds a bare `LiveryDocument` rather than going through
+/// `genet-documents`' session engine, so the frame composite has to be
+/// assembled here too. Both routes use the same three engine seams -
+/// `LiveryPaintList::frame_slots`, `absorb_frame_commands` and
+/// `splice_frame_slots` - which is the point of putting them on the paint list
+/// rather than in either host.
+struct ChildRender {
+    owner_node: u64,
+    document: Option<genet_livery::LiveryDocument<StaticDocument>>,
+    children: Vec<ChildRender>,
+}
+
+/// How deep a chain of nested reftest frames to build. Mirrors the session
+/// engine's bound; the ancestor-URL check below is the specified guard.
+const MAX_FRAME_DEPTH: usize = 8;
+
+fn build_child_documents(
+    frames: &[genet_document_resources::ResolvedFrame],
+    resolver: &ResourceResolver,
+    parent_url: &str,
+    ancestors: &mut Vec<String>,
+    depth: usize,
+) -> Vec<ChildRender> {
+    frames
+        .iter()
+        .map(|frame| {
+            let recursive = ancestors.iter().any(|url| url == &frame.resolved_url);
+            if frame.source.is_empty() || recursive || depth >= MAX_FRAME_DEPTH {
+                return ChildRender {
+                    owner_node: frame.owner_node,
+                    document: None,
+                    children: Vec::new(),
+                };
+            }
+            // A `srcdoc` child's base URL is its container's; a `src` child's
+            // is its own.
+            let (base_dir, base_url) =
+                if frame.source_kind == genet_document_resources::FrameSource::SrcDoc {
+                    (resolver.base_dir.clone(), parent_url.to_owned())
+                } else {
+                    let resolved = resolver.resolve(&frame.resolved_url);
+                    let dir = resolved
+                        .as_ref()
+                        .and_then(|path| path.parent())
+                        .map_or_else(|| resolver.base_dir.clone(), std::path::Path::to_path_buf);
+                    (dir, frame.resolved_url.clone())
+                };
+            let child_resolver = ResourceResolver {
+                base_dir,
+                tests_root: resolver.tests_root.clone(),
+            };
+            let document = StaticDocument::parse(&frame.source);
+            let resources = document_resources(&document, &child_resolver);
+            let sheets = resources
+                .stylesheets
+                .iter()
+                .map(|sheet| sheet.text.clone())
+                .collect::<Vec<_>>();
+            let sheet_refs = sheets.iter().map(String::as_str).collect::<Vec<_>>();
+            let mut child = genet_livery::LiveryDocument::new(
+                document,
+                LiveryStyleSet::cambium(&sheet_refs),
+                LiveryDevice::screen(300.0, 150.0),
+            );
+            for resource in resources.resources {
+                match resource.kind {
+                    ResourceKind::Image => {
+                        child.set_image_resource(
+                            resource.authored_url.clone(),
+                            resource.bytes.clone(),
+                        );
+                        child.set_image_resource(resource.resolved_url, resource.bytes);
+                    },
+                    ResourceKind::Font => {
+                        child.set_font_resource(resource.authored_url, resource.bytes.clone());
+                        child.set_font_resource(resource.resolved_url, resource.bytes);
+                    },
+                }
+            }
+            ancestors.push(frame.resolved_url.clone());
+            let children = build_child_documents(
+                &resources.frames,
+                &child_resolver,
+                &base_url,
+                ancestors,
+                depth + 1,
+            );
+            ancestors.pop();
+            ChildRender {
+                owner_node: frame.owner_node,
+                document: Some(child),
+                children,
+            }
+        })
+        .collect()
+}
+
+/// Render each child at its used content size and splice it into the parent's
+/// replaced box, recursing so a grandchild is composited into its own parent
+/// before that parent is composited into this one.
+fn composite_children(list: &mut genet_livery::LiveryPaintList, children: &mut [ChildRender]) {
+    if children.is_empty() || list.frame_slots().is_empty() {
+        return;
+    }
+    let slots = list.frame_slots().to_vec();
+    let mut rendered: Vec<(u64, Vec<paint_list_api::PaintCmd>)> = Vec::new();
+    for slot in &slots {
+        let Some(child) = children
+            .iter_mut()
+            .find(|child| child.owner_node == slot.owner_node)
+        else {
+            continue;
+        };
+        let width = slot.content_rect.width().max(0.0).round() as u32;
+        let height = slot.content_rect.height().max(0.0).round() as u32;
+        if width == 0 || height == 0 {
+            continue;
+        }
+        let Some(document) = child.document.as_mut() else {
+            continue;
+        };
+        let Ok(mut child_list) = document.frame(width, height) else {
+            continue;
+        };
+        composite_children(&mut child_list, &mut child.children);
+        rendered.push((slot.owner_node, list.absorb_frame_commands(&child_list)));
+    }
+    list.splice_frame_slots(|owner| {
+        rendered
+            .iter()
+            .find(|(node, _)| *node == owner)
+            .map(|(_, commands)| commands.clone())
+    });
+}
+
 /// The visual result and the exact table dispatch record that produced it.
 ///
 /// Reftest comparisons consume only [`Self::image`]. The ledger is an
@@ -269,9 +407,17 @@ impl Renderer {
                 },
             }
         }
-        let list = session
+        let mut children = build_child_documents(
+            &resources.frames,
+            &resolver,
+            resolver.document_url().as_str(),
+            &mut Vec::new(),
+            0,
+        );
+        let mut list = session
             .frame(css_width, css_height)
             .expect("Livery WPT reftest layout");
+        composite_children(&mut list, &mut children);
         let table_ledger = session.table_shadow_ledger().cloned().unwrap_or_default();
         let envelope = isolate_image_keys(
             with_reftest_backdrop(PaintEnvelope::from_list(&list), css_width, css_height),
@@ -484,5 +630,158 @@ mod tests {
         assert!(RenderViewport::new(800, 600, 0.0).is_err());
         assert!(RenderViewport::new(800, 600, f32::NAN).is_err());
         assert!(RenderViewport::new(800, 600, f32::MAX).is_err());
+    }
+}
+
+/// The reftest lane's child-browsing-context composite, proved without a GPU.
+///
+/// `render_html` rasterizes, so it needs a device and cannot run in CI. The
+/// part this lane added is upstream of the raster — build the children, render
+/// them at the frame's used content size, splice — and that half is a pure
+/// function of the paint list. Testing it here is what makes "the reftest maps
+/// did not move" mean *no reftest exercises a frame* rather than *the
+/// composite never ran*.
+#[cfg(test)]
+mod frame_composite_tests {
+    use super::*;
+    use paint_list_api::{ClipKind, PaintCmd, PaintList};
+
+    fn fixture_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "genet-wpt-frame-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(dir.join("sub")).expect("fixture dir");
+        dir
+    }
+
+    /// The lane's own directory under the fixture root, so `base_dir` and
+    /// `tests_root` differ the way they do in a real run.
+    fn base_dir(root: &std::path::Path) -> std::path::PathBuf {
+        root.join("sub")
+    }
+
+    /// Build the parent's paint list and composite its children, the way
+    /// `render_html` does between layout and raster.
+    fn composited(dir: &std::path::Path, parent: &str) -> genet_livery::LiveryPaintList {
+        std::fs::write(base_dir(dir).join("parent.html"), parent).expect("write parent");
+        let resolver = ResourceResolver {
+            base_dir: base_dir(dir),
+            tests_root: dir.to_path_buf(),
+        };
+        let document = StaticDocument::parse(parent);
+        let resources = document_resources(&document, &resolver);
+        let mut children = build_child_documents(
+            &resources.frames,
+            &resolver,
+            resolver.document_url().as_str(),
+            &mut Vec::new(),
+            0,
+        );
+        let sheets = resources
+            .stylesheets
+            .iter()
+            .map(|sheet| sheet.text.clone())
+            .collect::<Vec<_>>();
+        let sheet_refs = sheets.iter().map(String::as_str).collect::<Vec<_>>();
+        let mut session = genet_livery::LiveryDocument::new(
+            document,
+            LiveryStyleSet::cambium(&sheet_refs),
+            LiveryDevice::screen(400.0, 300.0),
+        );
+        let mut list = session.frame(400, 300).expect("parent layout");
+        composite_children(&mut list, &mut children);
+        list
+    }
+
+    fn has_rect(list: &genet_livery::LiveryPaintList, color: [f32; 3]) -> bool {
+        list.commands().iter().any(|command| {
+            matches!(command, PaintCmd::DrawRect(rect)
+                if (rect.color.r - color[0]).abs() < 0.01
+                    && (rect.color.g - color[1]).abs() < 0.01
+                    && (rect.color.b - color[2]).abs() < 0.01)
+        })
+    }
+
+    /// A `src` child is fetched through the reftest resolver, laid out at the
+    /// frame's used content size, and spliced under a clip to that box.
+    #[test]
+    fn a_src_child_is_composited_under_a_clip_to_the_frames_content_box() {
+        let dir = fixture_dir("src");
+        std::fs::write(
+            base_dir(&dir).join("child.html"),
+            r#"<body style="margin:0"><div style="width:40px;height:40px;background:rgb(0,128,0)"></div></body>"#,
+        )
+        .expect("write child");
+        let list = composited(
+            &dir,
+            r#"<body style="margin:0"><iframe src="child.html" style="width:120px;height:80px;border:0;padding:0;display:block"></iframe></body>"#,
+        );
+        assert!(
+            has_rect(&list, [0.0, 128.0 / 255.0, 0.0]),
+            "the child's own paint reaches the parent's list"
+        );
+        let clipped = list.commands().iter().any(|command| {
+            matches!(command, PaintCmd::PushClip(spec)
+                if matches!(&spec.kind, ClipKind::Rect(rect)
+                    if (rect.width() - 120.0).abs() < 1.0 && (rect.height() - 80.0).abs() < 1.0))
+        });
+        assert!(clipped, "and it is clipped to the frame's content box");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A `srcdoc` child needs no fetch and resolves its relative stylesheet
+    /// against the *parent's* base URL.
+    #[test]
+    fn a_srcdoc_child_uses_the_parents_base_url() {
+        let dir = fixture_dir("srcdoc");
+        std::fs::write(base_dir(&dir).join("child.css"), "div { background: rgb(0,0,255) }")
+            .expect("write css");
+        let list = composited(
+            &dir,
+            r#"<body style="margin:0"><iframe srcdoc="<link rel=stylesheet href=child.css><div style='width:20px;height:20px'></div>" style="width:120px;height:80px;border:0;padding:0;display:block"></iframe></body>"#,
+        );
+        assert!(
+            has_rect(&list, [0.0, 0.0, 1.0]),
+            "the srcdoc child's parent-relative stylesheet applied"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A frame whose `src` cannot be read leaves the parent's list intact
+    /// rather than failing the render.
+    #[test]
+    fn a_missing_child_leaves_the_parents_list_alone() {
+        let dir = fixture_dir("missing");
+        let list = composited(
+            &dir,
+            r#"<body style="margin:0"><div style="width:10px;height:10px;background:rgb(255,0,0)"></div><iframe src="nope.html" style="width:120px;height:80px;border:0;display:block"></iframe></body>"#,
+        );
+        assert!(has_rect(&list, [1.0, 0.0, 0.0]), "the parent still paints");
+        assert_eq!(list.frame_slots().len(), 0, "the slot was consumed");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A frame that names a document already open in an ancestor stops rather
+    /// than recursing.
+    #[test]
+    fn a_self_referencing_child_stops() {
+        let dir = fixture_dir("cycle");
+        std::fs::write(
+            base_dir(&dir).join("loop.html"),
+            r#"<body><iframe src="loop.html" style="width:60px;height:40px"></iframe></body>"#,
+        )
+        .expect("write loop");
+        let list = composited(
+            &dir,
+            r#"<body style="margin:0"><iframe src="loop.html" style="width:120px;height:80px;border:0;display:block"></iframe></body>"#,
+        );
+        // The outer child exists; its own self-reference does not recurse.
+        assert!(!list.commands().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -181,6 +181,14 @@ impl<Fetch: ResourceFetcher + Send + Sync> SessionEngine<Scene> for LiverySessio
     }
 }
 
+/// A trait object over the engine's own fetcher, so the frame builder can take
+/// `Option<&dyn ResourceFetcher>` without the whole child-frame path becoming
+/// generic over the engine's `Fetch` parameter.
+#[cfg(feature = "livery")]
+fn as_dyn_fetcher<F: ResourceFetcher>(fetcher: &F) -> &dyn ResourceFetcher {
+    fetcher
+}
+
 #[cfg(feature = "livery")]
 impl<Fetch: ResourceFetcher + Send + Sync> LiverySessionEngine<Fetch> {
     fn spawn_livery_document(
@@ -203,6 +211,7 @@ impl<Fetch: ResourceFetcher + Send + Sync> LiverySessionEngine<Fetch> {
             source_response,
             navigation,
             resources,
+            Some(as_dyn_fetcher(&self.fetcher)),
         )
     }
 }
@@ -231,12 +240,17 @@ impl<Fetch> LiverySessionEngine<Fetch> {
             &request.address,
             &source_response.final_url,
         ));
+        // An asynchronous prepared spawn has no fetcher here: the staged
+        // resolution already fetched every frame's *source*, so the children
+        // render, but their own linked stylesheets and images stay
+        // undiscovered. Named residual, not a silent difference.
         self.spawn_livery_document_with_resources(
             request,
             dom,
             source_response,
             navigation,
             resources,
+            None,
         )
     }
 
@@ -247,6 +261,7 @@ impl<Fetch> LiverySessionEngine<Fetch> {
         source_response: ResourceResponse,
         navigation: genet_livery::NavigationFragment,
         resources: ResolvedDocumentResources,
+        fetcher: Option<&dyn ResourceFetcher>,
     ) -> Result<Box<dyn DocumentSession<Scene>>, SessionError> {
         let mut sheets = self
             .author_css
@@ -291,6 +306,25 @@ impl<Fetch> LiverySessionEngine<Fetch> {
                 },
             }
         }
+        let mut contexts = crate::browsing_context::BrowsingContextTree::new(
+            navigation.script_visible_url.clone(),
+        );
+        let top = contexts.top();
+        let base_url = resources.document_url.clone();
+        let mut ancestors = base_url.iter().cloned().collect::<Vec<_>>();
+        let frames = super::frames::build_child_frames(
+            &mut contexts,
+            top,
+            base_url.as_deref(),
+            &resources.frames,
+            &super::frames::FrameBuild {
+                fetcher,
+                limits: self.resource_limits,
+                author_css: &self.author_css,
+            },
+            &mut ancestors,
+            0,
+        );
         Ok(Box::new(LiveryDocumentSession {
             doc,
             address: navigation.script_visible_url.clone(),
@@ -310,6 +344,8 @@ impl<Fetch> LiverySessionEngine<Fetch> {
             zoom: DocumentZoomState::clamped(1.0, LIVERY_PAGE_ZOOM_MIN, LIVERY_PAGE_ZOOM_MAX),
             a11y_revision: Cell::new(0),
             a11y_cache: RefCell::new(None),
+            contexts,
+            frames,
         }))
     }
 }
@@ -323,6 +359,88 @@ fn redirected_navigation_address(requested: &str, final_url: &str) -> String {
         || final_base.to_owned(),
         |(_, fragment)| format!("{final_base}#{fragment}"),
     )
+}
+
+/// Render each child browsing context at its used content size and splice its
+/// paint commands into the parent's replaced box.
+///
+/// Why a paint-list splice rather than the producer-texture path
+/// (`ExternalTextureDraw` / `compose_external_texture`), which `paint_list_api`
+/// itself names as an iframe candidate:
+///
+/// - A child browsing context produces a *paint list*, not a GPU texture.
+///   Taking the texture route means rasterizing every child to an offscreen
+///   target every frame, which needs a device — so the reftest lane's software
+///   comparison and Ortet's capture would see an empty box.
+/// - External-texture draws are composited by the host after the scene, which
+///   puts them outside the scene's clip and transform stack. The parent's
+///   `overflow`, `border-radius`, ancestor transforms and stacking order would
+///   not apply to the child.
+/// - The slot mechanism already records the frame's place *while* the parent's
+///   clips and stacking context are live, so a spliced child inherits all of
+///   them with no primitive rewritten on either side.
+///
+/// The texture route stays the right one for a child that must be produced on
+/// another thread or device. Nothing here forecloses it: `FrameSlot` carries
+/// the destination rectangle either way.
+#[cfg(feature = "livery")]
+fn composite_child_frames(
+    list: &mut genet_livery::LiveryPaintList,
+    frames: &mut [super::frames::ChildFrame],
+) {
+    if frames.is_empty() || list.frame_slots().is_empty() {
+        return;
+    }
+    // Each slot's content box is the child's viewport, which only exists once
+    // the parent is laid out — so the children are rendered here, between the
+    // parent's layout and its translation into a scene, rather than at spawn.
+    let slots = list.frame_slots().to_vec();
+    let mut rendered: Vec<(u64, Vec<paint_list_api::PaintCmd>)> = Vec::new();
+    for slot in &slots {
+        let Some(frame) = find_frame_mut(frames, slot.owner_node) else {
+            continue;
+        };
+        let width = slot.content_rect.width().max(0.0).round() as u32;
+        let height = slot.content_rect.height().max(0.0).round() as u32;
+        if width == 0 || height == 0 {
+            continue;
+        }
+        let Some(child_list) = render_child(frame, width, height) else {
+            continue;
+        };
+        rendered.push((slot.owner_node, list.absorb_frame_commands(&child_list)));
+    }
+    list.splice_frame_slots(|owner| {
+        rendered
+            .iter()
+            .find(|(node, _)| *node == owner)
+            .map(|(_, commands)| commands.clone())
+    });
+}
+
+/// Render one child at `width` x `height`, recursing into its own frames
+/// first so a grandchild is already composited into the child's list.
+#[cfg(feature = "livery")]
+fn render_child(
+    frame: &mut super::frames::ChildFrame,
+    width: u32,
+    height: u32,
+) -> Option<genet_livery::LiveryPaintList> {
+    let document = frame.document.as_mut()?;
+    frame.last_size = (width, height);
+    let mut list = document.frame(width, height).ok()?;
+    composite_child_frames(&mut list, &mut frame.children);
+    Some(list)
+}
+
+#[cfg(feature = "livery")]
+fn find_frame_mut(
+    frames: &mut [super::frames::ChildFrame],
+    owner_node: u64,
+) -> Option<&mut super::frames::ChildFrame> {
+    frames
+        .iter_mut()
+        .find(|frame| frame.owner_node == owner_node)
 }
 
 /// Retained Livery document session. The document owns the resolved style and
@@ -345,6 +463,13 @@ pub struct LiveryDocumentSession {
     zoom: DocumentZoomState,
     a11y_revision: Cell<u64>,
     a11y_cache: RefCell<Option<DocumentA11yProjection>>,
+    /// This session's browsing-context tree, rooted at the top-level context
+    /// the session's own document holds.
+    contexts: crate::browsing_context::BrowsingContextTree,
+    /// The child browsing contexts of *this* document, each carrying its own
+    /// children. The tree above is the identity and policy plane; this is the
+    /// retained-document plane, joined by container `opaque_id`.
+    frames: Vec<super::frames::ChildFrame>,
 }
 
 /// Livery's page-zoom bounds — engine policy, matching the range a Chromium
@@ -400,6 +525,71 @@ impl LiveryDocumentSession {
     /// fragment when this session was prepared by an asynchronous host.
     pub fn address(&self) -> &str {
         &self.address
+    }
+
+    /// This session's browsing-context tree: the top-level context plus every
+    /// nested one, with each context's active document, origin, sandbox flags
+    /// and session history.
+    pub fn browsing_contexts(&self) -> &crate::browsing_context::BrowsingContextTree {
+        &self.contexts
+    }
+
+    /// What each `<iframe>` in this session settled to, parent before child.
+    pub fn frame_load_reports(&self) -> Vec<super::frames::FrameLoadReport> {
+        let mut reports = Vec::new();
+        super::frames::ChildFrame::reports(&self.frames, &self.contexts, &mut reports);
+        reports
+    }
+
+    /// Hit-test a point in this document, descending into a child browsing
+    /// context when the point lands inside one.
+    ///
+    /// Returns the innermost context the point is in and the node within
+    /// *that* context's document, so a caller never has to guess which
+    /// document a returned node belongs to — which is the whole reason this
+    /// exists beside `LiveryDocument::hit_test` rather than inside it.
+    pub fn hit_test_frames(
+        &self,
+        x: f32,
+        y: f32,
+    ) -> Option<(
+        crate::browsing_context::BrowsingContextId,
+        genet_scripted_dom::NodeId,
+    )> {
+        let (x, y) = self.to_css_point(x, y);
+        let mut context = self.contexts.top();
+        let mut frames = &self.frames;
+        let mut document = &self.doc;
+        let (mut x, mut y) = (x, y);
+        loop {
+            let node = document.hit_test(x, y)?;
+            let is_frame = document
+                .dom()
+                .element_name(node)
+                .is_some_and(|name| name.local.as_ref().eq_ignore_ascii_case("iframe"));
+            if !is_frame {
+                return Some((context, node));
+            }
+            // Descend: the child's coordinates are the parent's minus the
+            // frame's content-box origin. A frame with no loaded document is
+            // the answer itself.
+            let owner =
+                <genet_scripted_dom::ScriptedDom as LayoutDom>::opaque_id(document.dom(), node);
+            let Some(child) = super::frames::ChildFrame::find(frames, owner) else {
+                return Some((context, node));
+            };
+            let Some(child_document) = child.document.as_ref() else {
+                return Some((context, node));
+            };
+            let Some([rect_x, rect_y, _, _]) = document.content_rect(node) else {
+                return Some((context, node));
+            };
+            x -= rect_x;
+            y -= rect_y;
+            context = child.context;
+            frames = &child.children;
+            document = child_document;
+        }
     }
 
     /// Replace one native text control from its document-local accessibility
@@ -1302,6 +1492,7 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
                 },
             };
         }
+        composite_child_frames(&mut list, &mut self.frames);
         let list = list.scaled_to(self.zoom(), width, height);
         let mut scene = paint_list_render::translate_paint_list(&list);
         if let Some(selection) = self.doc.text_selection() {

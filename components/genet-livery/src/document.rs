@@ -438,6 +438,26 @@ where
         ])
     }
 
+    /// A replaced element's retained **content box** in viewport coordinates.
+    ///
+    /// [`Self::fragment_rect`] is the border box. A child browsing context
+    /// lives in the content box, so hit testing into a frame needs this and
+    /// not that: the difference is the frame's own border and padding, which
+    /// the user-agent sheet makes non-zero by default.
+    pub fn content_rect(&self, node: D::NodeId) -> Option<[f32; 4]> {
+        let layout = self.layout.as_ref()?;
+        let fragment = layout.fragments.get(node)?;
+        let style = layout.styles.get(node)?;
+        let (x, y, width, height) = crate::layout::content_box_rect(style, fragment);
+        let (nested_x, nested_y) = self.ancestor_scroll(node);
+        Some([
+            x - self.scroll.0 - nested_x,
+            y - self.scroll.1 - nested_y,
+            width,
+            height,
+        ])
+    }
+
     fn focus(&mut self, id: D::NodeId) -> bool {
         for old in self.focused_chain.drain(..) {
             self.interactions.set(old, StatePseudoClass::Focus, false);
