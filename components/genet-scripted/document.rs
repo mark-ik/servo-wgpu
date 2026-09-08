@@ -420,6 +420,13 @@ impl<E: ScriptEngine> ScriptedDocument<E> {
         !self.frozen && self.rt.next_timer_delay().is_some()
     }
 
+    /// Milliseconds until the next timer is due on the runtime's virtual
+    /// clock. The document adapter uses this to hand an exact deadline to its
+    /// host instead of forcing a repaint loop.
+    pub fn next_timer_delay(&mut self) -> Option<f64> {
+        (!self.frozen).then(|| self.rt.next_timer_delay()).flatten()
+    }
+
     /// Set Page Visibility (W3C adoption plan P1). The host calls this as a
     /// card gains/loses presentation (focused card visible, preview hidden);
     /// each flip dispatches `visibilitychange` at the document per spec. The
@@ -842,6 +849,13 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
 
     pub fn has_pending_work(&mut self) -> bool {
         !self.frozen && self.rt.next_timer_delay().is_some()
+    }
+
+    /// Milliseconds until the next timer is due on the runtime's virtual
+    /// clock. The document adapter uses this to hand an exact deadline to its
+    /// host instead of forcing a repaint loop.
+    pub fn next_timer_delay(&mut self) -> Option<f64> {
+        (!self.frozen).then(|| self.rt.next_timer_delay()).flatten()
     }
 
     pub fn set_hidden(&mut self, hidden: bool) {

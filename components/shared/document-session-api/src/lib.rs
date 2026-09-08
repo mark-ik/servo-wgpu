@@ -59,6 +59,6 @@ pub use session_engine::{
     OutlineEntry, SessionButtonState, SessionClick, SessionCursor, SessionEffect, SessionEngine,
     SessionError, SessionFocusDirection, SessionFormMethod, SessionFormSubmission, SessionIme,
     SessionInput, SessionInputResult, SessionKey, SessionLink, SessionModifiers,
-    SessionNavigationCommand, SessionPointerButton, SessionRegistry, SessionScrollKey,
-    SessionSpawnRequest, SessionTextTarget,
+    SessionNavigationCommand, SessionPendingWork, SessionPointerButton, SessionRegistry,
+    SessionScrollKey, SessionSpawnRequest, SessionTextTarget,
 };

@@ -8,11 +8,12 @@
 //! its scripts ran, wrapped for the session registry.
 
 use std::any::Any;
+use std::time::Duration;
 
 use document_session_api::DocumentCapabilities;
 use document_session_api::session_engine::{
     DocumentClip, DocumentSession, SessionClick, SessionEngine, SessionError, SessionLink,
-    SessionScrollKey, SessionSpawnRequest, SessionTextTarget,
+    SessionPendingWork, SessionScrollKey, SessionSpawnRequest, SessionTextTarget,
 };
 use netrender::Scene;
 
@@ -203,8 +204,15 @@ impl<E: script_engine_api::ScriptEngine + 'static> DocumentSession<Scene>
     fn pump(&mut self, now_ms: f64) {
         let _ = self.doc.pump(now_ms);
     }
+    fn pending_work(&mut self) -> SessionPendingWork {
+        self.doc
+            .next_timer_delay()
+            .and_then(|delay| delay.is_finite().then_some(delay.max(0.0)))
+            .map(|delay| SessionPendingWork::timer(Duration::from_secs_f64(delay / 1000.0)))
+            .unwrap_or_else(SessionPendingWork::idle)
+    }
     fn settled(&mut self) -> bool {
-        !self.doc.has_pending_work()
+        self.pending_work().is_idle()
     }
     fn set_hidden(&mut self, hidden: bool) {
         self.doc.set_hidden(hidden);

@@ -13,7 +13,7 @@
 //! between the winit event and the session's own input vocabulary.
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use document_session_api::session_engine::{
     DocumentSession, SessionButtonState, SessionClick, SessionCursor, SessionEffect, SessionEngine,
@@ -28,7 +28,7 @@ use genet_winit_host::{AccessKitBridge, BridgeStatus, SurfaceHost, wheel_delta_f
 use netrender::{ColorLoad, ExternalTexturePlacement, NetrenderOptions, Scene};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
@@ -62,6 +62,8 @@ pub struct BuildMetadata {
     pub features: String,
     pub source_revision: Option<String>,
 }
+
+const RECEIPT_SETTLE_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub fn build_metadata() -> BuildMetadata {
     BuildMetadata {
@@ -196,6 +198,8 @@ struct Ortet {
     pending_actions: Vec<Action>,
     start: Instant,
     capture: Option<(std::path::PathBuf, u64)>,
+    wake_deadline: Option<Instant>,
+    receipt_deadline: Option<Instant>,
     failure: Option<String>,
 }
 
@@ -205,6 +209,11 @@ impl Ortet {
         engine: Box<dyn SessionEngine<Scene>>,
         session: Box<dyn DocumentSession<Scene>>,
     ) -> Self {
+        let start = Instant::now();
+        let receipt_deadline = config
+            .artifact
+            .as_ref()
+            .map(|_| start + RECEIPT_SETTLE_TIMEOUT);
         Self {
             address: config.address.clone(),
             pending_actions: config.actions.clone(),
@@ -222,8 +231,10 @@ impl Ortet {
             modifiers: SessionModifiers::default(),
             cursor: (0.0, 0.0),
             pointer_captured: false,
-            start: Instant::now(),
+            start,
             capture: None,
+            wake_deadline: None,
+            receipt_deadline,
             failure: None,
         }
     }
@@ -255,6 +266,41 @@ impl Ortet {
     fn request_redraw(&self) {
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
+        }
+    }
+
+    fn receipt_settled(&mut self) -> Result<bool, String> {
+        if self.config.artifact.is_none() || self.session.settled() {
+            return Ok(true);
+        }
+        if self
+            .receipt_deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return Err(format!(
+                "semantic completion timed out after {}s",
+                RECEIPT_SETTLE_TIMEOUT.as_secs()
+            ));
+        }
+        Ok(false)
+    }
+
+    fn schedule_wake(&mut self, event_loop: &ActiveEventLoop) {
+        let now = Instant::now();
+        if self
+            .wake_deadline
+            .take()
+            .is_some_and(|deadline| deadline <= now)
+        {
+            self.request_redraw();
+        }
+        let pending = self.session.pending_work();
+        if let Some(deadline) = pending.next_wake(now) {
+            self.wake_deadline = Some(deadline);
+            event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+        } else {
+            self.wake_deadline = None;
+            event_loop.set_control_flow(ControlFlow::Wait);
         }
     }
 
@@ -411,7 +457,16 @@ impl Ortet {
             self.scale_factor,
         );
 
-        let capture_now = self.config.artifact.is_some()
+        let receipt_ready = match self.receipt_settled() {
+            Ok(ready) => ready,
+            Err(error) => {
+                self.failure = Some(error);
+                event_loop.exit();
+                return;
+            },
+        };
+        let capture_now = receipt_ready
+            && self.config.artifact.is_some()
             && self.capture.is_none()
             && self
                 .config
@@ -455,15 +510,16 @@ impl Ortet {
         }
 
         if let Some(limit) = self.config.frames {
-            if self.frames >= limit {
+            if self.frames >= limit && (self.config.artifact.is_none() || self.capture.is_some()) {
                 event_loop.exit();
                 return;
             }
-            // A static document settles after its first paint, so a bounded run
-            // owns its own next redraw until the budget is met.
-            self.request_redraw();
-        } else if !self.session.settled() {
-            self.request_redraw();
+            // A bounded run owns its redraws until its frame budget and, when
+            // requested, semantic receipt completion are both satisfied. The
+            // pending-work scheduler supplies timer wakeups between frames.
+            if self.frames < limit {
+                self.request_redraw();
+            }
         }
     }
 }
@@ -530,6 +586,10 @@ impl ApplicationHandler for Ortet {
             window.set_visible(true);
             window.request_redraw();
         }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.schedule_wake(event_loop);
     }
 
     fn window_event(

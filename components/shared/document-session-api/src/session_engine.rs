@@ -26,6 +26,7 @@
 use std::any::Any;
 use std::collections::HashMap;
 use std::fmt;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -538,6 +539,54 @@ pub enum SessionScrollKey {
 
 // ── Traits ─────────────────────────────────────────────────────────────────
 
+/// Work a hosted document still owns after the current turn.
+///
+/// The delay is relative to the host clock at the point of inspection. A
+/// session with no pending work returns [`Self::idle`]. The source flags keep
+/// the completion receipt honest while the wake deadline lets a host sleep
+/// until a timer is due instead of repainting continuously.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SessionPendingWork {
+    /// Time until the earliest runtime timer is due, if the session exposes
+    /// one. A zero delay means the host should wake immediately.
+    pub timer: Option<Duration>,
+    /// Whether the session still has microtasks to drain on its next pump.
+    pub microtasks: bool,
+    /// Whether a host-owned asynchronous source may complete the session.
+    pub external: bool,
+}
+
+impl SessionPendingWork {
+    pub const fn idle() -> Self {
+        Self {
+            timer: None,
+            microtasks: false,
+            external: false,
+        }
+    }
+
+    pub const fn timer(delay: Duration) -> Self {
+        Self {
+            timer: Some(delay),
+            microtasks: false,
+            external: false,
+        }
+    }
+
+    pub const fn is_idle(self) -> bool {
+        self.timer.is_none() && !self.microtasks && !self.external
+    }
+
+    /// Convert the session-relative delay into the host's next wake deadline.
+    pub fn next_wake(self, now: Instant) -> Option<Instant> {
+        if self.microtasks {
+            Some(now)
+        } else {
+            self.timer.map(|delay| now + delay)
+        }
+    }
+}
+
 /// Spawns retained document sessions for the engine id it claims. Registered
 /// once per host; holds its lane's construction seams (fetcher, cookie jar,
 /// theme) so the spawn request stays plain data.
@@ -850,10 +899,19 @@ pub trait DocumentSession<F>: Any {
     /// Drive timers / pending script work (scripted lanes). No-op default.
     fn pump(&mut self, _now_ms: f64) {}
 
+    /// Report the work that should wake this session after the current turn.
+    ///
+    /// Static sessions remain idle. Scripted sessions report their earliest
+    /// timer; future fetch and Worker adapters can set `external` when those
+    /// sources become production session capabilities.
+    fn pending_work(&mut self) -> SessionPendingWork {
+        SessionPendingWork::idle()
+    }
+
     /// The quiescence contract (native automation plan): no pending script
     /// work, layout clean. Static lanes are always settled.
     fn settled(&mut self) -> bool {
-        true
+        self.pending_work().is_idle()
     }
 
     /// Visibility hint (a hidden tile may skip raster-adjacent work).
@@ -1265,6 +1323,24 @@ mod tests {
             DocumentZoomState::clamped(f32::NAN, 0.25, 5.0).applied,
             1.0,
             "a non-finite request must not reach layout as a viewport divisor"
+        );
+    }
+
+    #[test]
+    fn pending_work_exposes_a_sleepable_timer_deadline() {
+        let now = std::time::Instant::now();
+        let work = SessionPendingWork::timer(std::time::Duration::from_millis(25));
+        let deadline = work.next_wake(now).expect("timer has a wake deadline");
+        assert!(deadline >= now + std::time::Duration::from_millis(25));
+        assert!(!work.is_idle());
+        assert!(SessionPendingWork::idle().next_wake(now).is_none());
+        assert_eq!(
+            SessionPendingWork {
+                microtasks: true,
+                ..SessionPendingWork::idle()
+            }
+            .next_wake(now),
+            Some(now)
         );
     }
 }
