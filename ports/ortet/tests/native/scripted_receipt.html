@@ -1,0 +1,22 @@
+<!-- Copyright 2026 Mark Alan Boykin
+     This Source Code Form is subject to the terms of the Mozilla Public
+     License, v. 2.0. If a copy of the MPL was not distributed with this
+     file, You can obtain one at https://mozilla.org/MPL/2.0/.
+     SPDX-License-Identifier: MPL-2.0 -->
+<!doctype html>
+<meta charset="utf-8">
+<title>Ortet scripted native receipt</title>
+<style>
+  body { margin: 24px; color: #17324d; background: #f9f4e8; font: 20px sans-serif; }
+  #activate { box-sizing: border-box; width: 300px; height: 100px; padding: 30px;
+              background: #d8e6dc; border: 5px solid #5b3b78; }
+  h1 { color: #8a2f24; border-bottom: 3px solid #d09b5b; }
+</style>
+<div id="activate">Native click starts the receipt task</div>
+<h1 id="state">Ortet O5 native receipt pending</h1>
+<script>
+  // The external script must observe this parser-time mutation before it may
+  // schedule the completion task.
+  document.body.dataset.inlineReady = "yes";
+</script>
+<script src="scripted_receipt.js"></script>

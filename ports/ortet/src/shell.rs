@@ -51,6 +51,9 @@ pub struct Outcome {
     pub size: (u32, u32),
     pub artifact: Option<std::path::PathBuf>,
     pub digest: Option<u64>,
+    /// The semantic completion condition proven at the same final frame as a
+    /// scripted receipt artifact, when the caller requested one.
+    pub matched_heading: Option<String>,
 }
 
 /// Build facts that a host receipt can report without guessing a source
@@ -73,14 +76,14 @@ pub fn build_metadata() -> BuildMetadata {
     }
 }
 
-#[cfg(feature = "scripted-nova")]
+#[cfg(not(feature = "scripted"))]
 const fn enabled_features() -> &'static str {
-    "scripted,scripted-nova"
+    "none"
 }
 
-#[cfg(all(feature = "scripted", not(feature = "scripted-nova")))]
+#[cfg(not(feature = "scripted"))]
 const fn enabled_features() -> &'static str {
-    "scripted"
+    "none"
 }
 
 #[cfg(not(feature = "scripted"))]
@@ -201,6 +204,7 @@ struct Ortet {
     wake_deadline: Option<Instant>,
     receipt_deadline: Option<Instant>,
     failure: Option<String>,
+    matched_heading: Option<String>,
 }
 
 impl Ortet {
@@ -235,6 +239,7 @@ impl Ortet {
             capture: None,
             wake_deadline: None,
             receipt_deadline,
+            matched_heading: None,
             failure: None,
         }
     }
@@ -249,6 +254,7 @@ impl Ortet {
             size: (self.width, self.height),
             artifact: self.capture.as_ref().map(|(path, _)| path.clone()),
             digest: self.capture.as_ref().map(|(_, digest)| *digest),
+            matched_heading: self.matched_heading.clone(),
         }
     }
 
@@ -472,6 +478,15 @@ impl Ortet {
                 .config
                 .frames
                 .is_none_or(|limit| self.frames.saturating_add(1) >= limit);
+        let final_bounded_frame = self
+            .config
+            .frames
+            .is_some_and(|limit| self.frames.saturating_add(1) >= limit);
+        if final_bounded_frame && let Err(error) = self.verify_expected_heading() {
+            self.failure = Some(error);
+            event_loop.exit();
+            return;
+        }
         let captured = if capture_now {
             let path = self
                 .config
@@ -520,6 +535,31 @@ impl Ortet {
             if self.frames < limit {
                 self.request_redraw();
             }
+        }
+    }
+
+    /// Check the small, engine-owned semantic completion condition attached to
+    /// a bounded receipt. The report comes from the same retained session that
+    /// produced the scene captured below, so a passing heading cannot be a
+    /// separate harness DOM or a browser-side screenshot guess.
+    fn verify_expected_heading(&mut self) -> Result<(), String> {
+        let Some(expected) = self.config.expect_heading.as_deref() else {
+            return Ok(());
+        };
+        let report = self
+            .session
+            .inspect()
+            .ok_or_else(|| "the selected session exposes no semantic inspection report".to_owned())?;
+        let matched = report.headings.iter().find(|heading| heading.as_str() == expected);
+        match matched {
+            Some(heading) => {
+                self.matched_heading = Some(heading.clone());
+                Ok(())
+            },
+            None => Err(format!(
+                "receipt completion heading {expected:?} was absent; observed headings: {:?}",
+                report.headings
+            )),
         }
     }
 }

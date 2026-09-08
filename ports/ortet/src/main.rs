@@ -65,6 +65,9 @@ fn run() -> Result<(), String> {
             artifact.display()
         );
     }
+    if let Some(heading) = outcome.matched_heading.as_deref() {
+        println!("ortet: semantic heading {heading:?}");
+    }
     Ok(())
 }
 

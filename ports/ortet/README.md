@@ -53,6 +53,15 @@ The list runs **once**, after the first frame has laid the document out, so a
 click has real geometry to hit. Whatever the actions changed is what the next
 frame — and therefore the captured receipt — shows.
 
+### `--expect-heading`
+
+An optional completion condition for a bounded receipt. On its final frame,
+Ortet reads the selected session's engine-owned `ContentReport` and requires an
+exact matching heading. It is intended for a scripted fixture whose final DOM
+state must be correlated with the PNG capture; it is not general page
+automation. The option requires `--frames` so a failed asynchronous completion
+has a finite, reproducible timeout.
+
 ## Accessibility
 
 On native platforms Ortet installs `genet-winit-host`'s AccessKit bridge before

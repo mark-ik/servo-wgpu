@@ -26,6 +26,9 @@ usage: ortet --url <address> [options]
   --size <WxH>         Window size in physical pixels (default 960x640).
   --frames <N>         Present exactly N frames, then exit.
   --artifact <path>    Write the captured frame as a PNG and print its digest.
+  --expect-heading <text>
+                      On the final bounded frame, require the session's
+                      semantic heading report to contain this exact text.
   --actions <list>     Drive the document once, after its first laid-out frame.
                        Steps are separated by ';' or ',' and are one of:
                          scroll:<dx>,<dy>   scroll at the viewport centre
@@ -75,6 +78,10 @@ pub struct Config {
     pub size: (u32, u32),
     pub frames: Option<u32>,
     pub artifact: Option<PathBuf>,
+    /// A bounded receipt completion condition over the engine-owned semantic
+    /// session report. This keeps scripted acceptance out of screenshot-only
+    /// territory without adding a page-automation language to Ortet.
+    pub expect_heading: Option<String>,
     pub actions: Vec<Action>,
 }
 
@@ -95,6 +102,7 @@ where
     let mut size = DEFAULT_SIZE;
     let mut frames = None;
     let mut artifact = None;
+    let mut expect_heading = None;
     let mut actions = Vec::new();
 
     let mut arguments = arguments.into_iter();
@@ -120,18 +128,23 @@ where
                 frames = Some(count);
             },
             "--artifact" => artifact = Some(PathBuf::from(value("--artifact")?)),
+            "--expect-heading" => expect_heading = Some(value("--expect-heading")?),
             "--actions" => actions = parse_actions(&value("--actions")?)?,
             other => return Err(format!("unknown argument {other}")),
         }
     }
 
     let url = url.ok_or_else(|| "--url is required".to_owned())?;
+    if expect_heading.is_some() && frames.is_none() {
+        return Err("--expect-heading needs a bounded --frames run".to_owned());
+    }
     Ok(Invocation::Run(Box::new(Config {
         address: address_from_argument(&url)?,
         engine,
         size,
         frames,
         artifact,
+        expect_heading,
         actions,
     })))
 }
@@ -286,10 +299,13 @@ mod tests {
             "3",
             "--artifact",
             "out.png",
+            "--expect-heading",
+            "Finished receipt",
         ]);
         assert_eq!(config.size, (400, 300));
         assert_eq!(config.frames, Some(3));
         assert_eq!(config.artifact, Some(PathBuf::from("out.png")));
+        assert_eq!(config.expect_heading.as_deref(), Some("Finished receipt"));
     }
 
     #[test]
@@ -340,6 +356,7 @@ mod tests {
         );
         assert!(parse(args(&["--url", "a.html", "--size", "0x10"])).is_err());
         assert!(parse(args(&["--url", "a.html", "--size", "wide"])).is_err());
+        assert!(parse(args(&["--url", "a.html", "--expect-heading", "done"])).is_err());
     }
 
     /// A Windows drive letter is one character, so it must not read as a URL
