@@ -152,6 +152,7 @@ fn first_element_child(dom: &ScriptedDom, node: NodeId) -> Option<NodeId> {
 /// builds `document` and the node wrappers over them.
 pub(crate) fn install_dom_surface<E: ScriptEngine>(engine: &mut E) -> Result<(), E::Error> {
     shadow::install(engine)?;
+    markup_insertion::install(engine)?;
     engine.set_function::<DocumentRoot>("__documentRoot", 0)?;
     engine.set_function::<ReflectNode>("__reflectNode", 1)?;
     engine.set_function::<CreateElement>("__createElement", 1)?;
@@ -1205,6 +1206,7 @@ fn find_by_id(dom: &ScriptedDom, root: NodeId, target: &str) -> Option<NodeId> {
 
 mod html_interfaces;
 mod html_interfaces_generated;
+pub(crate) mod markup_insertion;
 mod mutation_observer;
 mod query_traverse;
 mod selection;

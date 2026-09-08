@@ -60,10 +60,11 @@ older `docs/` corpus without changing their location or governance.
 | [Dedicated Worker](2026-09-07_worker_plan.md) | A second `Runtime` of the same engine on its own thread with `DedicatedWorkerGlobalScope`, `Worker` on the page, `MessagePort` across the boundary, and a JSON encoding of the clone record as the cross-agent wire. Landed 2026-09-07: `workers` 5 to 74 all-pass and 21 to 321 subtests, genet-wpt hosts `.worker.js` and `.any.worker` variants, +972 subtest passes with zero pass-to-fail. Residuals: `SharedWorker`, cross-agent `BroadcastChannel`, module workers, nested-worker relay ordering, real `ArrayBuffer` detachment, and a hosted headed receipt. |
 | [WebSocket](2026-09-07_websocket_plan.md) | The `WebSocket` host object over netfetcher's transport, with the browser policy the Fetch algorithm does not wrap it in enforced on the connection path. Landed 2026-09-07: `websockets` 0 to 1,090 of 1,877 subtests in disk mode, 254 all-pass and 1,144/1,586 in the first server-mode run; `fetch` and `xhr` byte-identical. Residuals: worker-hosted sockets (214 files), `WebSocketStream`, real backpressure. |
 | [Reflector identity](2026-09-07_reflector_identity_plan.md) | Wrapper liveness follows node reachability: every wrapper has an opaque root, a connected node's wrapper lives as long as its document, a detached subtree's as long as script holds any one of it. Landed 2026-09-07 with zero census movement over six directories under both harness-collection settings; the receipts are the reproducer set and the restored `ErrorEvent` `toStringTag`, not a score. Residual: the between-tick window for detached trees. |
-
 | [Host contract ownership](../docs/2026-08-14_web_platform_host_contract_plan.md) | Genet owns retained session contracts; Mere owns surface orchestration and product adapters. The older S0-S5 receipts need a consumer-side status refresh before resuming those lanes. |
 | [Shadow DOM](2026-09-07_shadow_dom_plan.md) | A parentless shadow root in both DOMs, a per-host slot assignment table maintained at the mutation, `flat_children` under Livery's rendering traversals, per-rule tree-scope matching with `:host` / `:host()` / `::slotted()` / `::part()`, event retargeting and `composedPath()`, and the declarative post-parse pass with `<template>.content` in one shared inert document. Landed 2026-09-07/08: `shadow-dom` 6 to 45 all-pass and 24 to 1,512 subtests, +1,761 subtest passes over four directories, one explained pass-to-fail. Residuals: `:host-context()`, `adoptedStyleSheets`, focus delegation, and declarative attachment consulting the custom-element registry (which needs parser/script interleaving — Mark's call). |
 The [Buckram master](../docs/2026-07-26_buckram_css_layout_engine_plan.md)
+| [Parser/script interleaving](2026-09-08_parser_script_interleaving_plan.md) | HTML's parsing model with scripts run at the point the tree builder pops them: an html5ever `TreeSink` over the live arena, `document.write` at the tokenizer's insertion point, `currentScript`, the `readyState` transitions with `DOMContentLoaded` and `load`, parse-time custom-element upgrade, and declarative shadow roots consulting the registry. Landed 2026-09-08 in the engine: +68 subtest passes over eight directories, 30 files `fail -> pass`, zero pass-to-fail, no repins. The two Shadow DOM declarative regressions are fixed at the engine level but unchanged in WPT, because `ports/genet-wpt/src/harness.rs` still parses then runs — routing it is Mark's call, and is the plan's named open gate. |
+
 defines ownership and the [lane program](../docs/2026-08-21_buckram_livery_lane_program_plan.md)
 assigns residuals. The linked execution plans carry their current gate; a
 completed corpus census or bounded slice does not close its enclosing feature.
@@ -193,9 +194,9 @@ completed corpus census or bounded slice does not close its enclosing feature.
   both `error` regressions are throughput walls on files that never passed. Raw
   maps under `Code/testing/genet/wpt-ledger/2026-09-07_dom_node_model/`.)
 - [selection_range_plan](2026-09-07_selection_range_plan.md)
-  and `getSelection` over the scripted arena. The DOM's live-range steps run at
   (**landed 2026-09-07**: `Range`, `StaticRange`, `AbstractRange`, `Selection`
   the bootstrap's own twelve-call-site mutation funnel rather than off the
+  and `getSelection` over the scripted arena. The DOM's live-range steps run at
   arena's observer record, because they need the child index and the boundary
   offsets as they stood *before* the mutation; boundaries are indexed by the
   node they sit in, since a flat list is quadratic and hung eight
@@ -494,25 +495,10 @@ same session; links out of it are rewritten for its new depth.
   whether anything else was keeping it alive — the root is the answer's own
   confounder, and no order of unroot, collect and query recovers it without the
   collection taking the object the question was about. Express the *relation*
-  on a node type neither lane was about, aborting every file before its first
-  subtest. Probe the shared `common.js` of a directory that will not move before
   instead, as a reference cycle a tracing GC already resolves: a `WeakMap` from
   each member of a group to a shared array of all members is an ephemeron, so
   the group lives exactly while any member is reachable. See the reflector
   identity plan §1.1.
-  inspect staged paths before committing, and remove the worktree immediately
-  after integration.
-
-## Status
-
-Founded 2026-08-24; current work map reconciled 2026-09-07, including the IDL
-interface-table, cheap-globals, MutationObserver, Selection/Range and DOM node
-model lanes. The index covers
-the flat plans sectioned above and two archived plans; the count in this line
-was stale before 2026-09-07 and is now stated by the sections themselves.
-All three former component area roots now live in Mere. The older `docs/`
-corpus has selected execution entry points above; its full migration and
-governance remain deferred under the policy's local addendum.
 - **Make encapsulation a property of the shape, not a flag every consumer
   checks.** A shadow root and a `<template>`'s contents are both unreachable
   from the document by *construction*: neither has a parent, so no walk that
@@ -527,6 +513,8 @@ governance remain deferred under the policy's local addendum.
 - **A named property script has replaced must survive the next refresh.**
   `__refreshNamedProperties` deleted every name it had installed before
   reinstalling from the document. Its own comment already recorded that an
+  on a node type neither lane was about, aborting every file before its first
+  subtest. Probe the shared `common.js` of a directory that will not move before
   `id="test"` element must not shadow testharness's `test()`, and its setter got
   the shadowing right — but the *next* refresh took the script's value back out.
   Nothing triggered a mid-file refresh until this lane's `setHTMLUnsafe` did, and
@@ -535,3 +523,33 @@ governance remain deferred under the policy's local addendum.
   check that what you are removing is still the thing you installed.
 - **Parallel work needs commit fences as well as file fences.** Pin one base,
   give each worker a disposable detached worktree and disjoint write paths,
+- **A container whose contents are deliberately unreachable must have every
+  accessor told, one at a time, and each one is silent until exercised.** The
+  Shadow DOM lane found three copiers that walked a `<template>`'s children and
+  so copied nothing; this lane found `innerHTML`, which had the same shape — the
+  getter serialized an always-empty child list and the setter put nodes where no
+  walk reaches. Nothing caught it for a day because nothing set a template's
+  `innerHTML`. When encapsulation is a property of the shape rather than a flag,
+  the bug is never a wrong answer; it is an accessor nobody has pointed at the
+  contents yet. Enumerate them deliberately rather than waiting for a
+  reproducer.
+- **A table a `&self` sink reads must be refreshed after the script, not before
+  it.** The tree builder asks the script tier questions from inside a live
+  tokenizer, where an engine call would re-enter it, so the answers come from a
+  table the driver refreshes at each pause. Refreshing at the *top* of the pause
+  is one script too early: the definition the next stretch of tokenizing asks
+  about is the one the script that is about to run has not made yet. See the
+  parser/script interleaving plan's Findings.
+  inspect staged paths before committing, and remove the worktree immediately
+  after integration.
+
+## Status
+
+Founded 2026-08-24; current work map reconciled 2026-09-07, including the IDL
+interface-table, cheap-globals, MutationObserver, Selection/Range and DOM node
+model lanes. The index covers
+the flat plans sectioned above and two archived plans; the count in this line
+was stale before 2026-09-07 and is now stated by the sections themselves.
+All three former component area roots now live in Mere. The older `docs/`
+corpus has selected execution entry points above; its full migration and
+governance remain deferred under the policy's local addendum.

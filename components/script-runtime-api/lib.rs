@@ -44,6 +44,7 @@ mod dom;
 mod fetch;
 mod harness;
 mod messaging;
+pub mod parse;
 mod platform;
 mod selector;
 mod structured_clone;
@@ -53,6 +54,7 @@ mod websocket;
 mod worker;
 
 pub use crypto::RandomSource;
+pub use dom::markup_insertion::{MarkupState, ReadyState};
 pub use dom::{
     ComputedStyleHandler, CookieProvider, InlineStyleHandler, InlineStyleValueResult,
     MediaQueryHandler, SelectionHandler, StyleSheetHandler, StyleSheetImportOwner,
@@ -60,6 +62,7 @@ pub use dom::{
 };
 pub use fetch::{FetchHandler, FetchOutcome, FetchRequest};
 pub use harness::TestResult;
+pub use parse::{NoScriptLoader, ParseReport, ParserScriptLoader};
 pub use platform::StorageProvider;
 pub use webgl::{WebGlFactory, WebGlHandler};
 pub use websocket::{WebSocketHandler, WebSocketRequest};
@@ -218,6 +221,11 @@ pub struct HostState {
     worker_spawn: Option<fn(worker::WorkerBoot)>,
     /// Set only on a worker runtime: its end of the link to the owning agent.
     worker_link: Option<std::rc::Rc<RefCell<worker::WorkerLink>>>,
+    /// Dynamic markup insertion (`document.open` / `write` / `close`), the
+    /// document's readiness, and `document.currentScript`. Default is a
+    /// `complete` document with no parser, which is what every entry point that
+    /// does not drive [`parse`] has always implied.
+    pub markup: dom::markup_insertion::MarkupState,
     /// Protocol trace marks emitted through native sinks while JS is still
     /// running. [`Runtime`] drains these after each engine boundary so they land
     /// in the deterministic NDJSON stream with stable sequence numbers.

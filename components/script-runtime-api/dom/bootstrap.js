@@ -2712,8 +2712,12 @@
   Object.defineProperty(Document.prototype, 'compatMode', {
     configurable: true, get: function() { return 'CSS1Compat'; }
   });
+  // readyState is a *host* fact: the parser driver moves it through
+  // loading -> interactive -> complete at HTML's points. A document nobody
+  // parsed (the harness route, DOMParser output) reads 'complete', which is
+  // what this getter returned unconditionally before.
   Object.defineProperty(Document.prototype, 'readyState', {
-    configurable: true, get: function() { return 'complete'; }
+    configurable: true, get: function() { return __readyState(); }
   });
 
   globalThis.Node = Node;
@@ -5224,7 +5228,7 @@
             observedAttributes[oi] = String(observedAttributes[oi]).toLowerCase();
           }
         }
-        toDomStringSequence(ctor.disabledFeatures);
+        var disabledFeatures = toDomStringSequence(ctor.disabledFeatures).map(String);
         var formAssociated = !!ctor.formAssociated;
         if (formAssociated) {
           callbacks.formAssociatedCallback = customElementCallback(prototype, 'formAssociatedCallback');
@@ -5248,7 +5252,8 @@
           customizedBuiltIn: isCustomizedBuiltIn,
           observedAttributes: observedAttributes,
           callbacks: callbacks,
-          formAssociated: formAssociated
+          formAssociated: formAssociated,
+          disabledFeatures: disabledFeatures
         };
       } finally {
         definitionRunning = false;
@@ -5659,6 +5664,21 @@
         return fragment;
       }
     });
+    // HTML: `innerHTML` on a template element is defined over its **template
+    // contents**, not its children — a template has no children in the tree.
+    // Without this the getter serializes an always-empty child list and the
+    // setter puts nodes somewhere no walk reaches.
+    Object.defineProperty(Template.prototype, 'innerHTML', {
+      configurable: true,
+      get: function() {
+        var fragment = this.content;
+        return fragment ? String(__getInnerHtml(fragment.__ref)) : '';
+      },
+      set: function(html) {
+        var fragment = this.content;
+        if (fragment) __setInnerHtml(fragment.__ref, String(html));
+      }
+    });
   }
 
   // `getHTML` / `setHTMLUnsafe`: the two operations that may cross a shadow
@@ -5719,6 +5739,76 @@
     var kids = root.childNodes;
     for (var i = 0; i < kids.length; i++) {
       cloned.appendChild(globalThis.__cloneNodeInto(kids[i], copyDocument, true));
+    }
+  };
+
+  // ---- Dynamic markup insertion, currentScript, and the parser's hooks ----
+  //
+  // `document.write` is not a DOM operation: it inserts source into the
+  // tokenizer's input stream at the insertion point. All four entry points
+  // therefore hand the source to the host, which knows whether a parser is
+  // running (feed it) or not (imply document.open and re-materialize).
+  Document.prototype.open = function() {
+    // The three-argument form is window.open, which the scripted tier has no
+    // browsing context for; only the zero-argument document.open is here.
+    if (arguments.length >= 2) {
+      throw new DOMException('document.open(url, name, features) is not supported',
+                             'NotSupportedError');
+    }
+    __docOpen();
+    __rebindDocument();
+    __refreshNamedProperties();
+    return this;
+  };
+  Document.prototype.close = function() {
+    __docClose();
+    __rebindDocument();
+    __refreshNamedProperties();
+  };
+  Document.prototype.write = function() {
+    var text = '';
+    for (var i = 0; i < arguments.length; i++) text += String(arguments[i]);
+    __docWrite(text);
+    __rebindDocument();
+    __refreshNamedProperties();
+  };
+  Document.prototype.writeln = function() {
+    var text = '';
+    for (var i = 0; i < arguments.length; i++) text += String(arguments[i]);
+    __docWrite(text + '\n');
+    __rebindDocument();
+    __refreshNamedProperties();
+  };
+  // Set for the duration of a classic script the parser is running, and null
+  // everywhere else — including inside a module, per HTML.
+  Object.defineProperty(Document.prototype, 'currentScript', {
+    configurable: true,
+    get: function() { return wrapNode(__currentScript()); }
+  });
+
+  // The two questions the parser driver asks the registry between pauses.
+  // `__ceShadowDisabledNames` answers html5ever's
+  // `allow_declarative_shadow_roots`; `__ceUpgradeParsed` runs the upgrade
+  // reaction for elements the parser created since the last pause, so a
+  // definition made by an earlier script has taken effect on the tree the next
+  // script sees.
+  globalThis.__ceShadowDisabledNames = function() {
+    var names = [];
+    for (var name in customElementDefinitions) {
+      var def = customElementDefinitions[name];
+      var disabled = def && def.disabledFeatures;
+      if (disabled && disabled.indexOf('shadow') !== -1) names.push(def.localName);
+    }
+    return names.join(',');
+  };
+  globalThis.__ceUpgradeParsed = function(ids) {
+    var list = String(ids).split(',');
+    for (var i = 0; i < list.length; i++) {
+      if (!list[i]) continue;
+      var node = wrapNode(__reflectNode(list[i]));
+      if (!node || node.nodeType !== 1) continue;
+      var def = customElementDefinitionForElement(node);
+      if (def) upgradeCustomElement(node, def);
     }
   };
 

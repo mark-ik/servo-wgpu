@@ -26,6 +26,7 @@ use layout_dom_api::{
 };
 
 mod forms;
+pub mod parser;
 mod serialize;
 mod shadow;
 

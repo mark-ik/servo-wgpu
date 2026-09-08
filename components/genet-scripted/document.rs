@@ -129,6 +129,34 @@ mod extraction_tests {
             &genet_static_dom::StaticDocument::parse(source)
         ));
     }
+
+    /// A `ScriptedDocument` parses and runs interleaved: a script sees the tree
+    /// only as far as its own position, and `document.write` re-enters the
+    /// token stream rather than being appended after everything.
+    #[test]
+    fn the_document_parses_and_runs_interleaved() {
+        let source = "<body><p id=before>b</p>            <script>window.probe = [!!document.getElementById('before'),                                     !!document.getElementById('after')];                    document.write('<b id=written>w</b>');</script>            <p id=after>a</p></body>";
+        let mut scripted = ScriptedDocument::<BoaEngine>::parse(source).expect("runtime inits");
+        assert_eq!(read(&mut scripted, "String(probe)"), "true,false");
+        assert_eq!(
+            read(&mut scripted, "!!document.getElementById('after')"),
+            "true"
+        );
+        assert_eq!(
+            read(
+                &mut scripted,
+                "document.getElementById('written').nextElementSibling.id"
+            ),
+            "after"
+        );
+        // The load sequence ran: readiness reached complete.
+        assert_eq!(read(&mut scripted, "document.readyState"), "complete");
+    }
+
+    fn read(doc: &mut ScriptedDocument<BoaEngine>, expr: &str) -> String {
+        let value = doc.rt.eval(expr).expect("eval");
+        doc.rt.value_to_string(&value).expect("stringify")
+    }
 }
 
 /// Shared handle to the most recently laid-out frame, so the `getComputedStyle`
@@ -337,6 +365,10 @@ impl<E: ScriptEngine> ScriptedDocument<E> {
         cookies: Option<Box<dyn CookieProvider>>,
         webgl: Option<WebGlFactory>,
     ) -> Result<Self, String> {
+        // Parsed once here for the document's stylesheets, which have to be
+        // resolved before the runtime exists. The *live* tree is built by the
+        // interleaved parse below, not from this one.
+        #[cfg(feature = "render")]
         let doc = StaticDocument::parse(html);
         #[cfg(feature = "render")]
         let sheets: Vec<String> = {
@@ -390,82 +422,19 @@ impl<E: ScriptEngine> ScriptedDocument<E> {
         if let Some(webgl) = webgl {
             rt.set_webgl_factory(webgl);
         }
-        // The parsed body becomes the live DOM, so script querying it (document.body,
-        // getElementById, querySelector) sees the page's elements.
-        rt.load_dom(&doc);
         let mut capture = {
             let mut host = rt.host().borrow_mut();
             DomCaptureRecorder::from_env(&mut host.dom, &sheets)
                 .map_err(|e| format!("dom capture init: {e}"))?
         };
 
-        // Run scripts by the classic-script timing model. Parser-blocking pass:
-        // inline (run now) and classic external with no async/defer (fetch + run now),
-        // in document order. `defer`/`async` externals are queued and run after the
-        // pass — `defer` keeps document order (its guarantee); `async` is unordered,
-        // and document order is a faithful realization of our synchronous fetch.
-        let scripts = collect_scripts(&doc);
-        let mut deferred: Vec<&ScriptSource> = Vec::new();
-        for script in &scripts {
-            match script {
-                ScriptSource::Inline(text) => eval_reporting(&mut rt, text),
-                ScriptSource::External {
-                    src,
-                    timing: ScriptTiming::Blocking,
-                    charset,
-                    integrity,
-                } => {
-                    if let Some(source) =
-                        fetch_external(loader, src, charset.as_deref(), integrity.as_deref())
-                    {
-                        eval_reporting(&mut rt, &source);
-                    }
-                },
-                // defer / async classic, and all modules: run after the parser-
-                // blocking pass, in document order.
-                ScriptSource::External { .. }
-                | ScriptSource::ModuleInline(_)
-                | ScriptSource::ModuleExternal { .. } => deferred.push(script),
-            }
-        }
-        for script in deferred {
-            match script {
-                ScriptSource::External {
-                    src,
-                    charset,
-                    integrity,
-                    ..
-                } => {
-                    if let Some(source) =
-                        fetch_external(loader, src, charset.as_deref(), integrity.as_deref())
-                    {
-                        eval_reporting(&mut rt, &source);
-                    }
-                },
-                ScriptSource::ModuleInline(text) => {
-                    // An inline module's imports resolve against the document URL.
-                    let base = loader.map(|(_, page)| page.to_string()).unwrap_or_default();
-                    eval_module_reporting(&mut rt, loader, &base, text);
-                },
-                ScriptSource::ModuleExternal {
-                    src,
-                    charset,
-                    integrity,
-                } => {
-                    // An external module's imports resolve against its own URL.
-                    let base = loader
-                        .map(|(_, page)| crate::resolve_href(page, src))
-                        .unwrap_or_default();
-                    if let Some(source) =
-                        fetch_external(loader, src, charset.as_deref(), integrity.as_deref())
-                    {
-                        eval_module_reporting(&mut rt, loader, &base, &source);
-                    }
-                },
-                // Inline classic never defers.
-                ScriptSource::Inline(_) => {},
-            }
-        }
+        // HTML's parsing model: the document is parsed and its scripts are run
+        // *interleaved*, so each script sees the tree as far as its own
+        // position and can change what the parser does next. The static
+        // `doc` above is still parsed, but only to resolve the document's
+        // stylesheets before the runtime exists; the live tree comes from
+        // this parse.
+        rt.parse_document_interleaved(html, &DocumentScriptLoader { loader });
         rt.run_microtasks();
         if let Some(recorder) = capture.as_mut() {
             let mut host = rt.host().borrow_mut();
@@ -1768,6 +1737,27 @@ fn collect_scripts_rec(dom: &StaticDocument, node: StaticNodeId, out: &mut Vec<S
 /// decoding the bytes per `charset` (default UTF-8). `None` (with a log) when there
 /// is no loader (the fetch-free [`ScriptedDocument::parse`] path), the fetch fails,
 /// or the integrity check rejects the bytes.
+/// The document's resource route, as the parser driver's script loader. The
+/// route is the same `ResourceFetcher` every other subresource travels, and it
+/// is synchronous, which is what lets a parser-blocking script actually block
+/// the parser.
+struct DocumentScriptLoader<'a> {
+    loader: Option<(&'a dyn ResourceFetcher, &'a str)>,
+}
+
+impl script_runtime_api::ParserScriptLoader for DocumentScriptLoader<'_> {
+    fn load(&self, src: &str, charset: Option<&str>, integrity: Option<&str>) -> Option<String> {
+        fetch_external(self.loader, src, charset, integrity)
+    }
+
+    fn resolve(&self, src: &str) -> String {
+        match self.loader {
+            Some((_, base)) => crate::resolve_href(base, src),
+            None => src.to_owned(),
+        }
+    }
+}
+
 fn fetch_external(
     loader: Option<(&dyn ResourceFetcher, &str)>,
     src: &str,
