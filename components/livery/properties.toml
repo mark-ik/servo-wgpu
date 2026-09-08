@@ -89,7 +89,7 @@ url = "https://www.w3.org/TR/CSS22/visuren.html#flow-control"
 url = "https://www.w3.org/TR/css-shapes-1/#shape-outside-property"
 
 [sources.css_masking_1]
-url = "https://drafts.fxtf.org/css-masking-1/#propdef-clip-path"
+url = "https://www.w3.org/TR/css-masking-1/#propdef-clip-path"
 
 [sources.css_multicol_1]
 url = "https://www.w3.org/TR/css-multicol-1/"
