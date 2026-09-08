@@ -34,8 +34,8 @@ use layout_dom_api::{LayoutDom, LocalName, Namespace};
 use livery::media::{Device as MediaDevice, MediaQueryList};
 use script_engine_api::ScriptEngine;
 use script_runtime_api::{
-    FetchHandler, FetchOutcome, MediaQueryHandler, Runtime, ScriptResourceLoader, TestResult,
-    WebGlFactory, WebSocketHandler,
+    FetchHandler, FetchOutcome, MediaQueryHandler, ParserScriptLoader, Runtime,
+    ScriptResourceLoader, TestResult, WebGlFactory, WebSocketHandler,
 };
 
 /// `matchMedia` seam for the WPT runner: evaluates against a default device.
@@ -137,6 +137,10 @@ pub fn set_harness_gc(on: bool) {
 }
 
 /// One GC tick every [`GC_TURN_INTERVAL`] drive turns, when enabled.
+// The interval is currently 1, which makes the modulo trivially zero; the
+// expression stays because the interval is the knob and clippy is denying the
+// value, not the code.
+#[allow(clippy::modulo_one, reason = "GC_TURN_INTERVAL is a tunable")]
 fn harness_gc_turn<E: ScriptEngine>(rt: &mut Runtime<E>, turns: u64) {
     if turns % GC_TURN_INTERVAL == 0 && HARNESS_GC.load(std::sync::atomic::Ordering::Relaxed) {
         let _ = rt.collect_garbage();
@@ -492,18 +496,13 @@ fn run_test_with_webgl_and_style(
     engine: Engine,
     style: StyleRoute,
 ) -> HarnessOutcome {
-    let doc = parse_doc(html);
-    let mut scripts = Vec::new();
-    collect_scripts(&doc, doc.document(), loader, &mut scripts);
-    let test_src = scripts.join("\n;\n");
-
     let route = loader.resource_route();
 
     match engine {
         Engine::Boa => run_with::<script_engine_boa::BoaEngine>(
             testharness_js,
-            &test_src,
-            &doc,
+            html,
+            loader,
             base_url,
             handler,
             websocket,
@@ -514,8 +513,8 @@ fn run_test_with_webgl_and_style(
         ),
         Engine::Nova => run_with::<script_engine_nova::NovaEngine>(
             testharness_js,
-            &test_src,
-            &doc,
+            html,
+            loader,
             base_url,
             handler,
             websocket,
@@ -524,6 +523,29 @@ fn run_test_with_webgl_and_style(
             style,
             route,
         ),
+    }
+}
+
+/// The test's `<script src>` route, as the interleaved parser's loader.
+///
+/// Two things the old `collect_scripts` did stay here, because they are facts
+/// about WPT rather than about parsing: `testdriver-vendor.js` is WPT's
+/// deliberately-blank vendor hook and genet's automation backend is served in
+/// its place, and `testharness.js` / the report hook are served by the runner's
+/// prelude, so the document's own copies resolve to nothing.
+struct HarnessParserLoader<'a> {
+    inner: &'a dyn ScriptSrcLoader,
+}
+
+impl ParserScriptLoader for HarnessParserLoader<'_> {
+    fn load(&self, src: &str, _charset: Option<&str>, _integrity: Option<&str>) -> Option<String> {
+        if is_testdriver_vendor_src(src) {
+            return Some(TESTDRIVER_VENDOR_JS.to_string());
+        }
+        if is_harness_src(src) {
+            return None;
+        }
+        self.inner.load_script(src)
     }
 }
 
@@ -580,24 +602,22 @@ impl NovaHarnessTemplate {
         webgl: Option<WebGlFactory>,
         style: StyleRoute,
     ) -> HarnessOutcome {
-        let doc = parse_doc(html);
-        let mut scripts = Vec::new();
-        collect_scripts(&doc, doc.document(), loader, &mut scripts);
-        let test_src = scripts.join("\n;\n");
         let mut rt = match self.rt.snapshot_clone() {
             Ok(rt) => rt,
             Err(e) => return HarnessOutcome::Threw(format!("runtime snapshot clone: {e:?}")),
         };
-        prepare_runtime(
-            &mut rt,
-            &doc,
-            base_url,
-            handler,
-            websocket,
-            webgl,
-            loader.resource_route(),
-        );
-        run_loaded_with(&mut rt, &test_src, completion, style)
+        let route = loader.resource_route();
+        if looks_like_xml(html) {
+            let doc = parse_doc(html);
+            let mut scripts = Vec::new();
+            collect_scripts(&doc, doc.document(), loader, &mut scripts);
+            let test_src = scripts.join("\n;\n");
+            rt.load_dom(&doc);
+            prepare_runtime(&mut rt, base_url, handler, websocket, webgl, route);
+            return run_loaded_with(&mut rt, &test_src, completion, style);
+        }
+        prepare_runtime(&mut rt, base_url, handler, websocket, webgl, route);
+        run_parsed_with(&mut rt, html, loader, completion, style)
     }
 
     pub fn run_test(
@@ -643,17 +663,21 @@ impl NovaHarnessTemplate {
     }
 }
 
-/// Engine-generic core: build a `Runtime<E>`, load the test's body as the live
-/// DOM, set the base URL + fetch handler if given, run the harness, collect
-/// results. With a `completion` source (deferred / server mode) it drives the
-/// event loop and the fetch-completion channel to quiescence (or a deadline)
-/// itself, because deferred replies arrive out of band; without one it uses the
-/// synchronous one-shot path.
+/// Engine-generic core: build a `Runtime<E>`, arm `testharness.js` as a
+/// prelude, then **parse the test document with its scripts interleaved**, per
+/// HTML's parsing model. With a `completion` source (deferred / server mode) it
+/// drives the event loop and the fetch-completion channel to quiescence (or a
+/// deadline) itself, because deferred replies arrive out of band; without one
+/// it uses the synchronous one-shot path.
+///
+/// The XML corpus is the one exception. `xml5ever` has no pause-at-a-script
+/// driver, so an XML-syntax document keeps the parse-then-run route it always
+/// had; `looks_like_xml` is the same test that already chose its parser.
 #[allow(clippy::too_many_arguments)]
 fn run_with<E: ScriptEngine>(
     testharness_js: &str,
-    test_src: &str,
-    doc: &StaticDocument,
+    html: &str,
+    loader: &dyn ScriptSrcLoader,
     base_url: Option<&str>,
     handler: Option<Box<dyn FetchHandler>>,
     websocket: Option<Box<dyn WebSocketHandler>>,
@@ -666,26 +690,38 @@ fn run_with<E: ScriptEngine>(
         Ok(rt) => rt,
         Err(e) => return HarnessOutcome::Threw(format!("runtime init: {e:?}")),
     };
-    prepare_runtime(&mut rt, doc, base_url, handler, websocket, webgl, route);
+    if looks_like_xml(html) {
+        let doc = parse_doc(html);
+        let mut scripts = Vec::new();
+        collect_scripts(&doc, doc.document(), loader, &mut scripts);
+        let test_src = scripts.join("\n;\n");
+        rt.load_dom(&doc);
+        prepare_runtime(&mut rt, base_url, handler, websocket, webgl, route);
+        if let Err(e) = rt.load_testharness(testharness_js) {
+            return HarnessOutcome::Threw(format!("testharness load: {e:?}"));
+        }
+        return run_loaded_with(&mut rt, &test_src, completion, style);
+    }
+    prepare_runtime(&mut rt, base_url, handler, websocket, webgl, route);
+    // The prelude: `testharness.js` and the results bridge are installed
+    // *before* the first parsed script runs, which is where a real browser has
+    // them (the test loads them from `<head>`), and is why the parse can serve
+    // the document's own `<script src>` copies as nothing.
     if let Err(e) = rt.load_testharness(testharness_js) {
         return HarnessOutcome::Threw(format!("testharness load: {e:?}"));
     }
-    run_loaded_with(&mut rt, test_src, completion, style)
+    run_parsed_with(&mut rt, html, loader, completion, style)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn prepare_runtime<E: ScriptEngine>(
     rt: &mut Runtime<E>,
-    doc: &StaticDocument,
     base_url: Option<&str>,
     handler: Option<Box<dyn FetchHandler>>,
     websocket: Option<Box<dyn WebSocketHandler>>,
     webgl: Option<WebGlFactory>,
     route: Option<Box<dyn ScriptResourceLoader>>,
 ) {
-    // The test's body becomes the live DOM, so scripts querying body elements
-    // (getElementById / querySelector / document.body) see them.
-    rt.load_dom(doc);
     if let Some(base) = base_url {
         let _ = rt.set_base_url(base);
     }
@@ -725,17 +761,17 @@ impl RenderSession {
     /// Build the session over the runtime's already-loaded DOM (before the test
     /// body runs, so early style reads see the parse-time cascade) and register
     /// the `getComputedStyle` bridge.
+    /// The two-phase form: the author sheets are re-resolved from the live DOM
+    /// at every read rather than frozen at install time, so this session can be
+    /// built before the parser has inserted a single `<style>` and still hold
+    /// the whole cascade once it has. On the XML route the document is already
+    /// loaded, and the same installation reads it immediately.
     fn new<E: ScriptEngine>(rt: &mut Runtime<E>, _style: StyleRoute) -> Self {
-        let sheets = {
-            let host = rt.host().borrow();
-            genet_document_resources::ResolvedDocumentResources::discover(&host.dom, None)
-                .stylesheets
-                .into_iter()
-                .map(|sheet| sheet.text)
-                .collect::<Vec<_>>()
-        };
-        let refs: Vec<&str> = sheets.iter().map(String::as_str).collect();
-        let cssom = LiveryCssom::install(rt, &refs, Device::screen(VIEWPORT_W, VIEWPORT_H));
+        let cssom = LiveryCssom::install_over_parse(
+            rt,
+            "about:blank",
+            Device::screen(VIEWPORT_W, VIEWPORT_H),
+        );
         let _ = cssom.frame(rt, VIEWPORT_W as u32, VIEWPORT_H as u32);
         // `window.innerWidth`/`innerHeight` must agree with the session's
         // viewport: the wheel/scroll cluster computes its hit point from them
@@ -950,6 +986,31 @@ fn run_loaded_with<E: ScriptEngine>(
     // body runs so early `getComputedStyle` reads see the parse-time cascade.
     let render = RenderSession::new(rt, style);
     if let Err(e) = rt.begin_loaded_testharness(test_src) {
+        return HarnessOutcome::Threw(truncate(&format!("{e:?}"), 200));
+    }
+    rt.run_microtasks();
+    match completion {
+        None => drive_virtual(rt, &render),
+        Some(cs) => drive_wall(rt, &render, cs),
+    }
+}
+
+/// [`run_loaded_with`] over HTML's parsing model: the document is parsed and
+/// its scripts run interleaved, against an already-armed `testharness.js`.
+///
+/// Everything downstream is unchanged — the same rendering session, the same
+/// virtual-clock drive in disk mode, the same wall-clock drive and deadline
+/// with a completion source.
+fn run_parsed_with<E: ScriptEngine>(
+    rt: &mut Runtime<E>,
+    html: &str,
+    loader: &dyn ScriptSrcLoader,
+    completion: Option<&dyn CompletionSource>,
+    style: StyleRoute,
+) -> HarnessOutcome {
+    let render = RenderSession::new(rt, style);
+    let parser_loader = HarnessParserLoader { inner: loader };
+    if let Err(e) = rt.begin_parsed_testharness(html, &parser_loader) {
         return HarnessOutcome::Threw(truncate(&format!("{e:?}"), 200));
     }
     rt.run_microtasks();

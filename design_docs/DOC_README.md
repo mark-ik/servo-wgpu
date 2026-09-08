@@ -62,10 +62,10 @@ older `docs/` corpus without changing their location or governance.
 | [Reflector identity](2026-09-07_reflector_identity_plan.md) | Wrapper liveness follows node reachability: every wrapper has an opaque root, a connected node's wrapper lives as long as its document, a detached subtree's as long as script holds any one of it. Landed 2026-09-07 with zero census movement over six directories under both harness-collection settings; the receipts are the reproducer set and the restored `ErrorEvent` `toStringTag`, not a score. Residual: the between-tick window for detached trees. |
 | [Host contract ownership](../docs/2026-08-14_web_platform_host_contract_plan.md) | Genet owns retained session contracts; Mere owns surface orchestration and product adapters. The older S0-S5 receipts need a consumer-side status refresh before resuming those lanes. |
 | [Shadow DOM](2026-09-07_shadow_dom_plan.md) | A parentless shadow root in both DOMs, a per-host slot assignment table maintained at the mutation, `flat_children` under Livery's rendering traversals, per-rule tree-scope matching with `:host` / `:host()` / `::slotted()` / `::part()`, event retargeting and `composedPath()`, and the declarative post-parse pass with `<template>.content` in one shared inert document. Landed 2026-09-07/08: `shadow-dom` 6 to 45 all-pass and 24 to 1,512 subtests, +1,761 subtest passes over four directories, one explained pass-to-fail. Residuals: `:host-context()`, `adoptedStyleSheets`, focus delegation, and declarative attachment consulting the custom-element registry (which needs parser/script interleaving — Mark's call). |
-The [Buckram master](../docs/2026-07-26_buckram_css_layout_engine_plan.md)
-| [Parser/script interleaving](2026-09-08_parser_script_interleaving_plan.md) | HTML's parsing model with scripts run at the point the tree builder pops them: an html5ever `TreeSink` over the live arena, `document.write` at the tokenizer's insertion point, `currentScript`, the `readyState` transitions with `DOMContentLoaded` and `load`, parse-time custom-element upgrade, and declarative shadow roots consulting the registry. Landed 2026-09-08 in the engine: +68 subtest passes over eight directories, 30 files `fail -> pass`, zero pass-to-fail, no repins. The two Shadow DOM declarative regressions are fixed at the engine level but unchanged in WPT, because `ports/genet-wpt/src/harness.rs` still parses then runs — routing it is Mark's call, and is the plan's named open gate. |
+| [Parser/script interleaving](2026-09-08_parser_script_interleaving_plan.md) | HTML's parsing model with scripts run at the point the tree builder pops them: an html5ever `TreeSink` over the live arena, `document.write` at the tokenizer's insertion point, `currentScript`, the `readyState` transitions with `DOMContentLoaded` and `load`, parse-time custom-element upgrade, and declarative shadow roots consulting the registry. Landed 2026-09-08 in the engine (part one: +68 subtest passes over eight directories, 30 files `fail -> pass`, zero pass-to-fail, no repins). **Part two, 2026-09-08**, routed the WPT runner and `LiveryScriptedDocument` through the same parse and closed the named residuals: `testharness.js` as a prelude and one `load` dispatch, a two-phase `LiveryCssom` that resolves author sheets from the arena as the parser fills it, `document.write` tokenized inside the call so its markup is visible to the writing script and a written `<script>` runs, the open stream appending through one live tokenizer, upgrades at element creation, foreign-namespace scripts, and scripts in template contents left inert. +181 subtest passes over ten directories and +439 across the 79-directory disk census (excluding two identified timing artifacts), 19 census `pass -> fail` all attributed, six baselines repinned forward-only, all fourteen at `unexpected=0`, Ortet digest unchanged. **Both Shadow DOM declarative regressions now recover in WPT** — the open gate is closed. |
 
 defines ownership and the [lane program](../docs/2026-08-21_buckram_livery_lane_program_plan.md)
+The [Buckram master](../docs/2026-07-26_buckram_css_layout_engine_plan.md)
 assigns residuals. The linked execution plans carry their current gate; a
 completed corpus census or bounded slice does not close its enclosing feature.
 
@@ -195,9 +195,9 @@ completed corpus census or bounded slice does not close its enclosing feature.
   maps under `Code/testing/genet/wpt-ledger/2026-09-07_dom_node_model/`.)
 - [selection_range_plan](2026-09-07_selection_range_plan.md)
   (**landed 2026-09-07**: `Range`, `StaticRange`, `AbstractRange`, `Selection`
-  the bootstrap's own twelve-call-site mutation funnel rather than off the
   and `getSelection` over the scripted arena. The DOM's live-range steps run at
   arena's observer record, because they need the child index and the boundary
+  the bootstrap's own twelve-call-site mutation funnel rather than off the
   offsets as they stood *before* the mutation; boundaries are indexed by the
   node they sit in, since a flat list is quadratic and hung eight
   `editing/run/*` files in the first `post` map. One source of truth: the
@@ -513,16 +513,12 @@ same session; links out of it are rewritten for its new depth.
 - **A named property script has replaced must survive the next refresh.**
   `__refreshNamedProperties` deleted every name it had installed before
   reinstalling from the document. Its own comment already recorded that an
-  on a node type neither lane was about, aborting every file before its first
-  subtest. Probe the shared `common.js` of a directory that will not move before
   `id="test"` element must not shadow testharness's `test()`, and its setter got
   the shadowing right — but the *next* refresh took the script's value back out.
   Nothing triggered a mid-file refresh until this lane's `setHTMLUnsafe` did, and
   then a shadow-DOM file died with `not a callable function` from calling
   `test(...)`. A guard that is correct once and re-run later is not a guard;
   check that what you are removing is still the thing you installed.
-- **Parallel work needs commit fences as well as file fences.** Pin one base,
-  give each worker a disposable detached worktree and disjoint write paths,
 - **A container whose contents are deliberately unreachable must have every
   accessor told, one at a time, and each one is silent until exercised.** The
   Shadow DOM lane found three copiers that walked a `<template>`'s children and
@@ -553,3 +549,32 @@ was stale before 2026-09-07 and is now stated by the sections themselves.
 All three former component area roots now live in Mere. The older `docs/`
 corpus has selected execution entry points above; its full migration and
 governance remain deferred under the policy's local addendum.
+  on a node type neither lane was about, aborting every file before its first
+  subtest. Probe the shared `common.js` of a directory that will not move before
+- **A model no consumer exercises is not validated by the tests that do not
+  exercise it.** The parser/script lane's part one queued `document.write`
+  source until the calling script returned, and passed 22 runtime cases and a
+  whole WPT directory doing it — because on both routes the DOM was never read
+  back inside the writing script. The first honest consumer turned 21
+  `document-write/0xx` files from `pass` to `fail` in one step. When a design
+  has a "we apply it later" step, find the test that reads it *now* before
+  believing the green.
+- **A pass can be the absence of the thing being tested.** Sixteen
+  `html/dom/render-blocking/*` files passed because their `document.write`
+  helper implied `document.open`, which **wiped the document** their assertion
+  looks in; an empty document satisfies `assert_false(!!getElementById(...))`.
+  This is the `Node-baseURI` principle at document scale: when a directory goes
+  *down*, look for something that used to be absent before looking for a bug.
+- **A slower runner reads as a regression at the census timeout.** One
+  `shadow-dom` file takes 84.5 s on the pre runner and 90.3 s on the post one,
+  against a 90 s census timeout, and its 376 subtests are the whole of that
+  directory's apparent loss. Time the file on both runners before attributing a
+  status move; the same directory at `--timeout 240` was a gain.
+- **The tree builder holds ids the arena is free to reclaim.** While a parser is
+  building into the scripted arena, `innerHTML` from a script the parser is
+  running must orphan a replaced subtree rather than free it — the open-element
+  stack still points at it. The flag has the same shape `observing` already had,
+  and the arena's own fence caught it on the first file that could have gone
+  wrong silently.
+- **Parallel work needs commit fences as well as file fences.** Pin one base,
+  give each worker a disposable detached worktree and disjoint write paths,

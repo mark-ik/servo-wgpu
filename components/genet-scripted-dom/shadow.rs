@@ -622,6 +622,23 @@ impl ScriptedDom {
         fragment
     }
 
+    /// Whether `id` is inside some template's contents fragment.
+    ///
+    /// A template's contents have no parent, so the topmost ancestor of
+    /// anything inside one is the fragment itself; a node in the document
+    /// proper tops out at the document node. HTML never executes a `<script>`
+    /// found in template contents, and this is how the parser driver tells.
+    pub fn is_in_template_contents(&self, id: NodeId) -> bool {
+        if self.template_contents.is_empty() {
+            return false;
+        }
+        let mut node = id;
+        while let Some(parent) = LayoutDom::parent(self, node) {
+            node = parent;
+        }
+        node != self.document() && self.template_contents.values().any(|&f| f == node)
+    }
+
     /// The inert document that owns template contents, if one was ever minted.
     pub fn template_owner_document_if_any(&self) -> Option<NodeId> {
         self.template_document

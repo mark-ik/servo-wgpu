@@ -19,16 +19,17 @@
 //! The loop is small because html5ever hands over at exactly the right point:
 //!
 //! ```text
-//! push source
+//! open the document's source stream, push source
 //! loop {
-//!     resume()                       -> Done | Script(node)
+//!     resume()                       -> Done | Created | Script(node)
+//!     Created:
+//!         upgrade the elements just created  (a definition exists)
 //!     Script(node):
-//!         refresh the policy table   (registry facts the tree builder asks for)
 //!         upgrade parser-created custom elements
 //!         classify the element       (classic / module, inline / external, async / defer)
 //!         run it, with currentScript set
 //!         microtask checkpoint       (this is where a MutationObserver fires)
-//!         apply document.write at the insertion point
+//!         refresh the policy table   (registry facts the tree builder asks for)
 //! }
 //! end()
 //! readyState = interactive; readystatechange
@@ -37,22 +38,30 @@
 //! readyState = complete; readystatechange; window load
 //! ```
 //!
-//! The arena is *moved* between the host state and the parser's cell around
-//! each `resume`, rather than shared behind a second `RefCell`. A tree-sink
-//! call and a native call both want `&mut ScriptedDom`, and they are never live
-//! at the same instant — the tokenizer has returned before any script runs — so
-//! moving is both sufficient and cheap (`ScriptedDom` is a handful of maps
-//! behind one pointer each). Sharing it instead would put a re-entrant borrow
-//! one careless native away from a panic.
+//! `document.write` is not in that loop, because HTML has the parser process
+//! written characters *during* the `write()` call. The tokenizer therefore
+//! lives in [`crate::dom::markup_insertion`]'s host state rather than here, so
+//! the native can feed it; when the written source reaches a `<script>` the
+//! native stalls the pause and this loop takes it, because script *timing* —
+//! `async`, `defer`, modules, external sources — belongs here.
+//!
+//! The arena is *moved* between the host state and the stream's cell around
+//! each tokenizer call, rather than shared behind a second `RefCell`. A
+//! tree-sink call and a native call both want `&mut ScriptedDom`, and they are
+//! never live at the same instant — the tokenizer has returned before any
+//! script runs — so moving is both sufficient and cheap (`ScriptedDom` is a
+//! handful of maps behind one pointer each). Sharing it instead would put a
+//! re-entrant borrow one careless native away from a panic.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use genet_scripted_dom::ScriptedDom;
-use genet_scripted_dom::parser::{DocumentParser, DomAccess, ParsePause, ParserPolicy};
+use genet_scripted_dom::parser::{DomAccess, ParsePause, ParserPolicy};
 use layout_dom_api::{LayoutDom, LocalName, Namespace};
 use script_engine_api::ScriptEngine;
 
+use crate::dom::markup_insertion;
 use crate::dom::markup_insertion::ReadyState;
 use crate::{NodeId, Runtime};
 
@@ -105,7 +114,7 @@ enum ScriptTiming {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ScriptKind {
+pub(crate) enum ScriptKind {
     Classic,
     Module,
 }
@@ -121,7 +130,7 @@ struct ScriptFacts {
 }
 
 /// `type`/`language` classification, per HTML's "prepare the script element".
-fn classify(ty: Option<&str>, language: Option<&str>) -> Option<ScriptKind> {
+pub(crate) fn classify(ty: Option<&str>, language: Option<&str>) -> Option<ScriptKind> {
     const CLASSIC: &[&str] = &[
         "application/ecmascript",
         "application/javascript",
@@ -141,7 +150,11 @@ fn classify(ty: Option<&str>, language: Option<&str>) -> Option<ScriptKind> {
         "text/x-javascript",
     ];
     match ty.map(str::trim) {
-        None | Some("") => match language {
+        // A `type` attribute that is present but empty makes the script
+        // classic outright: `language` is only consulted when there is no
+        // `type` at all, per HTML's "prepare the script element".
+        Some("") => Some(ScriptKind::Classic),
+        None => match language {
             // `language="javascript"` is the legacy spelling of a classic script.
             Some(lang) if !lang.is_empty() => {
                 let mime = format!("text/{}", lang.to_ascii_lowercase());
@@ -151,7 +164,9 @@ fn classify(ty: Option<&str>, language: Option<&str>) -> Option<ScriptKind> {
             },
             _ => Some(ScriptKind::Classic),
         },
-        Some("module") => Some(ScriptKind::Module),
+        // `type` is matched ASCII case-insensitively, so `type="MODULE"` is a
+        // module script.
+        Some(ty) if ty.eq_ignore_ascii_case("module") => Some(ScriptKind::Module),
         Some(ty) => {
             let mime = ty
                 .split(';')
@@ -168,7 +183,7 @@ fn classify(ty: Option<&str>, language: Option<&str>) -> Option<ScriptKind> {
 
 /// The arena, parked in a cell while the tokenizer runs. See the module note:
 /// the arena is moved in and out around each `resume`, never shared.
-struct ParkedDom(Rc<RefCell<ScriptedDom>>);
+pub(crate) struct ParkedDom(pub(crate) Rc<RefCell<ScriptedDom>>);
 
 impl DomAccess for ParkedDom {
     fn with<R>(&self, f: impl FnOnce(&mut ScriptedDom) -> R) -> R {
@@ -200,24 +215,37 @@ impl<E: ScriptEngine> Runtime<E> {
         html: &str,
         loader: &dyn ParserScriptLoader,
     ) -> ParseReport {
-        let mut report = ParseReport::default();
-        let cell = Rc::new(RefCell::new(ScriptedDom::new()));
-        let policy = Rc::new(ParserPolicy::new());
-        // The tree builder caches a handle to the document node at
-        // construction, so the *real* arena has to be parked before the parser
-        // is built: a handle minted from a placeholder carries the placeholder's
-        // document tag and trips the arena's cross-document fence on the first
-        // append.
-        let parser = self.with_parked_dom(&cell, || {
-            DocumentParser::new(ParkedDom(Rc::clone(&cell)), Rc::clone(&policy))
-        });
-        parser.push_source(html);
+        self.parse_document_interleaved_with(html, loader, true)
+    }
 
-        {
+    /// [`parse_document_interleaved`](Self::parse_document_interleaved) with
+    /// control over the final `load` event.
+    ///
+    /// A host that owns its own completion handshake passes `false` and
+    /// dispatches `load` itself. Exactly one of the two may: the WPT runner
+    /// arms `testharness.js` before the parse and completes on the `load` it
+    /// dispatches afterwards, so a second dispatch from here would report the
+    /// suite twice.
+    pub fn parse_document_interleaved_with(
+        &mut self,
+        html: &str,
+        loader: &dyn ParserScriptLoader,
+        dispatch_load: bool,
+    ) -> ParseReport {
+        let mut report = ParseReport::default();
+        // One tokenizer, and it lives in the host's markup state rather than
+        // here, because `document.write` must be able to feed it from inside a
+        // native: HTML has the parser process written characters during the
+        // `write()` call, not after the calling script returns.
+        let policy = {
             let mut host = self.host.borrow_mut();
+            markup_insertion::open_stream_begin(&mut host);
+            markup_insertion::stream_push_source(&mut host, html);
             host.markup.parser_active = true;
+            host.markup.writes_applied = 0;
             host.markup.ready_state = ReadyState::Loading;
-        }
+            markup_insertion::stream_policy(&host).expect("stream just opened")
+        };
         // The document object and the window's named properties are bound
         // before the first script can look at either.
         let _ = self
@@ -226,16 +254,29 @@ impl<E: ScriptEngine> Runtime<E> {
 
         let mut deferred: Vec<ScriptFacts> = Vec::new();
         loop {
-            let pause = self.with_parked_dom(&cell, || parser.resume());
+            let pause = markup_insertion::stream_resume(&mut self.host.borrow_mut());
             let node = match pause {
                 ParsePause::Done => break,
+                // A definition exists and the parser just made a candidate:
+                // upgrade it here, at creation, rather than at the next script.
+                ParsePause::Created => {
+                    self.upgrade_parser_created(&policy);
+                    continue;
+                },
                 ParsePause::Script(node) => node,
             };
             // Upgrade first, so the script about to run sees the elements the
             // parser created since the last pause already upgraded.
             self.upgrade_parser_created(&policy);
-            let already_started = parser.script_already_started(node);
-            let facts = self.script_facts(node, already_started);
+            // Foreign-namespace scripts do not pause the tokenizer, so run any
+            // the parser has completed since the last pause — they precede this
+            // one in the document, and this one may name what they defined.
+            report.scripts_run += self.run_foreign_scripts(&policy, loader, &mut deferred);
+            let already_started =
+                markup_insertion::stream_script_already_started(&self.host.borrow(), node);
+            // HTML never executes a `<script>` found in a template's contents.
+            let inert = already_started || self.host.borrow().dom.is_in_template_contents(node);
+            let facts = self.script_facts(node, inert);
             match facts.timing {
                 ScriptTiming::Skipped => {},
                 ScriptTiming::Deferred => deferred.push(facts),
@@ -247,16 +288,16 @@ impl<E: ScriptEngine> Runtime<E> {
             // Refresh *after* the script: it may have defined a custom
             // element, and the next stretch of tokenizing is what asks.
             self.refresh_parser_policy(&policy);
-            let written = self.host.borrow_mut().markup.take_pending_writes();
-            if !written.is_empty() {
-                report.writes_applied += 1;
-                parser.write_at_insertion_point(&written);
-            }
         }
-        self.with_parked_dom(&cell, || parser.end());
+        {
+            let mut host = self.host.borrow_mut();
+            markup_insertion::open_stream_close(&mut host);
+            host.markup.parser_active = false;
+            report.writes_applied = host.markup.writes_applied;
+        }
         self.refresh_parser_policy(&policy);
         self.upgrade_parser_created(&policy);
-        self.host.borrow_mut().markup.parser_active = false;
+        report.scripts_run += self.run_foreign_scripts(&policy, loader, &mut deferred);
 
         // HTML, "the end". Readiness first, then the deferred list, then
         // DOMContentLoaded, then the load event.
@@ -270,26 +311,11 @@ impl<E: ScriptEngine> Runtime<E> {
             .eval("document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true }));");
         self.run_microtasks();
         self.set_ready_state(ReadyState::Complete);
-        let _ = self.engine.eval("window.dispatchEvent(new Event('load'));");
-        self.run_microtasks();
+        if dispatch_load {
+            let _ = self.engine.eval("window.dispatchEvent(new Event('load'));");
+            self.run_microtasks();
+        }
         report
-    }
-
-    /// Move the arena into `cell`, run `f` (which drives the tokenizer and so
-    /// needs the arena there), and move it back. See the module note.
-    fn with_parked_dom<R>(&mut self, cell: &Rc<RefCell<ScriptedDom>>, f: impl FnOnce() -> R) -> R {
-        {
-            let mut host = self.host.borrow_mut();
-            let dom = std::mem::replace(&mut host.dom, ScriptedDom::new());
-            *cell.borrow_mut() = dom;
-        }
-        let out = f();
-        {
-            let mut host = self.host.borrow_mut();
-            let dom = std::mem::replace(&mut *cell.borrow_mut(), ScriptedDom::new());
-            host.dom = dom;
-        }
-        out
     }
 
     /// Refresh the table the tree builder reads at every question it asks: the
@@ -309,6 +335,18 @@ impl<E: ScriptEngine> Runtime<E> {
                 .filter(|s| !s.is_empty())
                 .map(str::to_owned),
         );
+        // While anything is defined, the driver takes control at element
+        // creation so the constructor runs there rather than at the next
+        // script pause. Nothing is defined in the overwhelming majority of
+        // documents, and then the parser feeds whole buffers as before.
+        let defined = self
+            .engine
+            .eval("globalThis.__ceDefinedCount ? __ceDefinedCount() : 0")
+            .ok()
+            .and_then(|v| self.engine.value_to_string(&v).ok())
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .unwrap_or(0);
+        policy.set_upgrade_at_creation(defined > 0);
     }
 
     /// Run the custom-element upgrade for elements the parser created since the
@@ -334,6 +372,46 @@ impl<E: ScriptEngine> Runtime<E> {
             "globalThis.__ceUpgradeParsed && __ceUpgradeParsed('{}')",
             live.join(",")
         ));
+    }
+
+    /// Run the `<script>` elements the parser created in a foreign namespace
+    /// (SVG, MathML).
+    ///
+    /// html5ever only hands the driver a pause for an HTML-namespace script, so
+    /// these are collected at creation and drained at the next pause and again
+    /// at the end of the parse. That puts each one before the next HTML script,
+    /// which is the ordering the SVG corpus actually depends on; the residual
+    /// deviation — HTML would run it the moment its own end tag is popped — is
+    /// named in the lane plan.
+    fn run_foreign_scripts(
+        &mut self,
+        policy: &Rc<ParserPolicy>,
+        loader: &dyn ParserScriptLoader,
+        deferred: &mut Vec<ScriptFacts>,
+    ) -> usize {
+        let nodes = policy.take_foreign_scripts();
+        let mut ran = 0;
+        for node in nodes {
+            let skip = {
+                let host = self.host.borrow();
+                !host.dom.is_live(node) || host.dom.is_in_template_contents(node)
+            };
+            if skip {
+                continue;
+            }
+            let facts = self.script_facts(node, false);
+            match facts.timing {
+                ScriptTiming::Skipped => continue,
+                // A module in foreign content is deferred like any other, and
+                // must still run before the load event.
+                ScriptTiming::Deferred => deferred.push(facts),
+                ScriptTiming::Blocking | ScriptTiming::Async => {
+                    self.run_parser_script(node, &facts, loader);
+                    ran += 1;
+                },
+            }
+        }
+        ran
     }
 
     fn set_ready_state(&mut self, state: ReadyState) {
@@ -463,6 +541,14 @@ mod tests {
         assert_eq!(classify(None, None), Some(ScriptKind::Classic));
         assert_eq!(classify(Some(""), None), Some(ScriptKind::Classic));
         assert_eq!(classify(Some("module"), None), Some(ScriptKind::Module));
+        assert_eq!(classify(Some("MODULE"), None), Some(ScriptKind::Module));
+        assert_eq!(classify(Some("Module"), None), Some(ScriptKind::Module));
+        // A present-but-empty `type` is classic outright: `language` only
+        // speaks when there is no `type` at all.
+        assert_eq!(
+            classify(Some(""), Some("vbscript")),
+            Some(ScriptKind::Classic)
+        );
         assert_eq!(
             classify(Some("text/javascript; charset=utf-8"), None),
             Some(ScriptKind::Classic)

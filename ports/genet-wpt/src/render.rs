@@ -23,9 +23,9 @@ use genet_livery::{
     Device as LiveryDevice, LiveryDocument, StyleSet as LiveryStyleSet,
     table_shadow::TableShadowLedger,
 };
+use genet_render_host::RenderCore;
 use genet_static_dom::StaticDocument;
 use layout_dom_api::LayoutDom;
-use genet_render_host::RenderCore;
 use netrender::{ColorLoad, NetrenderOptions};
 use paint_list_api::{
     ColorF, CommonPlacement, DeviceIntSize, IdNamespace, ImageKey, LayoutPoint, LayoutRect,

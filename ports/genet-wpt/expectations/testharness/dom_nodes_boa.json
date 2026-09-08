@@ -4,7 +4,7 @@
   "manifest_sha256": "d5ec5be9bf1a75ed00d7e7ab28afe8a694a55e11682ba74305874d70b18dd422",
   "policy": "exact",
   "renderer": "livery",
-  "runner_sha256": "183a3c7f1f8a3aa1da106d42900451af33b8740daeee6833d7362ef8267347f3",
+  "runner_sha256": "50d4f8be4696046cbd186ee15e3b6480edf45b352636e4ea4d5c22a23550b2f5",
   "subset": "dom/nodes",
   "tests": {
     "dom/nodes/CharacterData-appendChild.html": {
@@ -18942,8 +18942,8 @@
       "subtests_total": 38
     },
     "dom/nodes/MutationObserver-cross-realm-callback-report-exception.html": {
-      "reason": "evaluation-threw",
-      "status": "error"
+      "reason": "no-subtests",
+      "status": "no-results"
     },
     "dom/nodes/MutationObserver-disconnect.html": {
       "status": "pass",
@@ -25714,8 +25714,8 @@
       "subtests_total": 8
     },
     "dom/nodes/Node-contains-xml.xml": {
-      "reason": "evaluation-threw",
-      "status": "error"
+      "reason": "no-subtests",
+      "status": "no-results"
     },
     "dom/nodes/Node-contains.html": {
       "status": "fail",
@@ -36251,8 +36251,15 @@
       "subtests_total": 1
     },
     "dom/nodes/ParentNode-querySelectors-namespaces.html": {
-      "reason": "evaluation-threw",
-      "status": "error"
+      "status": "fail",
+      "subtests": [
+        {
+          "name": "querySelectorAll must work with namespace attribute selectors on SVG",
+          "status": "not-run"
+        }
+      ],
+      "subtests_passed": 0,
+      "subtests_total": 1
     },
     "dom/nodes/ParentNode-querySelectors-space-and-dash-attribute-value.html": {
       "status": "pass",

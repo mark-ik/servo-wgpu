@@ -5747,7 +5747,30 @@
   // `document.write` is not a DOM operation: it inserts source into the
   // tokenizer's input stream at the insertion point. All four entry points
   // therefore hand the source to the host, which knows whether a parser is
-  // running (feed it) or not (imply document.open and re-materialize).
+  // running (queue it for that parser's insertion point) or not (imply
+  // document.open and feed the document's own source stream).
+  //
+  // `pumpOpenStream` is the seam that lets a `<script>` in written source run.
+  // The host's tokenizer cannot call back into the engine, so it stops at each
+  // `<script>` and hands the source out here, where evaluating it is ordinary.
+  // The loop keeps pumping afterwards, so markup the written script itself
+  // wrote is tokenized in place, at the insertion point, before the rest.
+  var indirectEval = eval;
+  function pumpOpenStream() {
+    if (typeof __docPumpStream !== 'function') return;
+    var guard = 0;
+    for (;;) {
+      var source = __docPumpStream();
+      if (source === null || source === undefined) return;
+      if (++guard > 10000) return;
+      if (source) {
+        try { indirectEval(source); } catch (e) { reportScriptError(e); }
+      }
+    }
+  }
+  function reportScriptError(e) {
+    try { console.error(String(e && e.stack ? e.stack : e)); } catch (ignored) {}
+  }
   Document.prototype.open = function() {
     // The three-argument form is window.open, which the scripted tier has no
     // browsing context for; only the zero-argument document.open is here.
@@ -5761,6 +5784,7 @@
     return this;
   };
   Document.prototype.close = function() {
+    pumpOpenStream();
     __docClose();
     __rebindDocument();
     __refreshNamedProperties();
@@ -5769,6 +5793,7 @@
     var text = '';
     for (var i = 0; i < arguments.length; i++) text += String(arguments[i]);
     __docWrite(text);
+    pumpOpenStream();
     __rebindDocument();
     __refreshNamedProperties();
   };
@@ -5776,6 +5801,7 @@
     var text = '';
     for (var i = 0; i < arguments.length; i++) text += String(arguments[i]);
     __docWrite(text + '\n');
+    pumpOpenStream();
     __rebindDocument();
     __refreshNamedProperties();
   };
@@ -5800,6 +5826,14 @@
       if (disabled && disabled.indexOf('shadow') !== -1) names.push(def.localName);
     }
     return names.join(',');
+  };
+  // How many custom elements are defined. While this is non-zero the parser
+  // driver hands control back at element creation so the upgrade runs there
+  // rather than at the next script pause.
+  globalThis.__ceDefinedCount = function() {
+    var n = 0;
+    for (var name in customElementDefinitions) n++;
+    return n;
   };
   globalThis.__ceUpgradeParsed = function(ids) {
     var list = String(ids).split(',');

@@ -149,7 +149,6 @@ impl MouseMoveEvent {
             is_compatibility_event_for_touch: false,
         }
     }
-
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
@@ -194,7 +193,6 @@ impl TouchEvent {
             cancelable: true,
         }
     }
-
 }
 
 /// Unit of a [`WheelDelta`].

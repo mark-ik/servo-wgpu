@@ -4,7 +4,7 @@
   "manifest_sha256": "d5ec5be9bf1a75ed00d7e7ab28afe8a694a55e11682ba74305874d70b18dd422",
   "policy": "exact",
   "renderer": "livery",
-  "runner_sha256": "c554f89a5ab1e7582dcb4d7c97a656750b49ca466a3ea67b7a9885666f06aab0",
+  "runner_sha256": "50d4f8be4696046cbd186ee15e3b6480edf45b352636e4ea4d5c22a23550b2f5",
   "subset": "css/css-values/tree-counting",
   "tests": {
     "css/css-values/tree-counting/calc-sibling-function-in-shadow-dom.html": {
@@ -159,8 +159,8 @@
       "subtests_total": 4
     },
     "css/css-values/tree-counting/sibling-function-descriptors.tentative.html": {
-      "reason": "evaluation-threw",
-      "status": "error"
+      "reason": "no-subtests",
+      "status": "no-results"
     },
     "css/css-values/tree-counting/sibling-function-invalidation.html": {
       "status": "fail",

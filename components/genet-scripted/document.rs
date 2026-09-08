@@ -62,7 +62,8 @@ use genet_livery::{Device, NavigationFragment};
 use genet_render::translated_frame_from_session_dom;
 #[cfg(any(feature = "render", feature = "livery"))]
 use genet_scripted_dom::{NodeId, ScriptedDom};
-use genet_static_dom::{StaticDocument, StaticNodeId};
+#[cfg(any(feature = "render", test))]
+use genet_static_dom::StaticDocument;
 use script_engine_api::ScriptEngine;
 #[cfg(feature = "render")]
 use script_runtime_api::ComputedStyleHandler;
@@ -1080,11 +1081,15 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
     }
 
     fn build(html: &str, fetcher: SharedResourceFetcher, base_url: &str) -> Result<Self, String> {
-        let doc = StaticDocument::parse(html);
         let mut rt =
             Runtime::<E>::new().map_err(|error| format!("script runtime init: {error:?}"))?;
         let _ = rt.set_base_url(base_url);
-        rt.load_dom(&doc);
+        // The CSSOM is installed over the *empty* arena, before the parse, and
+        // re-resolves its author sheets from the live DOM at every read. That
+        // is what lets this constructor use the interleaved parse: a sheet
+        // enters the cascade when the parser inserts it, so a script reading
+        // computed style mid-parse sees the sheets parsed so far, and nothing
+        // has to be resolved from a finished tree first.
         let cssom = LiveryCssom::install_live(
             &mut rt,
             fetcher.clone(),
@@ -1092,6 +1097,16 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
             ResourceLimits::default(),
             Device::screen(800.0, 600.0),
         );
+        // HTML's parsing model: the tree is built and its scripts run
+        // interleaved, so each script sees the document as far as its own
+        // position — including the stylesheets parsed so far, through the live
+        // CSSOM installed above.
+        let loader: Option<(&dyn ResourceFetcher, &str)> = Some((&fetcher, base_url));
+        rt.parse_document_interleaved(html, &DocumentScriptLoader { loader });
+        rt.run_microtasks();
+
+        // The capture recorder is opened after the parse, over the built tree,
+        // which is the tree the parse-then-run route handed it too.
         let capture_sheets = cssom
             .resource_set()
             .map(|resources| {
@@ -1107,63 +1122,6 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
             DomCaptureRecorder::from_env(&mut host.dom, &capture_sheets)
                 .map_err(|error| format!("dom capture init: {error}"))?
         };
-
-        let loader: Option<(&dyn ResourceFetcher, &str)> = Some((&fetcher, base_url));
-        let scripts = collect_scripts(&doc);
-        let mut deferred = Vec::new();
-        for script in &scripts {
-            match script {
-                ScriptSource::Inline(source) => eval_reporting(&mut rt, source),
-                ScriptSource::External {
-                    src,
-                    timing: ScriptTiming::Blocking,
-                    charset,
-                    integrity,
-                } => {
-                    if let Some(source) =
-                        fetch_external(loader, src, charset.as_deref(), integrity.as_deref())
-                    {
-                        eval_reporting(&mut rt, &source);
-                    }
-                },
-                ScriptSource::External { .. }
-                | ScriptSource::ModuleInline(_)
-                | ScriptSource::ModuleExternal { .. } => deferred.push(script),
-            }
-        }
-        for script in deferred {
-            match script {
-                ScriptSource::External {
-                    src,
-                    charset,
-                    integrity,
-                    ..
-                } => {
-                    if let Some(source) =
-                        fetch_external(loader, src, charset.as_deref(), integrity.as_deref())
-                    {
-                        eval_reporting(&mut rt, &source);
-                    }
-                },
-                ScriptSource::ModuleInline(source) => {
-                    eval_module_reporting(&mut rt, loader, base_url, source);
-                },
-                ScriptSource::ModuleExternal {
-                    src,
-                    charset,
-                    integrity,
-                } => {
-                    let module_base = crate::resolve_href(base_url, src);
-                    if let Some(source) =
-                        fetch_external(loader, src, charset.as_deref(), integrity.as_deref())
-                    {
-                        eval_module_reporting(&mut rt, loader, &module_base, &source);
-                    }
-                },
-                ScriptSource::Inline(_) => {},
-            }
-        }
-        rt.run_microtasks();
         if let Some(recorder) = capture.as_mut() {
             let mut host = rt.host().borrow_mut();
             recorder
@@ -1413,6 +1371,35 @@ mod livery_text_fragment_tests {
         }
     }
 
+    /// The two-phase CSSOM install, stated positionally: a sheet is in the
+    /// cascade for a script *after* it and absent for a script *before* it,
+    /// which is what "stylesheets attach at the point they are parsed" means
+    /// and what a one-shot install over a finished tree cannot express.
+    #[test]
+    fn livery_stylesheets_attach_where_they_are_parsed_on_boa() {
+        let html = r#"<!doctype html><html><body>
+            <div id="t">x</div>
+            <script>console.log('before:' + document.styleSheets.length + ':' +
+              getComputedStyle(document.getElementById('t')).color);</script>
+            <style>#t { color: rgb(0, 128, 0); }</style>
+            <script>console.log('after:' + document.styleSheets.length + ':' +
+              getComputedStyle(document.getElementById('t')).color);</script>
+            </body></html>"#;
+        let document = LiveryScriptedDocument::<BoaEngine>::parse(html)
+            .expect("Livery scripted document builds");
+        let log = document.console();
+        assert_eq!(log.len(), 2, "one line per script: {log:?}");
+        assert!(
+            log[0].starts_with("before:0:"),
+            "the sheet below is not in the cascade yet: {:?}",
+            log[0]
+        );
+        assert_eq!(
+            log[1], "after:1:rgb(0, 128, 0)",
+            "the sheet is in the cascade the moment the parser inserts it"
+        );
+    }
+
     #[test]
     fn initial_text_fragment_selects_scrolls_and_hides_the_directive_on_boa() {
         let html = r#"<html><head><style>body { margin: 0; }</style></head><body>
@@ -1546,192 +1533,6 @@ impl ScriptedEngine {
     }
 }
 
-/// When a `<script>` runs relative to document parsing (the classic-script model).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ScriptTiming {
-    /// Parser-blocking: runs at its document position (inline, or external with
-    /// neither `async` nor `defer`).
-    Blocking,
-    /// `defer`: runs after the parser-blocking pass, in document order.
-    Defer,
-    /// `async`: runs after the parser-blocking pass, order unspecified (we fetch
-    /// synchronously, so document order is a faithful realization).
-    Async,
-}
-
-/// One runnable `<script>` in document order: inline classic text, or an external
-/// classic `src` (raw attribute value, resolved against the document URL at fetch
-/// time) with its timing and post-fetch processing (`charset` decode + `integrity`
-/// SRI check). An external `src` takes precedence over inline content (per HTML).
-/// `type=module` and non-JS `type`s are not runnable and are dropped at collection
-/// (see [`classify_script_type`]).
-enum ScriptSource {
-    Inline(String),
-    External {
-        src: String,
-        timing: ScriptTiming,
-        /// `<script charset>` — the encoding to decode the fetched bytes with
-        /// (default UTF-8).
-        charset: Option<String>,
-        /// `<script integrity>` — Subresource-Integrity metadata the fetched bytes
-        /// must match, else the script is blocked.
-        integrity: Option<String>,
-    },
-    /// `<script type=module>…</script>` — inline module source. Modules are always
-    /// deferred (run after the parser-blocking pass) and evaluated with module scope
-    /// via the engine's module path.
-    ModuleInline(String),
-    /// `<script type=module src=…>` — external module: fetched (with `charset` /
-    /// `integrity`) like a classic external, then evaluated as a module.
-    ModuleExternal {
-        src: String,
-        charset: Option<String>,
-        integrity: Option<String>,
-    },
-}
-
-/// How a `<script>`'s `type` attribute classifies it.
-enum ScriptKind {
-    /// Empty/absent `type`, or a JavaScript MIME type — a runnable classic script.
-    Classic,
-    /// `type=module` — recognized but not yet executed (module loading is a
-    /// follow-up); deferred timing when it lands.
-    Module,
-    /// Any other `type` (`application/json`, `text/plain`, an import map, …) — a
-    /// data block, never executed.
-    Data,
-}
-
-/// Classify a `<script type>` value. Per HTML: empty/absent or a JavaScript MIME
-/// type essence → classic; `module` → module; anything else → a data block. The JS
-/// MIME essences mirror the WHATWG list (cf. `net::mime_classifier::is_javascript`).
-fn classify_script_type(ty: Option<&str>) -> ScriptKind {
-    let ty = match ty.map(str::trim) {
-        None | Some("") => return ScriptKind::Classic,
-        Some(t) => t.to_ascii_lowercase(),
-    };
-    if ty == "module" {
-        return ScriptKind::Module;
-    }
-    // Match on the MIME essence (drop any `;`-params), against the WHATWG JS set.
-    const JS_MIME: &[&str] = &[
-        "application/ecmascript",
-        "application/javascript",
-        "application/x-ecmascript",
-        "application/x-javascript",
-        "text/ecmascript",
-        "text/javascript",
-        "text/javascript1.0",
-        "text/javascript1.1",
-        "text/javascript1.2",
-        "text/javascript1.3",
-        "text/javascript1.4",
-        "text/javascript1.5",
-        "text/jscript",
-        "text/livescript",
-        "text/x-ecmascript",
-        "text/x-javascript",
-    ];
-    let essence = ty.split(';').next().unwrap_or("").trim();
-    if JS_MIME.contains(&essence) {
-        ScriptKind::Classic
-    } else {
-        ScriptKind::Data
-    }
-}
-
-/// Every runnable classic `<script>` in document order, with its timing. `src`
-/// scripts become [`ScriptSource::External`]; inline-text scripts
-/// [`ScriptSource::Inline`]. Empty inline scripts, non-JS `type` data blocks, and
-/// `type=module` (logged, execution unsupported) are dropped. One ordered list is
-/// what lets external and inline scripts interleave in authored order.
-fn collect_scripts(doc: &StaticDocument) -> Vec<ScriptSource> {
-    let mut out = Vec::new();
-    collect_scripts_rec(doc, doc.document(), &mut out);
-    out
-}
-
-fn collect_scripts_rec(dom: &StaticDocument, node: StaticNodeId, out: &mut Vec<ScriptSource>) {
-    if dom
-        .element_name(node)
-        .is_some_and(|q| q.local.as_ref() == "script")
-    {
-        let attr = |name: &str| dom.attribute(node, &Namespace::default(), &LocalName::from(name));
-        match classify_script_type(attr("type")) {
-            ScriptKind::Data => {}, // a data block: not executed
-            ScriptKind::Module => {
-                let nonempty = |name: &str| {
-                    attr(name)
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                };
-                match nonempty("src") {
-                    Some(src) => out.push(ScriptSource::ModuleExternal {
-                        src,
-                        charset: nonempty("charset"),
-                        integrity: nonempty("integrity"),
-                    }),
-                    None => {
-                        let mut text = String::new();
-                        for child in dom.dom_children(node) {
-                            if let Some(t) = dom.text(child) {
-                                text.push_str(t);
-                            }
-                        }
-                        if !text.trim().is_empty() {
-                            out.push(ScriptSource::ModuleInline(text));
-                        }
-                    },
-                }
-            },
-            ScriptKind::Classic => {
-                let src = attr("src")
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty());
-                match src {
-                    // A `src` script ignores its element content (HTML spec). `async`
-                    // takes precedence over `defer` when both are present.
-                    Some(src) => {
-                        let timing = if attr("async").is_some() {
-                            ScriptTiming::Async
-                        } else if attr("defer").is_some() {
-                            ScriptTiming::Defer
-                        } else {
-                            ScriptTiming::Blocking
-                        };
-                        let nonempty = |name: &str| {
-                            attr(name)
-                                .map(|s| s.trim().to_string())
-                                .filter(|s| !s.is_empty())
-                        };
-                        out.push(ScriptSource::External {
-                            src,
-                            timing,
-                            charset: nonempty("charset"),
-                            integrity: nonempty("integrity"),
-                        });
-                    },
-                    // Inline classic: `async`/`defer` are ignored — it runs in place.
-                    None => {
-                        let mut text = String::new();
-                        for child in dom.dom_children(node) {
-                            if let Some(t) = dom.text(child) {
-                                text.push_str(t);
-                            }
-                        }
-                        if !text.trim().is_empty() {
-                            out.push(ScriptSource::Inline(text));
-                        }
-                    },
-                }
-            },
-        }
-    }
-    for child in dom.dom_children(node) {
-        collect_scripts_rec(dom, child, out);
-    }
-}
-
 /// Fetch an external script's source through the `loader` (`(fetcher, base_url)`),
 /// resolving `src` against `base_url`, verifying any `integrity` (SRI) metadata, and
 /// decoding the bytes per `charset` (default UTF-8). `None` (with a log) when there
@@ -1842,52 +1643,6 @@ fn decode_script_bytes(bytes: &[u8], charset: Option<&str>) -> String {
         .and_then(|label| encoding_rs::Encoding::for_label(label.trim().as_bytes()))
         .unwrap_or(encoding_rs::UTF_8);
     encoding.decode(bytes).0.into_owned()
-}
-
-/// Evaluate `source`, reporting (but not propagating) a script error — a browser
-/// keeps rendering the document after a script throws.
-fn eval_reporting<E: ScriptEngine>(rt: &mut Runtime<E>, source: &str) {
-    if let Err(e) = rt.eval(source) {
-        eprintln!("[pelt-scripted] script error: {e:?}");
-    }
-}
-
-/// Evaluate `source` as a module (`<script type=module>`) with `base_url` as the
-/// base its `import`s resolve against, fetching each dependency through `loader`'s
-/// fetcher. Reports (but does not propagate) failures: an engine without module
-/// support (`Ok(None)`) is logged and skipped; a module that throws — or a
-/// dependency that fails to fetch — is reported, like a classic script error.
-fn eval_module_reporting<E: ScriptEngine>(
-    rt: &mut Runtime<E>,
-    loader: Option<(&dyn ResourceFetcher, &str)>,
-    base_url: &str,
-    source: &str,
-) {
-    // Resolve an import specifier against the importing module's URL (`referrer`, or
-    // `base_url` for the entry), then fetch its source through the page fetcher.
-    // WHATWG URL join (not the naive `resolve_href`) so `./` and `../` normalize.
-    let mut resolve = |specifier: &str, referrer: &str| -> Option<(String, String)> {
-        let (fetcher, _page) = loader?;
-        let base = if referrer.is_empty() {
-            base_url
-        } else {
-            referrer
-        };
-        let url = url::Url::parse(base)
-            .ok()?
-            .join(specifier)
-            .ok()?
-            .to_string();
-        let bytes = fetcher.fetch(&url)?;
-        Some((url, String::from_utf8_lossy(&bytes).into_owned()))
-    };
-    match rt.eval_module(source, base_url, &mut resolve) {
-        Ok(Some(_)) => {},
-        Ok(None) => {
-            eprintln!("[pelt-scripted] <script type=module> not supported by this engine; skipped")
-        },
-        Err(e) => eprintln!("[pelt-scripted] module error: {e:?}"),
-    }
 }
 
 #[cfg(all(test, feature = "render"))]

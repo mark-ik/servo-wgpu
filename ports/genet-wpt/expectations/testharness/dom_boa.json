@@ -4,7 +4,7 @@
   "manifest_sha256": "d5ec5be9bf1a75ed00d7e7ab28afe8a694a55e11682ba74305874d70b18dd422",
   "policy": "exact",
   "renderer": "livery",
-  "runner_sha256": "183a3c7f1f8a3aa1da106d42900451af33b8740daeee6833d7362ef8267347f3",
+  "runner_sha256": "50d4f8be4696046cbd186ee15e3b6480edf45b352636e4ea4d5c22a23550b2f5",
   "subset": "dom",
   "tests": {
     "dom/abort/AbortSignal.any.html": {
@@ -794,8 +794,47 @@
       "subtests_total": 5
     },
     "dom/events/AddEventListenerOptions-signal.any.html": {
-      "reason": "evaluation-threw",
-      "status": "error"
+      "status": "fail",
+      "subtests": [
+        {
+          "name": "Passing an AbortSignal to addEventListener options should allow removing a listener",
+          "status": "fail"
+        },
+        {
+          "name": "Passing an AbortSignal to addEventListener does not prevent removeEventListener",
+          "status": "pass"
+        },
+        {
+          "name": "Passing an AbortSignal to addEventListener works with the once flag",
+          "status": "fail"
+        },
+        {
+          "name": "Removing a once listener works with a passed signal",
+          "status": "pass"
+        },
+        {
+          "name": "Passing an AbortSignal to multiple listeners",
+          "status": "fail"
+        },
+        {
+          "name": "Passing an AbortSignal to addEventListener works with the capture flag",
+          "status": "fail"
+        },
+        {
+          "name": "Aborting from a listener does not call future listeners",
+          "status": "fail"
+        },
+        {
+          "name": "Adding then aborting a listener in another listener does not call it",
+          "status": "pass"
+        },
+        {
+          "name": "Aborting from a nested listener should remove it",
+          "status": "timeout"
+        }
+      ],
+      "subtests_passed": 3,
+      "subtests_total": 9
     },
     "dom/events/AddEventListenerOptions-signal.any.worker.html": {
       "status": "fail",
@@ -1715,14 +1754,14 @@
       "subtests_total": 1
     },
     "dom/events/Event-dispatch-order.html": {
-      "status": "fail",
+      "status": "pass",
       "subtests": [
         {
           "name": "Event phases order",
-          "status": "timeout"
+          "status": "pass"
         }
       ],
-      "subtests_passed": 0,
+      "subtests_passed": 1,
       "subtests_total": 1
     },
     "dom/events/Event-dispatch-other-document.html": {
@@ -1760,7 +1799,7 @@
         },
         {
           "name": "Redispatching event which is being dispatched",
-          "status": "not-run"
+          "status": "timeout"
         }
       ],
       "subtests_passed": 0,
@@ -2999,8 +3038,15 @@
       "subtests_total": 4
     },
     "dom/events/EventTarget-add-listener-platform-object.html": {
-      "reason": "evaluation-threw",
-      "status": "error"
+      "status": "fail",
+      "subtests": [
+        {
+          "name": "addEventListener with a platform object",
+          "status": "not-run"
+        }
+      ],
+      "subtests_passed": 0,
+      "subtests_total": 1
     },
     "dom/events/EventTarget-add-remove-listener.any.html": {
       "status": "pass",
@@ -4621,7 +4667,7 @@
       "subtests": [
         {
           "name": "scrollIntoView-in-onscroll-to-sticky",
-          "status": "timeout"
+          "status": "fail"
         }
       ],
       "subtests_passed": 0,
@@ -4715,24 +4761,24 @@
       "status": "no-results"
     },
     "dom/events/scrolling/scrollend-event-fired-for-scrollIntoView.html?include=nested-scrollIntoView": {
-      "reason": "evaluation-threw",
-      "status": "error"
+      "reason": "no-subtests",
+      "status": "no-results"
     },
     "dom/events/scrolling/scrollend-event-fired-for-scrollIntoView.html?include=root-inline-end-block-end-behavior-auto": {
-      "reason": "evaluation-threw",
-      "status": "error"
+      "reason": "no-subtests",
+      "status": "no-results"
     },
     "dom/events/scrolling/scrollend-event-fired-for-scrollIntoView.html?include=root-inline-start-block-start-behavior-smooth": {
-      "reason": "evaluation-threw",
-      "status": "error"
+      "reason": "no-subtests",
+      "status": "no-results"
     },
     "dom/events/scrolling/scrollend-event-fired-for-scrollIntoView.html?include=subframe-inline-end-block-end-behavior-auto": {
-      "reason": "evaluation-threw",
-      "status": "error"
+      "reason": "no-subtests",
+      "status": "no-results"
     },
     "dom/events/scrolling/scrollend-event-fired-for-scrollIntoView.html?include=subframe-inline-start-block-start-behavior-smooth": {
-      "reason": "evaluation-threw",
-      "status": "error"
+      "reason": "no-subtests",
+      "status": "no-results"
     },
     "dom/events/scrolling/scrollend-event-fired-to-document.html": {
       "reason": "no-subtests",
@@ -4870,7 +4916,7 @@
       "subtests": [
         {
           "name": "Two separate webdriver action chains should have different wheel event transactions",
-          "status": "timeout"
+          "status": "fail"
         }
       ],
       "subtests_passed": 0,
@@ -4900,7 +4946,7 @@
       "subtests": [
         {
           "name": "Move the initial wheel event target.",
-          "status": "timeout"
+          "status": "fail"
         }
       ],
       "subtests_passed": 0,
@@ -4911,7 +4957,7 @@
       "subtests": [
         {
           "name": "Remove the initial wheel event target.",
-          "status": "timeout"
+          "status": "fail"
         }
       ],
       "subtests_passed": 0,
@@ -4941,20 +4987,20 @@
       "subtests_total": 2
     },
     "dom/events/webkit-animation-end-event.html": {
-      "reason": "evaluation-threw",
-      "status": "error"
+      "reason": "no-subtests",
+      "status": "no-results"
     },
     "dom/events/webkit-animation-iteration-event.html": {
-      "reason": "evaluation-threw",
-      "status": "error"
+      "reason": "no-subtests",
+      "status": "no-results"
     },
     "dom/events/webkit-animation-start-event.html": {
-      "reason": "evaluation-threw",
-      "status": "error"
+      "reason": "no-subtests",
+      "status": "no-results"
     },
     "dom/events/webkit-transition-end-event.html": {
-      "reason": "evaluation-threw",
-      "status": "error"
+      "reason": "no-subtests",
+      "status": "no-results"
     },
     "dom/events/window-composed-path.html": {
       "status": "pass",
@@ -25097,8 +25143,8 @@
       "subtests_total": 38
     },
     "dom/nodes/MutationObserver-cross-realm-callback-report-exception.html": {
-      "reason": "evaluation-threw",
-      "status": "error"
+      "reason": "no-subtests",
+      "status": "no-results"
     },
     "dom/nodes/MutationObserver-disconnect.html": {
       "status": "pass",
@@ -31869,8 +31915,8 @@
       "subtests_total": 8
     },
     "dom/nodes/Node-contains-xml.xml": {
-      "reason": "evaluation-threw",
-      "status": "error"
+      "reason": "no-subtests",
+      "status": "no-results"
     },
     "dom/nodes/Node-contains.html": {
       "status": "fail",
@@ -42406,8 +42452,15 @@
       "subtests_total": 1
     },
     "dom/nodes/ParentNode-querySelectors-namespaces.html": {
-      "reason": "evaluation-threw",
-      "status": "error"
+      "status": "fail",
+      "subtests": [
+        {
+          "name": "querySelectorAll must work with namespace attribute selectors on SVG",
+          "status": "not-run"
+        }
+      ],
+      "subtests_passed": 0,
+      "subtests_total": 1
     },
     "dom/nodes/ParentNode-querySelectors-space-and-dash-attribute-value.html": {
       "status": "pass",
@@ -163066,22 +163119,6 @@
           "status": "pass"
         },
         {
-          "name": "current doc[1][1][10]: #text node, current doc's range, type 3",
-          "status": "pass"
-        },
-        {
-          "name": "current doc[1][1][10]: #text node, foreign doc's range, type 3",
-          "status": "pass"
-        },
-        {
-          "name": "current doc[1][1][10]: #text node, XML doc's range, type 3",
-          "status": "pass"
-        },
-        {
-          "name": "current doc[1][1][10]: #text node, detached range, type 3",
-          "status": "pass"
-        },
-        {
           "name": "foreign doc: #document node, current doc's range, type 9",
           "status": "pass"
         },
@@ -163626,8 +163663,8 @@
           "status": "pass"
         }
       ],
-      "subtests_passed": 280,
-      "subtests_total": 288
+      "subtests_passed": 276,
+      "subtests_total": 284
     },
     "dom/ranges/Range-set.html": {
       "status": "fail",
@@ -215576,8 +215613,67 @@
       "subtests_total": 2
     },
     "dom/traversal/NodeIterator-removal.html": {
-      "reason": "evaluation-threw",
-      "status": "error"
+      "status": "fail",
+      "subtests": [
+        {
+          "name": "Test removing node paras[0]",
+          "status": "fail"
+        },
+        {
+          "name": "Test removing node paras[0].firstChild",
+          "status": "fail"
+        },
+        {
+          "name": "Test removing node paras[1].firstChild",
+          "status": "fail"
+        },
+        {
+          "name": "Test removing node paras[5].firstChild",
+          "status": "fail"
+        },
+        {
+          "name": "Test removing node foreignPara1",
+          "status": "fail"
+        },
+        {
+          "name": "Test removing node foreignPara1.firstChild",
+          "status": "fail"
+        },
+        {
+          "name": "Test removing node detachedPara1",
+          "status": "fail"
+        },
+        {
+          "name": "Test removing node detachedPara1.firstChild",
+          "status": "fail"
+        },
+        {
+          "name": "Test removing node foreignPara2",
+          "status": "fail"
+        },
+        {
+          "name": "Test removing node xmlElement",
+          "status": "fail"
+        },
+        {
+          "name": "Test removing node foreignTextNode",
+          "status": "fail"
+        },
+        {
+          "name": "Test removing node processingInstruction",
+          "status": "fail"
+        },
+        {
+          "name": "Test removing node comment",
+          "status": "fail"
+        },
+        {
+          "name": "Test removing node doctype",
+          "status": "fail"
+        }
+      ],
+      "subtests_passed": 0,
+      "subtests_total": 14
     },
     "dom/traversal/NodeIterator.html": {
       "status": "fail",

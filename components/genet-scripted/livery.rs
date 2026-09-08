@@ -203,6 +203,17 @@ fn synchronize_live_styles(host: &HostState, state: &mut LiveryState) {
     }
 }
 
+/// A fetcher that serves nothing. A live installation over it resolves exactly
+/// the inline content `ResolvedDocumentResources::discover` finds, while
+/// keeping the live source that makes the resolution repeat as the DOM grows.
+struct NoResourceFetch;
+
+impl ResourceFetcher for NoResourceFetch {
+    fn fetch(&self, _url: &str) -> Option<Vec<u8>> {
+        None
+    }
+}
+
 /// A retained Livery stylesheet session installed on one scripted runtime.
 ///
 /// Keep this handle when the host needs to update the media device. The runtime
@@ -242,6 +253,32 @@ impl LiveryCssom {
             live_sheets: None,
         }));
         Self::install_state(runtime, state)
+    }
+
+    /// Install over a document the parser has not built yet — the two-phase
+    /// form HTML's parsing model needs.
+    ///
+    /// [`install`](Self::install) freezes the author sheets it is handed, which
+    /// over an arena the parser has not filled is none at all. This one keeps a
+    /// live source with a fetcher that serves nothing, so the sheets are
+    /// re-resolved from the arena at every read: a `<style>` or a `<link>`
+    /// enters the cascade at the point the parser inserts it, and a script that
+    /// reads computed style mid-parse sees the sheets parsed so far — exactly
+    /// what a browser shows it. Inline-only, so it resolves what
+    /// `ResolvedDocumentResources::discover` would, but never goes stale.
+    pub fn install_over_parse<E: ScriptEngine>(
+        runtime: &mut Runtime<E>,
+        document_url: impl Into<String>,
+        device: Device,
+    ) -> Self {
+        Self::install_live_with_optional_sink(
+            runtime,
+            NoResourceFetch,
+            document_url,
+            ResourceLimits::default(),
+            device,
+            None,
+        )
     }
 
     /// Install a live resource-backed stylesheet set. The shared resolver runs

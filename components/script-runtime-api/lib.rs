@@ -889,6 +889,32 @@ impl<E: ScriptEngine> Runtime<E> {
         Ok(())
     }
 
+    /// Begin a testharness run over a document parsed **with scripts
+    /// interleaved**, against an already-loaded harness.
+    ///
+    /// This unties the two knots a runner meets when it stops parsing the whole
+    /// document first:
+    ///
+    /// - `testharness.js` and the results bridge are a **prelude**. They are
+    ///   loaded before this call, so they are installed before the document's
+    ///   first script runs, rather than collected as one of its scripts.
+    /// - **Exactly one** of the parse and the runner may dispatch `load`. The
+    ///   parse does not; this does, once, after the parse's own readiness
+    ///   sequence has finished, so the completion handshake stays where the
+    ///   runner already owns it.
+    pub fn begin_parsed_testharness(
+        &mut self,
+        html: &str,
+        loader: &dyn parse::ParserScriptLoader,
+    ) -> Result<parse::ParseReport, E::Error> {
+        self.host.borrow_mut().results.clear();
+        let report = self.parse_document_interleaved_with(html, loader, false);
+        self.engine
+            .eval("window.dispatchEvent(new Event('load'));")?;
+        self.flush_host_trace_events();
+        Ok(report)
+    }
+
     /// Fire up to `budget` due timers (with a microtask checkpoint after each task)
     /// against the virtual clock at `now_ms` (the real elapsed time of the run), and
     /// return how many fired. Real-time gating lets a short abort timer fire at its

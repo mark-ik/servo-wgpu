@@ -303,6 +303,145 @@ fn document_write_after_parsing_implies_open<E: ScriptEngine>() {
     assert_eq!(read(&mut rt, "typeof document.writeln"), "function");
 }
 
+/// A `<script>` in source written after parsing runs, per the script element's
+/// insertion steps — and runs *synchronously*, inside the `document.write` call
+/// that wrote it, so the next statement of the calling script sees what it did.
+fn a_written_script_runs<E: ScriptEngine>() {
+    let mut rt = parse::<E>("<body><p>o</p></body>");
+    rt.eval(
+        "window.ran = 0;
+         document.open();
+         document.write('<p id=a>a</p><script>window.ran = 1; window.sawA = !!document.getElementById(\"a\");<\\/script>');
+         window.afterWrite = window.ran;
+         document.close();",
+    )
+    .expect("write a script");
+    assert_eq!(
+        read(&mut rt, "String(window.ran)"),
+        "1",
+        "the written script ran"
+    );
+    assert_eq!(
+        read(&mut rt, "String(window.afterWrite)"),
+        "1",
+        "it ran inside document.write, not on a later turn"
+    );
+    assert_eq!(
+        read(&mut rt, "String(window.sawA)"),
+        "true",
+        "it saw the markup written before it"
+    );
+}
+
+/// The post-parse open stream **appends**: a node from an earlier write keeps
+/// its identity across a later one, and a tag split across two writes is one
+/// element. Re-materializing the accumulated source could do neither.
+fn the_open_stream_appends<E: ScriptEngine>() {
+    let mut rt = parse::<E>("<body><p>o</p></body>");
+    rt.eval(
+        "document.open();
+         document.write('<p id=first>1</p>');
+         window.held = document.getElementById('first');
+         document.write('<p id=sec');
+         document.write('ond>2</p>');
+         document.close();",
+    )
+    .expect("two writes");
+    assert_eq!(
+        read(
+            &mut rt,
+            "String(window.held === document.getElementById('first'))"
+        ),
+        "true",
+        "the first write's node survives the second"
+    );
+    assert_eq!(
+        read(&mut rt, "String(!!document.getElementById('second'))"),
+        "true",
+        "a tag split across two writes is one element"
+    );
+    assert_eq!(read(&mut rt, "String(window.held.textContent)"), "1");
+}
+
+/// A parse-time custom element is upgraded at its **creation**, not at the next
+/// script pause: a constructor that looks at the element after it sees an
+/// element the parser has not reached yet, exactly as in a browser.
+fn a_parsed_element_upgrades_at_creation<E: ScriptEngine>() {
+    let mut rt = parse::<E>(
+        "<body>
+         <script>
+           window.seen = [];
+           customElements.define('x-at', class extends HTMLElement {
+             constructor() {
+               super();
+               window.seen.push(document.querySelectorAll('x-at').length);
+             }
+           });
+         </script>
+         <x-at id=one></x-at><x-at id=two></x-at><x-at id=three></x-at>
+         </body>",
+    );
+    // One constructor per element, each running while only the elements up to
+    // and including its own have been parsed.
+    assert_eq!(read(&mut rt, "String(window.seen.length)"), "3");
+    assert_eq!(
+        read(&mut rt, "window.seen.join(',')"),
+        "1,2,3",
+        "each upgrade runs at creation, before the next element is parsed"
+    );
+}
+
+/// HTML has the parser process written characters *during* the
+/// `document.write` call, so the markup is in the DOM before the next statement
+/// of the writing script runs. A whole WPT battery is written in exactly this
+/// shape, and queueing the source until the script returns fails all of it.
+fn a_write_during_parsing_is_visible_to_its_own_script<E: ScriptEngine>() {
+    let mut rt = parse::<E>(
+        // The script sits in `head`, as WPT's document-write battery has it,
+        // so `document.body.textContent` is the written text and nothing else.
+        "<head><script>\
+           document.write('PASS');\
+           window.sameStatement = document.body.textContent;\
+           document.write('<b id=w>x</b>');\
+           window.sawElement = !!document.getElementById('w');\
+         </script></head><span id=after></span>",
+    );
+    assert_eq!(read(&mut rt, "window.sameStatement"), "PASS");
+    assert_eq!(read(&mut rt, "String(window.sawElement)"), "true");
+    // And it still landed at the insertion point, before the following source.
+    assert_eq!(
+        read(
+            &mut rt,
+            "document.getElementById('w').nextElementSibling.id"
+        ),
+        "after"
+    );
+}
+
+/// A `<script>` in a foreign namespace does not pause html5ever's tokenizer, so
+/// it has to be collected at creation and run at the next pause — before the
+/// HTML script that may name what it defined.
+fn an_svg_script_runs_before_the_next_html_script<E: ScriptEngine>() {
+    let mut rt = parse::<E>(
+        "<body><svg><script>window.fromSvg = 'svg';</script></svg>         <script>window.seenBySecond = window.fromSvg;</script></body>",
+    );
+    assert_eq!(read(&mut rt, "String(window.fromSvg)"), "svg");
+    assert_eq!(
+        read(&mut rt, "String(window.seenBySecond)"),
+        "svg",
+        "the SVG script must have run before the HTML script that follows it"
+    );
+}
+
+/// HTML never executes a `<script>` found in a template's contents.
+fn a_script_in_template_contents_does_not_run<E: ScriptEngine>() {
+    let mut rt = parse::<E>(
+        "<body><template><script>window.ranInTemplate = true;</script></template>         <script>window.after = true;</script></body>",
+    );
+    assert_eq!(read(&mut rt, "String(window.ranInTemplate)"), "undefined");
+    assert_eq!(read(&mut rt, "String(window.after)"), "true");
+}
+
 macro_rules! both_engines {
     ($($body:ident => ($boa:ident, $nova:ident)),* $(,)?) => {
         $(
@@ -330,4 +469,14 @@ both_engines! {
     a_mutation_observer_sees_parser_insertions => (observer_parse_on_boa, observer_parse_on_nova),
     parser_created_nodes_keep_their_wrapper => (wrapper_identity_on_boa, wrapper_identity_on_nova),
     document_write_after_parsing_implies_open => (implied_open_on_boa, implied_open_on_nova),
+    a_written_script_runs => (written_script_on_boa, written_script_on_nova),
+    a_write_during_parsing_is_visible_to_its_own_script
+        => (write_visible_on_boa, write_visible_on_nova),
+    the_open_stream_appends => (open_stream_appends_on_boa, open_stream_appends_on_nova),
+    a_parsed_element_upgrades_at_creation
+        => (upgrade_at_creation_on_boa, upgrade_at_creation_on_nova),
+    an_svg_script_runs_before_the_next_html_script
+        => (svg_script_on_boa, svg_script_on_nova),
+    a_script_in_template_contents_does_not_run
+        => (template_script_inert_on_boa, template_script_inert_on_nova),
 }

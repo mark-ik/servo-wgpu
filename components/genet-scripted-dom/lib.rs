@@ -168,6 +168,12 @@ pub struct ScriptedDom {
     /// observes pays nothing and behaves exactly as before.
     observed: Vec<ObservedMutation>,
     observing: bool,
+    /// Whether a document parser is building into this arena. Its open-element
+    /// stack holds ids the arena knows nothing about, so while it is set a
+    /// replaced subtree is orphaned rather than freed — `documentElement
+    /// .innerHTML = ...` from a script the parser is running would otherwise
+    /// pull the tree out from under the tree builder's own handles.
+    parsing: bool,
     /// Index into `observed` where the current coalescing group began. A DOM
     /// operation that is one record to script but several arena mutations
     /// (`replaceChild`) opens a group so the childList records for one target
@@ -326,6 +332,7 @@ impl ScriptedDom {
             mutation_base: 0,
             observed: Vec::new(),
             observing: false,
+            parsing: false,
             observed_group: None,
             structure_epoch: 0,
             shadow_roots: std::collections::HashMap::new(),
@@ -418,6 +425,15 @@ impl ScriptedDom {
         if !on {
             self.observed.clear();
         }
+    }
+
+    /// Tell the arena a document parser is building into it. See
+    /// [`ScriptedDom::parsing`]: while set, nothing frees a subtree, because
+    /// the tree builder holds handles the arena cannot see. Cleared when the
+    /// parse ends, after which ordinary collection reclaims whatever the
+    /// parser left orphaned.
+    pub fn set_parsing(&mut self, on: bool) {
+        self.parsing = on;
     }
 
     /// Whether the observer record is being written.
@@ -550,7 +566,7 @@ impl ScriptedDom {
     /// the subtree is only orphaned; [`collect`](Self::collect) reclaims it once
     /// nothing reaches it.
     fn release_subtree(&mut self, node: NodeId) {
-        if !self.observing {
+        if !self.observing && !self.parsing {
             self.drop_subtree(node);
         }
     }

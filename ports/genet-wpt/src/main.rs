@@ -404,7 +404,8 @@ fn synthesize_any_js(path: &Path, variant_url: Option<&str>) -> Option<String> {
         "<!doctype html><meta charset=utf-8>\n\
          <script>self.GLOBAL={isWindow:function(){return true;},isWorker:function(){return false;},isShadowRealm:function(){return false;}};</script>\n\
          <script src=\"/resources/testharness.js\"></script>\n\
-         <script src=\"/resources/testharnessreport.js\"></script>\n",
+         <script src=\"/resources/testharnessreport.js\"></script>\n\
+         <div id=log></div>\n",
     );
     for s in scripts {
         html.push_str(&format!("<script src=\"{s}\"></script>\n"));

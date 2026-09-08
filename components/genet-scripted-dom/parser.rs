@@ -76,8 +76,18 @@ struct PolicyState {
     /// element, in creation order. The host drains this to run parse-time
     /// upgrades before the next script sees the tree.
     custom_candidates: Vec<NodeId>,
+    /// `<script>` elements the parser created in a **foreign** namespace (SVG,
+    /// MathML), in creation order. html5ever only pauses for HTML-namespace
+    /// scripts, so these never reach the driver as a `Script` pause; it drains
+    /// this list at the end of the parse and runs them.
+    foreign_scripts: Vec<NodeId>,
     /// The quirks mode the tree builder inferred from the doctype.
     quirks_mode: QuirksModeRecord,
+    /// Whether the registry holds any custom element definition at all. While
+    /// it does, the driver feeds the tokenizer a tag at a time so an upgrade
+    /// runs at the element's *creation* rather than at the next script pause.
+    /// A document that never defines one pays nothing for this.
+    upgrade_at_creation: bool,
 }
 
 /// The arena has no quirks-mode field (the scripted tier reports `compatMode`
@@ -112,12 +122,37 @@ impl ParserPolicy {
         self.inner.borrow().quirks_mode
     }
 
+    /// Whether any custom element is defined. Set by the host at each policy
+    /// refresh; see [`PolicyState::upgrade_at_creation`].
+    pub fn set_upgrade_at_creation(&self, on: bool) {
+        self.inner.borrow_mut().upgrade_at_creation = on;
+    }
+
+    /// Whether the driver should hand control back at element creation.
+    pub fn upgrade_at_creation(&self) -> bool {
+        self.inner.borrow().upgrade_at_creation
+    }
+
+    /// Whether any parser-created element is waiting to be upgraded.
+    pub fn has_custom_candidates(&self) -> bool {
+        !self.inner.borrow().custom_candidates.is_empty()
+    }
+
+    /// Take the foreign-namespace `<script>` elements the parser created.
+    pub fn take_foreign_scripts(&self) -> Vec<NodeId> {
+        std::mem::take(&mut self.inner.borrow_mut().foreign_scripts)
+    }
+
     fn shadow_is_disabled(&self, local: &str) -> bool {
         self.inner.borrow().shadow_disabled.contains(local)
     }
 
     fn note_custom_candidate(&self, id: NodeId) {
         self.inner.borrow_mut().custom_candidates.push(id);
+    }
+
+    fn note_foreign_script(&self, id: NodeId) {
+        self.inner.borrow_mut().foreign_scripts.push(id);
     }
 
     fn set_quirks_mode(&self, mode: QuirksModeRecord) {
@@ -165,6 +200,11 @@ pub struct ScriptedTreeSink<A: DomAccess> {
     /// `<script>` elements the tokenizer marked "already started" (EOF inside
     /// the element). Those must never run.
     already_started: RefCell<HashSet<NodeId>>,
+    /// MathML `<annotation-xml>` elements the tree builder created as HTML
+    /// integration points. This is a parse-time fact with nowhere to live in
+    /// the arena, so the sink keeps it for the length of the parse — which is
+    /// exactly as long as the tree builder asks about it.
+    mathml_integration_points: RefCell<HashSet<NodeId>>,
 }
 
 impl<A: DomAccess> ScriptedTreeSink<A> {
@@ -174,6 +214,7 @@ impl<A: DomAccess> ScriptedTreeSink<A> {
             policy,
             content_target: RefCell::new(HashMap::new()),
             already_started: RefCell::new(HashSet::new()),
+            mathml_integration_points: RefCell::new(HashSet::new()),
         }
     }
 
@@ -224,6 +265,7 @@ impl<A: DomAccess> TreeSink for ScriptedTreeSink<A> {
     }
 
     fn create_element(&self, name: QualName, attrs: Vec<Attribute>, flags: ElementFlags) -> NodeId {
+        let is_foreign_script = name.ns != ns!(html) && &*name.local == "script";
         let is_custom_candidate = name.ns == ns!(html)
             && (name.local.contains('-') || attrs.iter().any(|a| *a.name.local == *"is"));
         let id = self.access.with(|dom| {
@@ -237,8 +279,14 @@ impl<A: DomAccess> TreeSink for ScriptedTreeSink<A> {
             }
             id
         });
+        if flags.mathml_annotation_xml_integration_point {
+            self.mathml_integration_points.borrow_mut().insert(id);
+        }
         if is_custom_candidate {
             self.policy.note_custom_candidate(id);
+        }
+        if is_foreign_script {
+            self.policy.note_foreign_script(id);
         }
         id
     }
@@ -361,11 +409,8 @@ impl<A: DomAccess> TreeSink for ScriptedTreeSink<A> {
         }
     }
 
-    fn is_mathml_annotation_xml_integration_point(&self, _handle: &NodeId) -> bool {
-        // The arena stores no per-element MathML integration-point flag; the
-        // static sink's copy of it is a parse-time fact the tree copy drops
-        // too. Named a residual in the lane plan.
-        false
+    fn is_mathml_annotation_xml_integration_point(&self, handle: &NodeId) -> bool {
+        self.mathml_integration_points.borrow().contains(handle)
     }
 
     /// HTML: a declarative shadow root is refused when the intended parent's
@@ -442,6 +487,12 @@ pub enum ParsePause {
     /// The tree builder popped this `<script>` element. It and its text child
     /// are already in the tree; the caller runs it (or not) and resumes.
     Script(NodeId),
+    /// The parser created one or more elements that could name a custom
+    /// element, and a definition exists. Returned only while
+    /// [`ParserPolicy::upgrade_at_creation`] is set: the caller runs the
+    /// upgrade and resumes, so the constructor runs at creation rather than at
+    /// the next script pause.
+    Created,
     /// The input stream is exhausted. More input may still be pushed (the
     /// caller's own deferred sources); [`DocumentParser::end`] ends the parse.
     Done,
@@ -451,6 +502,11 @@ pub enum ParsePause {
 pub struct DocumentParser<A: DomAccess> {
     parser: driver::Parser<ScriptedTreeSink<A>>,
     policy: Rc<ParserPolicy>,
+    /// Source pushed but not yet handed to the tokenizer. Ordinarily the whole
+    /// remainder goes in on the first `feed`; while
+    /// [`ParserPolicy::upgrade_at_creation`] is set it is fed a tag at a time
+    /// so the driver regains control at element creation.
+    pending: RefCell<std::collections::VecDeque<StrTendril>>,
 }
 
 impl<A: DomAccess> DocumentParser<A> {
@@ -458,7 +514,11 @@ impl<A: DomAccess> DocumentParser<A> {
     pub fn new(access: A, policy: Rc<ParserPolicy>) -> Self {
         let sink = ScriptedTreeSink::new(access, Rc::clone(&policy));
         let parser = driver::parse_document(sink, ParseOpts::default());
-        Self { parser, policy }
+        Self {
+            parser,
+            policy,
+            pending: RefCell::new(std::collections::VecDeque::new()),
+        }
     }
 
     /// The policy table the host refreshes at each pause.
@@ -470,7 +530,9 @@ impl<A: DomAccess> DocumentParser<A> {
     /// own bytes as they arrive, not `document.write`.
     pub fn push_source(&self, source: &str) {
         if !source.is_empty() {
-            self.parser.input_buffer.push_back(StrTendril::from(source));
+            self.pending
+                .borrow_mut()
+                .push_back(StrTendril::from(source));
         }
     }
 
@@ -478,25 +540,114 @@ impl<A: DomAccess> DocumentParser<A> {
     /// currently executing script's position in the input stream. This is
     /// `document.write` during parsing, and it is why the parser has to own its
     /// own buffer queue rather than being handed one string.
+    /// Everything the tokenizer has not read yet is handed back to `pending`
+    /// first, so the written text becomes the *whole* of the buffer queue. That
+    /// is what makes the insertion point a point: [`pump_written`] can then
+    /// tokenize exactly the inserted characters and stop, leaving the
+    /// document's remaining source — and a later write — after it.
     pub fn write_at_insertion_point(&self, source: &str) {
-        if !source.is_empty() {
-            self.parser
-                .input_buffer
-                .push_front(StrTendril::from(source));
+        if source.is_empty() {
+            return;
+        }
+        self.reclaim_input();
+        self.parser.input_buffer.push_back(StrTendril::from(source));
+    }
+
+    /// Tokenize the characters written at the insertion point and stop there.
+    ///
+    /// HTML's `document.write` has the parser process the inserted characters
+    /// during the call, and *only* those: the source after the insertion point
+    /// is not consumed, or a second write in the same script would land after
+    /// markup that follows the first one in the document.
+    pub fn pump_written(&self) -> ParsePause {
+        loop {
+            match self.parser.tokenizer.feed(&self.parser.input_buffer) {
+                TokenizerResult::Script(node) => return ParsePause::Script(node),
+                TokenizerResult::Done => {
+                    if self.policy.upgrade_at_creation() && self.policy.has_custom_candidates() {
+                        return ParsePause::Created;
+                    }
+                    return ParsePause::Done;
+                },
+                _ => continue,
+            }
         }
     }
 
     /// Whether the tokenizer has consumed everything pushed so far.
     pub fn input_is_empty(&self) -> bool {
-        self.parser.input_buffer.is_empty()
+        self.parser.input_buffer.is_empty() && self.pending.borrow().is_empty()
     }
 
-    /// Tokenize until a `<script>` is popped or the input runs out.
+    /// Move the next slice of pushed source into the tokenizer's buffer queue.
+    /// Returns whether anything was moved.
+    ///
+    /// Whole-remainder ordinarily. While a custom element is defined, one tag
+    /// at a time — cut just past the next `>` — so [`resume`](Self::resume) can
+    /// hand control back at element creation. `document.write` pushes straight
+    /// onto `input_buffer` (the insertion point), which is drained first, so
+    /// the two orders compose.
+    fn feed_next_chunk(&self) -> bool {
+        let mut pending = self.pending.borrow_mut();
+        let Some(chunk) = pending.pop_front() else {
+            return false;
+        };
+        if !self.policy.upgrade_at_creation() {
+            self.parser.input_buffer.push_back(chunk);
+            return true;
+        }
+        match chunk.find('>') {
+            Some(cut) if cut + 1 < chunk.len() => {
+                let cut = (cut + 1) as u32;
+                let head = chunk.subtendril(0, cut);
+                let tail = chunk.subtendril(cut, chunk.len32() - cut);
+                pending.push_front(tail);
+                self.parser.input_buffer.push_back(head);
+            },
+            _ => self.parser.input_buffer.push_back(chunk),
+        }
+        true
+    }
+
+    /// Move everything the tokenizer has not consumed back into `pending`,
+    /// preserving order. The buffer queue only ever holds unread text, so this
+    /// is a pure hand-back.
+    fn reclaim_input(&self) {
+        let mut taken = Vec::new();
+        while let Some(chunk) = self.parser.input_buffer.pop_front() {
+            taken.push(chunk);
+        }
+        if taken.is_empty() {
+            return;
+        }
+        let mut pending = self.pending.borrow_mut();
+        for chunk in taken.into_iter().rev() {
+            pending.push_front(chunk);
+        }
+    }
+
+    /// Tokenize until a `<script>` is popped, an upgrade is owed, or the input
+    /// runs out.
     pub fn resume(&self) -> ParsePause {
+        // A definition may have appeared since the last pause, and the
+        // tokenizer is usually holding the whole rest of the document. Take
+        // back what it has not read yet so it can be handed over a tag at a
+        // time; otherwise the next `feed` would build the entire remainder
+        // before the driver could upgrade anything.
+        if self.policy.upgrade_at_creation() {
+            self.reclaim_input();
+        }
         loop {
             match self.parser.tokenizer.feed(&self.parser.input_buffer) {
-                TokenizerResult::Done => return ParsePause::Done,
                 TokenizerResult::Script(node) => return ParsePause::Script(node),
+                TokenizerResult::Done => {
+                    if self.policy.upgrade_at_creation() && self.policy.has_custom_candidates() {
+                        return ParsePause::Created;
+                    }
+                    if !self.feed_next_chunk() {
+                        return ParsePause::Done;
+                    }
+                },
                 // An encoding indicator on an already-decoded string stream is
                 // nothing to act on; keep tokenizing.
                 _ => continue,
@@ -521,6 +672,7 @@ impl<A: DomAccess> DocumentParser<A> {
         // `Parser::finish` would loop to done and assert the buffer is empty;
         // the caller has already driven it to `Done`, and an abandoned parse
         // (a `document.open` mid-stream) may deliberately leave input behind.
+        self.pending.borrow_mut().clear();
         while self.parser.input_buffer.pop_front().is_some() {}
         self.parser.tokenizer.end();
     }
@@ -543,6 +695,12 @@ mod tests {
         }
     }
 
+    /// What the host driver does at a `Created` pause: take the candidates so
+    /// the parser can go on.
+    fn policy_drain<A: DomAccess>(parser: &DocumentParser<A>) {
+        parser.policy().take_custom_candidates();
+    }
+
     fn parse_pauses(html: &str) -> (Rc<RefCell<ScriptedDom>>, Vec<String>) {
         let dom = Rc::new(RefCell::new(ScriptedDom::new()));
         let policy = Rc::new(ParserPolicy::new());
@@ -552,6 +710,12 @@ mod tests {
         loop {
             match parser.resume() {
                 ParsePause::Done => break,
+                // No definition is registered in these unit tests, so the
+                // driver never asks for a creation-time upgrade; drain it the
+                // way the real driver does if one ever appears.
+                ParsePause::Created => {
+                    policy_drain(&parser);
+                },
                 ParsePause::Script(node) => {
                     let text = {
                         let dom = dom.borrow();
