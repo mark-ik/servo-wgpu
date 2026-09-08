@@ -59,9 +59,10 @@ older `docs/` corpus without changing their location or governance.
 | [Tag-name casing and the window globals](2026-09-07_tagname_window_globals_plan.md) | `tagName` / `nodeName` fold only for an HTML-namespaced element whose current node document is an HTML document, element interfaces and custom element names match case-sensitively, `document.importNode` exists, and `window` / `document` / `self` have their `[LegacyUnforgeable]` and `[Replaceable]` shapes on both the window and the worker global. Landed 2026-09-07: `Element-tagName.html` 3/6 to 6/6, `html/semantics/interfaces.html` to all-pass, +31 subtest passes with zero pass-to-fail. Residuals: `createElement`'s namespace on an XML document, and attribute-name folding, which still turns on the namespace alone. |
 | [Dedicated Worker](2026-09-07_worker_plan.md) | A second `Runtime` of the same engine on its own thread with `DedicatedWorkerGlobalScope`, `Worker` on the page, `MessagePort` across the boundary, and a JSON encoding of the clone record as the cross-agent wire. Landed 2026-09-07: `workers` 5 to 74 all-pass and 21 to 321 subtests, genet-wpt hosts `.worker.js` and `.any.worker` variants, +972 subtest passes with zero pass-to-fail. Residuals: `SharedWorker`, cross-agent `BroadcastChannel`, module workers, nested-worker relay ordering, real `ArrayBuffer` detachment, and a hosted headed receipt. |
 | [WebSocket](2026-09-07_websocket_plan.md) | The `WebSocket` host object over netfetcher's transport, with the browser policy the Fetch algorithm does not wrap it in enforced on the connection path. Landed 2026-09-07: `websockets` 0 to 1,090 of 1,877 subtests in disk mode, 254 all-pass and 1,144/1,586 in the first server-mode run; `fetch` and `xhr` byte-identical. Residuals: worker-hosted sockets (214 files), `WebSocketStream`, real backpressure. |
-| [Host contract ownership](../docs/2026-08-14_web_platform_host_contract_plan.md) | Genet owns retained session contracts; Mere owns surface orchestration and product adapters. The older S0-S5 receipts need a consumer-side status refresh before resuming those lanes. |
 | [Reflector identity](2026-09-07_reflector_identity_plan.md) | Wrapper liveness follows node reachability: every wrapper has an opaque root, a connected node's wrapper lives as long as its document, a detached subtree's as long as script holds any one of it. Landed 2026-09-07 with zero census movement over six directories under both harness-collection settings; the receipts are the reproducer set and the restored `ErrorEvent` `toStringTag`, not a score. Residual: the between-tick window for detached trees. |
 
+| [Host contract ownership](../docs/2026-08-14_web_platform_host_contract_plan.md) | Genet owns retained session contracts; Mere owns surface orchestration and product adapters. The older S0-S5 receipts need a consumer-side status refresh before resuming those lanes. |
+| [Shadow DOM](2026-09-07_shadow_dom_plan.md) | A parentless shadow root in both DOMs, a per-host slot assignment table maintained at the mutation, `flat_children` under Livery's rendering traversals, per-rule tree-scope matching with `:host` / `:host()` / `::slotted()` / `::part()`, event retargeting and `composedPath()`, and the declarative post-parse pass with `<template>.content` in one shared inert document. Landed 2026-09-07/08: `shadow-dom` 6 to 45 all-pass and 24 to 1,512 subtests, +1,761 subtest passes over four directories, one explained pass-to-fail. Residuals: `:host-context()`, `adoptedStyleSheets`, focus delegation, and declarative attachment consulting the custom-element registry (which needs parser/script interleaving — Mark's call). |
 The [Buckram master](../docs/2026-07-26_buckram_css_layout_engine_plan.md)
 defines ownership and the [lane program](../docs/2026-08-21_buckram_livery_lane_program_plan.md)
 assigns residuals. The linked execution plans carry their current gate; a
@@ -191,9 +192,9 @@ completed corpus census or bounded slice does not close its enclosing feature.
   all-pass; +82,944 subtest passes over nine directories, zero pass-to-fail, and
   both `error` regressions are throughput walls on files that never passed. Raw
   maps under `Code/testing/genet/wpt-ledger/2026-09-07_dom_node_model/`.)
-  (**landed 2026-09-07**: `Range`, `StaticRange`, `AbstractRange`, `Selection`
 - [selection_range_plan](2026-09-07_selection_range_plan.md)
   and `getSelection` over the scripted arena. The DOM's live-range steps run at
+  (**landed 2026-09-07**: `Range`, `StaticRange`, `AbstractRange`, `Selection`
   the bootstrap's own twelve-call-site mutation funnel rather than off the
   arena's observer record, because they need the child index and the boundary
   offsets as they stood *before* the mutation; boundaries are indexed by the
@@ -274,7 +275,6 @@ completed corpus census or bounded slice does not close its enclosing feature.
   sleeping to it. The re-run census moves 204 files, every one attributed,
   none from a passing status. Raw maps under
   `Code/testing/genet/wpt-ledger/2026-09-07_harness_repair/`.)
-- [web_platform_wpt_census](2026-09-06_web_platform_wpt_census.md)
 - [reflector_identity_scoping](2026-09-07_reflector_identity_scoping.md)
   (**research 2026-09-07**: why a node's JS wrapper — and its listeners — could be
   silently replaced at a GC tick. Establishes the mechanism with receipts on both
@@ -465,8 +465,6 @@ same session; links out of it are rewritten for its new depth.
   for a newly-defined name on one side of an equality before looking for a bug,
   and treat a pin taken over an unimplemented feature as a record of the pin,
   not of the score.
-  on a node type neither lane was about, aborting every file before its first
-  subtest. Probe the shared `common.js` of a directory that will not move before
 - **A directory's census can be floored by one missing name.** Two directories
   in this session reported almost nothing because their shared setup file threw
   concluding anything about the feature under test. Supplying the missing name
@@ -488,16 +486,16 @@ same session; links out of it are rewritten for its new depth.
   agent can still speak, and make "can still speak" a *counted* report — an idle
   flag that does not say "idle as of which message" will cross a message in
   flight and quiesce the page over live work. See the Worker plan's Findings.
-  its caller; prove that resolution before refreshing product revisions.
-- **Parallel work needs commit fences as well as file fences.** Pin one base,
 - **Verify paired forks from a standalone consumer.** Cargo root patches are
   not inherited by downstream workspaces. A coupled dependency must travel with
-  give each worker a disposable detached worktree and disjoint write paths,
+  its caller; prove that resolution before refreshing product revisions.
 - **A liveness question the host cannot answer belongs to the collector.** If
   the host takes a strong root to keep something alive, it can no longer ask
   whether anything else was keeping it alive — the root is the answer's own
   confounder, and no order of unroot, collect and query recovers it without the
   collection taking the object the question was about. Express the *relation*
+  on a node type neither lane was about, aborting every file before its first
+  subtest. Probe the shared `common.js` of a directory that will not move before
   instead, as a reference cycle a tracing GC already resolves: a `WeakMap` from
   each member of a group to a shared array of all members is an ephemeron, so
   the group lives exactly while any member is reachable. See the reflector
@@ -515,3 +513,25 @@ was stale before 2026-09-07 and is now stated by the sections themselves.
 All three former component area roots now live in Mere. The older `docs/`
 corpus has selected execution entry points above; its full migration and
 governance remain deferred under the policy's local addendum.
+- **Make encapsulation a property of the shape, not a flag every consumer
+  checks.** A shadow root and a `<template>`'s contents are both unreachable
+  from the document by *construction*: neither has a parent, so no walk that
+  descends `dom_children` — layout, serialization, `querySelector`, Fleece's
+  extraction, the named-property scan — can enter one, and none of them had to
+  be taught anything. The cost of the choice is that a copier must be told
+  explicitly, and there were three (`clone_into`, `copy_fragment_node`,
+  `cloneNode`); each was silently dropping the content until it was. That trade
+  is the right way round: a missed copy is a visibly empty `content`, while a
+  missed encapsulation check is a leak nobody notices. See the Shadow DOM plan's
+  Findings.
+- **A named property script has replaced must survive the next refresh.**
+  `__refreshNamedProperties` deleted every name it had installed before
+  reinstalling from the document. Its own comment already recorded that an
+  `id="test"` element must not shadow testharness's `test()`, and its setter got
+  the shadowing right — but the *next* refresh took the script's value back out.
+  Nothing triggered a mid-file refresh until this lane's `setHTMLUnsafe` did, and
+  then a shadow-DOM file died with `not a callable function` from calling
+  `test(...)`. A guard that is correct once and re-run later is not a guard;
+  check that what you are removing is still the thing you installed.
+- **Parallel work needs commit fences as well as file fences.** Pin one base,
+  give each worker a disposable detached worktree and disjoint write paths,

@@ -27,6 +27,11 @@ use layout_dom_api::{
 
 mod forms;
 mod serialize;
+mod shadow;
+
+pub use shadow::{
+    AttachShadowError, ShadowRootInit, ShadowRootMode, SlotAssignmentMode, may_host_shadow_tree,
+};
 
 /// Opaque node identity: a stable index into the arena (slots are never reused, so
 /// ids stay valid for the document's lifetime).
@@ -174,6 +179,31 @@ pub struct ScriptedDom {
     /// than the `DomMutation` sequence number, which also advances on attribute
     /// and character-data facts that cannot move a node between trees.
     structure_epoch: u64,
+    /// Shadow-root records, keyed by the shadow root's store key. Empty for
+    /// every document that never attaches one, which is what lets the flat-tree
+    /// and assignment hooks cost a `HashMap::is_empty` there.
+    shadow_roots: std::collections::HashMap<usize, shadow::ShadowRootData>,
+    /// Host store key -> its shadow root. The reverse of
+    /// [`shadow::ShadowRootData::host`], kept because `shadowRoot` and
+    /// `flat_children` both ask host-first.
+    shadow_hosts: std::collections::HashMap<usize, NodeId>,
+    /// Slottable store key -> the slot it is assigned to (`assignedSlot`).
+    assigned_slots: std::collections::HashMap<usize, NodeId>,
+    /// Slot store key -> its assigned nodes, in tree order. The flat tree's hot
+    /// read; the per-root table in `ShadowRootData` is the diffing copy.
+    slot_assignments: std::collections::HashMap<usize, Vec<NodeId>>,
+    /// Slots whose assignment changed since the last drain. The bootstrap fires
+    /// one `slotchange` per entry at the end of the microtask checkpoint.
+    slot_changes: Vec<NodeId>,
+    /// Template element store key -> its contents `DocumentFragment`. The
+    /// fragment is parentless and is **not** in the main tree, so no ordinary
+    /// walk reaches it; that is exactly what makes template contents inert.
+    template_contents: std::collections::HashMap<usize, NodeId>,
+    /// The one inert `Document` that owns every template's contents fragment,
+    /// minted on the first `<template>` and shared by all of them — HTML's
+    /// "appropriate template contents owner document", which is what makes
+    /// `a.content.ownerDocument === b.content.ownerDocument` true.
+    template_document: Option<NodeId>,
     /// Process-unique document tag (G0 fence). Only present where the fence is
     /// active; elsewhere ids are untagged and this field would be dead weight.
     #[cfg(all(debug_assertions, target_pointer_width = "64"))]
@@ -297,6 +327,13 @@ impl ScriptedDom {
             observing: false,
             observed_group: None,
             structure_epoch: 0,
+            shadow_roots: std::collections::HashMap::new(),
+            shadow_hosts: std::collections::HashMap::new(),
+            assigned_slots: std::collections::HashMap::new(),
+            slot_assignments: std::collections::HashMap::new(),
+            slot_changes: Vec::new(),
+            template_contents: std::collections::HashMap::new(),
+            template_document: None,
             #[cfg(all(debug_assertions, target_pointer_width = "64"))]
             doc_tag: fence::next_doc_tag(),
         };
@@ -533,6 +570,7 @@ impl ScriptedDom {
                 former_parent,
             });
             self.record_child_list(former_parent, Vec::new(), vec![child], previous, next);
+            self.reassign_for_parent(former_parent, child);
         }
     }
 
@@ -573,6 +611,7 @@ impl ScriptedDom {
         }
         self.mutations.push(DomMutation::SubtreeReplaced { node });
         self.record_child_list(node, added, removed, None, None);
+        self.reassign_for(node);
     }
 
     /// Create a detached `Document` node (a second document, for
@@ -691,7 +730,7 @@ impl ScriptedDom {
 
     /// Import exactly one serialized subtree as a detached node.
     pub fn import_serialized_subtree(&mut self, html: &str) -> Result<NodeId, String> {
-        let fragment = StaticDocument::parse(html);
+        let fragment = StaticDocument::parse_fragment_source(html);
         let mut candidates = if let Some(body) = Self::fragment_body(&fragment) {
             let body_children: Vec<StaticNodeId> = fragment.dom_children(body).collect();
             if !body_children.is_empty() {
@@ -815,11 +854,18 @@ impl ScriptedDom {
         while let Some(v) = stack.pop() {
             // This node's neighbours (parent + children) as owned ids, dropping
             // the store borrow before recursing.
+            // Neighbours are parent + children **plus the shadow edge**: a
+            // shadow root is not its host's child, so without the edge a live
+            // host would sweep its own shadow tree (and a pinned node inside a
+            // shadow tree would not keep its host alive).
             let neighbours: Vec<NodeId> = match self.nodes.get(&v) {
                 Some(node) => node
                     .parent
                     .into_iter()
                     .chain(node.children.iter().copied())
+                    .chain(self.shadow_hosts.get(&v).copied())
+                    .chain(self.shadow_roots.get(&v).map(|data| data.host))
+                    .chain(self.template_contents.get(&v).copied())
                     .collect(),
                 None => continue,
             };
@@ -831,7 +877,9 @@ impl ScriptedDom {
         // Sweep: prune every unmarked entry.
         let before = self.nodes.len();
         self.nodes.retain(|k, _| marked.contains(k));
-        before - self.nodes.len()
+        let pruned = before - self.nodes.len();
+        self.prune_shadow_tables();
+        pruned
     }
 
     /// The structural-mutation counter (see [`structure_epoch`] on the struct).
@@ -853,10 +901,27 @@ impl ScriptedDom {
     pub fn tree_root(&self, id: NodeId) -> Option<NodeId> {
         let mut cursor = self.try_index(id).filter(|i| self.nodes.contains_key(i))?;
         let mut out = id;
-        // Bounded by tree depth; the store is acyclic by construction.
-        while let Some(parent) = self.nodes.get(&cursor).and_then(|n| n.parent) {
-            out = parent;
-            cursor = self.index(parent);
+        // Bounded by tree depth; the store is acyclic by construction. A shadow
+        // root has no parent, so the walk continues through its **host**: a
+        // shadow tree hangs off its host, and the reflector-identity policy
+        // needs every wrapper in it to share the host's opaque root, or a
+        // connected component's wrappers would split into two liveness groups.
+        loop {
+            if let Some(parent) = self.nodes.get(&cursor).and_then(|n| n.parent) {
+                out = parent;
+                cursor = self.index(parent);
+                continue;
+            }
+            match self.shadow_roots.get(&cursor) {
+                Some(data) => match self.try_index(data.host) {
+                    Some(host) if self.nodes.contains_key(&host) => {
+                        out = data.host;
+                        cursor = host;
+                    },
+                    _ => break,
+                },
+                None => break,
+            }
         }
         Some(out)
     }
@@ -887,6 +952,10 @@ impl ScriptedDom {
                 NodeKind::Text | NodeKind::CdataSection => node_kinds.text += 1,
                 NodeKind::Comment => node_kinds.comments += 1,
                 NodeKind::ProcessingInstruction => node_kinds.processing_instructions += 1,
+                // A shadow root **is** a DocumentFragment in the DOM's own
+                // hierarchy (nodeType 11); the observable stats have no separate
+                // counter, so it counts as one.
+                NodeKind::ShadowRoot => node_kinds.document_fragments += 1,
             }
 
             attribute_count += node.attrs.len();
@@ -966,6 +1035,27 @@ impl ScriptedDom {
             let copied = self.copy_fragment_node(src, child);
             self.attach_silent(new, copied);
         }
+        // A `<template>`'s contents and an element's shadow root are not among
+        // its children, so the child loop above cannot reach them. Without this
+        // an `innerHTML` that parsed a template would produce an element whose
+        // `content` is empty, and the declarative pass would have nothing to
+        // move into the shadow root it then built.
+        if let Some(contents) = src.template_contents(sid) {
+            let dst_contents = self.ensure_template_contents(new);
+            for child in src.dom_children(contents).collect::<Vec<_>>() {
+                let copied = self.copy_fragment_node(src, child);
+                self.attach_silent(dst_contents, copied);
+            }
+        }
+        if let Some(root) = src.shadow_root(sid) {
+            let init = src.shadow_init(sid).unwrap_or_default();
+            let dst_root = self.install_shadow_root(new, init, true);
+            for child in src.dom_children(root).collect::<Vec<_>>() {
+                let copied = self.copy_fragment_node(src, child);
+                self.attach_silent(dst_root, copied);
+            }
+            self.reassign_slots(dst_root);
+        }
         new
     }
 
@@ -1032,6 +1122,47 @@ impl LayoutDom for ScriptedDom {
 
     fn dom_children(&self, id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
         self.node(id).children.iter().copied()
+    }
+
+    fn flat_children(&self, id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
+        self.flat_children_of(id)
+    }
+
+    fn has_shadow_trees(&self) -> bool {
+        self.has_shadow_roots()
+    }
+
+    fn shadow_root(&self, id: NodeId) -> Option<NodeId> {
+        self.shadow_root_of(id)
+    }
+
+    fn shadow_host(&self, id: NodeId) -> Option<NodeId> {
+        self.shadow_host_of(id)
+    }
+
+    fn shadow_roots(&self) -> Vec<NodeId> {
+        self.shadow_root_ids()
+    }
+
+    fn assigned_slot(&self, id: NodeId) -> Option<NodeId> {
+        self.assigned_slot_of(id)
+    }
+
+    fn assigned_nodes(&self, id: NodeId) -> Vec<NodeId> {
+        self.assigned_nodes_of(id)
+    }
+
+    fn containing_shadow_root(&self, id: NodeId) -> Option<NodeId> {
+        self.containing_shadow_root_of(id)
+    }
+
+    fn template_contents(&self, id: NodeId) -> Option<NodeId> {
+        self.template_contents_of(id)
+    }
+
+    fn shadow_init(&self, id: NodeId) -> Option<ShadowRootInit> {
+        self.shadow_root_of(id)
+            .and_then(|root| self.shadow_init(root))
     }
 
     fn kind(&self, id: NodeId) -> NodeKind {
@@ -1127,6 +1258,7 @@ impl LayoutDomMut for ScriptedDom {
         });
         let previous = self.sibling(child, -1);
         self.record_child_list(parent, vec![child], Vec::new(), previous, None);
+        self.reassign_for_parent(parent, child);
     }
 
     fn insert_before(&mut self, parent: NodeId, child: NodeId, reference: Option<NodeId>) {
@@ -1150,6 +1282,7 @@ impl LayoutDomMut for ScriptedDom {
         let previous = self.sibling(child, -1);
         let next = self.sibling(child, 1);
         self.record_child_list(parent, vec![child], Vec::new(), previous, next);
+        self.reassign_for_parent(parent, child);
     }
 
     fn move_before(&mut self, parent: NodeId, child: NodeId, reference: Option<NodeId>) {
@@ -1189,6 +1322,10 @@ impl LayoutDomMut for ScriptedDom {
                 parent,
             }),
         }
+        if let Some(from_parent) = from_parent {
+            self.reassign_for(from_parent);
+        }
+        self.reassign_for_parent(parent, child);
     }
 
     fn remove(&mut self, node: NodeId) {
@@ -1202,6 +1339,7 @@ impl LayoutDomMut for ScriptedDom {
                 former_parent,
             });
             self.record_child_list(former_parent, Vec::new(), vec![node], previous, next);
+            self.reassign_for_parent(former_parent, node);
         }
         self.release_subtree(node);
     }
@@ -1226,7 +1364,8 @@ impl LayoutDomMut for ScriptedDom {
             name: name.clone(),
             old_value: old_value.clone(),
         });
-        self.record_attribute(node, name, old_value);
+        self.record_attribute(node, name.clone(), old_value);
+        self.reassign_for_attribute(node, &name);
     }
 
     fn remove_attribute(&mut self, node: NodeId, name: QualName) {
@@ -1246,7 +1385,8 @@ impl LayoutDomMut for ScriptedDom {
                 name: name.clone(),
                 old_value: Some(old.clone()),
             });
-            self.record_attribute(node, name, Some(old));
+            self.record_attribute(node, name.clone(), Some(old));
+            self.reassign_for_attribute(node, &name);
         }
     }
 
@@ -1272,7 +1412,10 @@ impl LayoutDomMut for ScriptedDom {
         // as <style> in the fragment body; parsing a bare string as a complete
         // document would move leading metadata into the synthesized <head>.
         let source = format!("<!doctype html><html><body>{html}</body></html>");
-        let fragment = StaticDocument::parse(&source);
+        // Fragment source: `innerHTML` must not realize `<template
+        // shadowrootmode>` into a shadow root (only the document parser and
+        // `setHTMLUnsafe` do).
+        let fragment = StaticDocument::parse_fragment_source(&source);
         let mut added = Vec::new();
         if let Some(body) = Self::fragment_body(&fragment) {
             let body_children: Vec<StaticNodeId> = fragment.dom_children(body).collect();
@@ -1284,6 +1427,7 @@ impl LayoutDomMut for ScriptedDom {
         }
         self.mutations.push(DomMutation::SubtreeReplaced { node });
         self.record_child_list(node, added, removed, None, None);
+        self.reassign_for(node);
     }
 
     fn drain_mutations(&mut self, out: &mut Vec<DomMutation<NodeId>>) {

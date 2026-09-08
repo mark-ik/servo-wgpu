@@ -25,11 +25,19 @@ use crate::{NodeId, ScriptedDom};
 struct SerializableNode<'a> {
     dom: &'a ScriptedDom,
     id: NodeId,
+    /// Write each **serializable** shadow root back out as the `<template
+    /// shadowrootmode>` that would rebuild it. `getHTML({serializableShadowRoots:
+    /// true})`; `innerHTML` leaves it false and never crosses the boundary.
+    include_shadow: bool,
 }
 
 impl SerializableNode<'_> {
     fn child(&self, id: NodeId) -> SerializableNode<'_> {
-        SerializableNode { dom: self.dom, id }
+        SerializableNode {
+            dom: self.dom,
+            id,
+            include_shadow: self.include_shadow,
+        }
     }
 
     /// Serialize every child as its own included node (shared by element bodies,
@@ -40,6 +48,51 @@ impl SerializableNode<'_> {
                 .serialize(serializer, TraversalScope::IncludeNode)?;
         }
         Ok(())
+    }
+
+    /// Emit `<template shadowrootmode=...>` plus the shadow tree's children, in
+    /// front of the host's own light-DOM children — where the parser expects to
+    /// find it, so the output round-trips through the declarative pass.
+    fn serialize_shadow_root<S: Serializer>(&self, serializer: &mut S) -> io::Result<()> {
+        if !self.include_shadow {
+            return Ok(());
+        }
+        let Some(root) = self.dom.shadow_root_of(self.id) else {
+            return Ok(());
+        };
+        let Some(init) = self.dom.shadow_init(root) else {
+            return Ok(());
+        };
+        if !init.serializable {
+            return Ok(());
+        }
+        let name = markup5ever::QualName::new(
+            None,
+            markup5ever::namespace_url!("http://www.w3.org/1999/xhtml"),
+            markup5ever::LocalName::from("template"),
+        );
+        let attr = |local: &str| {
+            markup5ever::QualName::new(
+                None,
+                markup5ever::Namespace::from(""),
+                markup5ever::LocalName::from(local),
+            )
+        };
+        let mut attrs: Vec<(markup5ever::QualName, String)> =
+            vec![(attr("shadowrootmode"), init.mode.as_str().to_owned())];
+        if init.delegates_focus {
+            attrs.push((attr("shadowrootdelegatesfocus"), String::new()));
+        }
+        if init.clonable {
+            attrs.push((attr("shadowrootclonable"), String::new()));
+        }
+        attrs.push((attr("shadowrootserializable"), String::new()));
+        serializer.start_elem(
+            name.clone(),
+            attrs.iter().map(|(name, value)| (name, value.as_str())),
+        )?;
+        self.child(root).serialize_children(serializer)?;
+        serializer.end_elem(name)
     }
 }
 
@@ -58,6 +111,7 @@ impl Serialize for SerializableNode<'_> {
                             name.clone(),
                             node.attrs.iter().map(|(n, v)| (n, v.as_str())),
                         )?;
+                        self.serialize_shadow_root(serializer)?;
                         self.serialize_children(serializer)?;
                         serializer.end_elem(name.clone())?;
                     },
@@ -85,7 +139,11 @@ impl Serialize for SerializableNode<'_> {
                         serializer.write_text(text)?;
                     }
                 },
-                NodeKind::Document | NodeKind::DocumentFragment => {
+                // A shadow root serializes as its children, like any other
+                // fragment. Whether a host's shadow tree is reached at all is
+                // the caller's question — `innerHTML` never crosses the
+                // boundary, `getHTML({serializableShadowRoots})` does.
+                NodeKind::Document | NodeKind::DocumentFragment | NodeKind::ShadowRoot => {
                     self.serialize_children(serializer)?;
                 },
                 NodeKind::ProcessingInstruction => {
@@ -94,7 +152,14 @@ impl Serialize for SerializableNode<'_> {
                         .write_processing_instruction(target, node.text.as_deref().unwrap_or(""))?;
                 },
             },
-            TraversalScope::ChildrenOnly(_) => self.serialize_children(serializer)?,
+            // Children-only is `innerHTML` / `getHTML`, and HTML's fragment
+            // serialization emits a serializable shadow root *before* the
+            // host's own children — so a `getHTML` on the host itself carries
+            // its root, not only its descendants'.
+            TraversalScope::ChildrenOnly(_) => {
+                self.serialize_shadow_root(serializer)?;
+                self.serialize_children(serializer)?;
+            },
         }
         Ok(())
     }
@@ -114,7 +179,28 @@ impl ScriptedDom {
         self.serialize_scope(node, TraversalScope::ChildrenOnly(None))
     }
 
+    /// `innerHTML` plus every **serializable** shadow root under `node`, each
+    /// written as the `<template shadowrootmode>` that rebuilds it —
+    /// `getHTML({serializableShadowRoots: true})`.
+    pub fn inner_html_with_shadow_roots(&self, node: NodeId) -> String {
+        self.serialize_scope_with(node, TraversalScope::ChildrenOnly(None), true)
+    }
+
+    /// `outerHTML` including serializable shadow roots.
+    pub fn outer_html_with_shadow_roots(&self, node: NodeId) -> String {
+        self.serialize_scope_with(node, TraversalScope::IncludeNode, true)
+    }
+
     fn serialize_scope(&self, node: NodeId, traversal_scope: TraversalScope) -> String {
+        self.serialize_scope_with(node, traversal_scope, false)
+    }
+
+    fn serialize_scope_with(
+        &self,
+        node: NodeId,
+        traversal_scope: TraversalScope,
+        include_shadow: bool,
+    ) -> String {
         let mut buf = Vec::new();
         let opts = SerializeOpts {
             traversal_scope,
@@ -126,6 +212,7 @@ impl ScriptedDom {
             &SerializableNode {
                 dom: self,
                 id: node,
+                include_shadow,
             },
             opts,
         )

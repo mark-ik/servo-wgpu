@@ -234,7 +234,11 @@ impl<E: ScriptEngine> NativeFn<E> for NodeName {
                     .element_name(n)
                     .map(|q| q.local.as_ref().to_string())
                     .unwrap_or_default(),
-                NodeKind::DocumentFragment => "#document-fragment".to_string(),
+                // A ShadowRoot is a DocumentFragment, and DOM gives it the same
+                // nodeName.
+                NodeKind::DocumentFragment | NodeKind::ShadowRoot => {
+                    "#document-fragment".to_string()
+                },
             }
         })
         .unwrap_or_default();

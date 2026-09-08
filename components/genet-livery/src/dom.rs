@@ -102,15 +102,21 @@ impl<'a, D: LayoutDom> SelectorTree<'a, D> {
                 continue;
             }
             pending.extend(dom.dom_children(id));
+            // A shadow tree is not among its host's children, so a descent that
+            // only followed `dom_children` would mint no identity for anything
+            // inside it and every selector would silently skip that subtree.
+            if let Some(shadow) = dom.shadow_root(id) {
+                pending.push(shadow);
+            }
         }
         for root in roots {
             if !dom.is_live(*root) {
                 continue;
             }
-            let mut ancestor = dom.parent(*root);
+            let mut ancestor = ascend(dom, *root);
             while let Some(id) = ancestor {
                 included.insert(id);
-                ancestor = dom.parent(id);
+                ancestor = ascend(dom, id);
             }
         }
         if include_siblings {
@@ -144,6 +150,13 @@ impl<'a, D: LayoutDom> SelectorTree<'a, D> {
     pub fn element(&self, id: D::NodeId) -> Option<ElementRef<'_, 'a, D>> {
         (self.dom.kind(id) == NodeKind::Element).then_some(ElementRef { tree: self, id })
     }
+}
+
+/// One step up the shadow-including tree: the parent, or — at the top of a
+/// shadow tree — the host, so the identity closure a restyle root needs covers
+/// the outer document too.
+fn ascend<D: LayoutDom>(dom: &D, id: D::NodeId) -> Option<D::NodeId> {
+    dom.parent(id).or_else(|| dom.shadow_host(id))
 }
 
 /// A selector-facing element reference over a neutral Genet DOM.
@@ -227,11 +240,23 @@ impl<D: LayoutDom> Element for ElementRef<'_, '_, D> {
     }
 
     fn parent_node_is_shadow_root(&self) -> bool {
-        false
+        self.dom()
+            .parent(self.id)
+            .is_some_and(|parent| self.dom().kind(parent) == NodeKind::ShadowRoot)
     }
 
     fn containing_shadow_host(&self) -> Option<Self> {
-        None
+        let root = self.dom().containing_shadow_root(self.id)?;
+        let host = self.dom().shadow_host(root)?;
+        self.tree.element(host)
+    }
+
+    /// The slot this element is assigned to (`::slotted()`'s jump). The
+    /// selectors crate walks this to decide whether a `::slotted` rule from a
+    /// shadow tree reaches a light-DOM element.
+    fn assigned_slot(&self) -> Option<Self> {
+        let slot = self.dom().assigned_slot(self.id)?;
+        self.tree.element(slot)
     }
 
     fn is_pseudo_element(&self) -> bool {
@@ -338,12 +363,33 @@ impl<D: LayoutDom> Element for ElementRef<'_, '_, D> {
         false
     }
 
-    fn imported_part(&self, _name: &Atom) -> Option<Atom> {
+    /// `exportparts` on this element: the outer name a part is re-exported
+    /// under, given the inner `name`. Parsed per read; the attribute is short
+    /// and only consulted while a `::part()` selector is climbing shadow
+    /// boundaries.
+    fn imported_part(&self, name: &Atom) -> Option<Atom> {
+        let mapping = self.attribute("", "exportparts")?;
+        for entry in mapping.split(',') {
+            let entry = entry.trim();
+            let (inner, outer) = match entry.split_once(':') {
+                Some((inner, outer)) => (inner.trim(), outer.trim()),
+                None => (entry, entry),
+            };
+            if inner == name.as_str() {
+                return Some(Atom::from(outer));
+            }
+        }
         None
     }
 
-    fn is_part(&self, _name: &Atom) -> bool {
-        false
+    /// Whether this element carries part `name` in its `part` attribute — the
+    /// whitespace-separated token list `::part()` matches against.
+    fn is_part(&self, name: &Atom) -> bool {
+        self.attribute("", "part").is_some_and(|parts| {
+            parts
+                .split_ascii_whitespace()
+                .any(|part| part == name.as_str())
+        })
     }
 
     fn is_empty(&self) -> bool {

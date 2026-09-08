@@ -459,6 +459,10 @@ fn exposed_of(i: &idl::Interface) -> Vec<String> {
     }
 }
 
+/// Tag rows WPT's `interfaces.js` does not carry, keyed by the full interface
+/// name (the parsed rows are expanded to full names before they get here).
+pub const TAG_ADDITIONS: &[(&str, &str)] = &[("template", "HTMLTemplateElement")];
+
 /// Build the HTML element table and the shape-only DOM/CSSOM table.
 pub fn build(wpt: &Path) -> Result<(Vec<GenInterface>, Vec<GenShape>), String> {
     let html = parse_idl(wpt, &["html.idl"])?;
@@ -467,6 +471,16 @@ pub fn build(wpt: &Path) -> Result<(Vec<GenInterface>, Vec<GenShape>), String> {
     let tag_pairs = tags::parse(&tag_src);
 
     let mut tags_by_iface: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    // WPT's `interfaces.js` is a *test* of the element-interface mapping, not a
+    // complete one: it omits `template`, whose interface HTML nevertheless
+    // names. Without this row a `<template>` would wrap as `HTMLElement` and
+    // `HTMLTemplateElement.prototype.content` would reach no element.
+    for (tag, iface) in TAG_ADDITIONS {
+        tags_by_iface
+            .entry((*iface).to_owned())
+            .or_default()
+            .push((*tag).to_owned());
+    }
     for (tag, iface) in &tag_pairs {
         // Only lowercase ASCII tag names key the runtime's per-tag table; the
         // file's `foo-BAR` / `å-bar` rows exercise the unknown-name fallback.

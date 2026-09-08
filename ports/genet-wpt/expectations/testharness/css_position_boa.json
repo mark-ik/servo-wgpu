@@ -4,7 +4,7 @@
   "manifest_sha256": "d5ec5be9bf1a75ed00d7e7ab28afe8a694a55e11682ba74305874d70b18dd422",
   "policy": "exact",
   "renderer": "livery",
-  "runner_sha256": "c554f89a5ab1e7582dcb4d7c97a656750b49ca466a3ea67b7a9885666f06aab0",
+  "runner_sha256": "183a3c7f1f8a3aa1da106d42900451af33b8740daeee6833d7362ef8267347f3",
   "subset": "css/css-position",
   "tests": {
     "css/css-position/absolute-pos-box-inside-fixed-pos-box-with-changing-height.html": {
@@ -1632,8 +1632,399 @@
       "subtests_total": 144
     },
     "css/css-position/animations/position-interpolation.html": {
-      "reason": "evaluation-threw",
-      "status": "error"
+      "status": "fail",
+      "subtests": [
+        {
+          "name": "CSS Transitions with transition-behavior:allow-discrete: property <position> from [absolute] to [static] at (-0.3) should be [absolute]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Transitions with transition-behavior:allow-discrete: property <position> from [absolute] to [static] at (0) should be [absolute]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Transitions with transition-behavior:allow-discrete: property <position> from [absolute] to [static] at (0.3) should be [absolute]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Transitions with transition-behavior:allow-discrete: property <position> from [absolute] to [static] at (0.5) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions with transition-behavior:allow-discrete: property <position> from [absolute] to [static] at (0.6) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions with transition-behavior:allow-discrete: property <position> from [absolute] to [static] at (1) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions with transition-behavior:allow-discrete: property <position> from [absolute] to [static] at (1.5) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions with transition-property:all and transition-behavor:allow-discrete: property <position> from [absolute] to [static] at (-0.3) should be [absolute]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Transitions with transition-property:all and transition-behavor:allow-discrete: property <position> from [absolute] to [static] at (0) should be [absolute]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Transitions with transition-property:all and transition-behavor:allow-discrete: property <position> from [absolute] to [static] at (0.3) should be [absolute]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Transitions with transition-property:all and transition-behavor:allow-discrete: property <position> from [absolute] to [static] at (0.5) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions with transition-property:all and transition-behavor:allow-discrete: property <position> from [absolute] to [static] at (0.6) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions with transition-property:all and transition-behavor:allow-discrete: property <position> from [absolute] to [static] at (1) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions with transition-property:all and transition-behavor:allow-discrete: property <position> from [absolute] to [static] at (1.5) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions: property <position> from [absolute] to [static] at (-0.3) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions: property <position> from [absolute] to [static] at (0) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions: property <position> from [absolute] to [static] at (0.3) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions: property <position> from [absolute] to [static] at (0.5) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions: property <position> from [absolute] to [static] at (0.6) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions: property <position> from [absolute] to [static] at (1) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions: property <position> from [absolute] to [static] at (1.5) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions with transition: all: property <position> from [absolute] to [static] at (-0.3) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions with transition: all: property <position> from [absolute] to [static] at (0) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions with transition: all: property <position> from [absolute] to [static] at (0.3) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions with transition: all: property <position> from [absolute] to [static] at (0.5) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions with transition: all: property <position> from [absolute] to [static] at (0.6) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions with transition: all: property <position> from [absolute] to [static] at (1) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions with transition: all: property <position> from [absolute] to [static] at (1.5) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Animations: property <position> from [absolute] to [static] at (-0.3) should be [absolute]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Animations: property <position> from [absolute] to [static] at (0) should be [absolute]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Animations: property <position> from [absolute] to [static] at (0.3) should be [absolute]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Animations: property <position> from [absolute] to [static] at (0.5) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Animations: property <position> from [absolute] to [static] at (0.6) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Animations: property <position> from [absolute] to [static] at (1) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Animations: property <position> from [absolute] to [static] at (1.5) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "Web Animations: property <position> from [absolute] to [static] at (-0.3) should be [absolute]",
+          "status": "fail"
+        },
+        {
+          "name": "Web Animations: property <position> from [absolute] to [static] at (0) should be [absolute]",
+          "status": "fail"
+        },
+        {
+          "name": "Web Animations: property <position> from [absolute] to [static] at (0.3) should be [absolute]",
+          "status": "fail"
+        },
+        {
+          "name": "Web Animations: property <position> from [absolute] to [static] at (0.5) should be [static]",
+          "status": "fail"
+        },
+        {
+          "name": "Web Animations: property <position> from [absolute] to [static] at (0.6) should be [static]",
+          "status": "fail"
+        },
+        {
+          "name": "Web Animations: property <position> from [absolute] to [static] at (1) should be [static]",
+          "status": "fail"
+        },
+        {
+          "name": "Web Animations: property <position> from [absolute] to [static] at (1.5) should be [static]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Transitions: property <position> from [relative] to [static] at (-1) should be [relative]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Transitions: property <position> from [relative] to [static] at (0) should be [relative]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Transitions: property <position> from [relative] to [static] at (0.4) should be [relative]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Transitions: property <position> from [relative] to [static] at (0.5) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions: property <position> from [relative] to [static] at (1) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions: property <position> from [relative] to [static] at (1.5) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions with transition: all: property <position> from [relative] to [static] at (-1) should be [relative]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Transitions with transition: all: property <position> from [relative] to [static] at (0) should be [relative]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Transitions with transition: all: property <position> from [relative] to [static] at (0.4) should be [relative]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Transitions with transition: all: property <position> from [relative] to [static] at (0.5) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions with transition: all: property <position> from [relative] to [static] at (1) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions with transition: all: property <position> from [relative] to [static] at (1.5) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Animations: property <position> from [relative] to [static] at (-1) should be [relative]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Animations: property <position> from [relative] to [static] at (0) should be [relative]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Animations: property <position> from [relative] to [static] at (0.4) should be [relative]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Animations: property <position> from [relative] to [static] at (0.5) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Animations: property <position> from [relative] to [static] at (1) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Animations: property <position> from [relative] to [static] at (1.5) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "Web Animations: property <position> from [relative] to [static] at (-1) should be [relative]",
+          "status": "fail"
+        },
+        {
+          "name": "Web Animations: property <position> from [relative] to [static] at (0) should be [relative]",
+          "status": "fail"
+        },
+        {
+          "name": "Web Animations: property <position> from [relative] to [static] at (0.4) should be [relative]",
+          "status": "fail"
+        },
+        {
+          "name": "Web Animations: property <position> from [relative] to [static] at (0.5) should be [static]",
+          "status": "fail"
+        },
+        {
+          "name": "Web Animations: property <position> from [relative] to [static] at (1) should be [static]",
+          "status": "fail"
+        },
+        {
+          "name": "Web Animations: property <position> from [relative] to [static] at (1.5) should be [static]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Transitions: property <position> from [sticky] to [fixed] at (-1) should be [sticky]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Transitions: property <position> from [sticky] to [fixed] at (0) should be [sticky]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Transitions: property <position> from [sticky] to [fixed] at (0.4) should be [sticky]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Transitions: property <position> from [sticky] to [fixed] at (0.5) should be [fixed]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions: property <position> from [sticky] to [fixed] at (1) should be [fixed]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions: property <position> from [sticky] to [fixed] at (1.5) should be [fixed]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions with transition: all: property <position> from [sticky] to [fixed] at (-1) should be [sticky]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Transitions with transition: all: property <position> from [sticky] to [fixed] at (0) should be [sticky]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Transitions with transition: all: property <position> from [sticky] to [fixed] at (0.4) should be [sticky]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Transitions with transition: all: property <position> from [sticky] to [fixed] at (0.5) should be [fixed]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions with transition: all: property <position> from [sticky] to [fixed] at (1) should be [fixed]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Transitions with transition: all: property <position> from [sticky] to [fixed] at (1.5) should be [fixed]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Animations: property <position> from [sticky] to [fixed] at (-1) should be [sticky]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Animations: property <position> from [sticky] to [fixed] at (0) should be [sticky]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Animations: property <position> from [sticky] to [fixed] at (0.4) should be [sticky]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Animations: property <position> from [sticky] to [fixed] at (0.5) should be [fixed]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Animations: property <position> from [sticky] to [fixed] at (1) should be [fixed]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Animations: property <position> from [sticky] to [fixed] at (1.5) should be [fixed]",
+          "status": "fail"
+        },
+        {
+          "name": "Web Animations: property <position> from [sticky] to [fixed] at (-1) should be [sticky]",
+          "status": "fail"
+        },
+        {
+          "name": "Web Animations: property <position> from [sticky] to [fixed] at (0) should be [sticky]",
+          "status": "fail"
+        },
+        {
+          "name": "Web Animations: property <position> from [sticky] to [fixed] at (0.4) should be [sticky]",
+          "status": "fail"
+        },
+        {
+          "name": "Web Animations: property <position> from [sticky] to [fixed] at (0.5) should be [fixed]",
+          "status": "fail"
+        },
+        {
+          "name": "Web Animations: property <position> from [sticky] to [fixed] at (1) should be [fixed]",
+          "status": "fail"
+        },
+        {
+          "name": "Web Animations: property <position> from [sticky] to [fixed] at (1.5) should be [fixed]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Animations: property <position> from neutral to [absolute] at (-1) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Animations: property <position> from neutral to [absolute] at (0) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Animations: property <position> from neutral to [absolute] at (0.25) should be [static]",
+          "status": "pass"
+        },
+        {
+          "name": "CSS Animations: property <position> from neutral to [absolute] at (0.5) should be [absolute]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Animations: property <position> from neutral to [absolute] at (0.75) should be [absolute]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Animations: property <position> from neutral to [absolute] at (1) should be [absolute]",
+          "status": "fail"
+        },
+        {
+          "name": "CSS Animations: property <position> from neutral to [absolute] at (2) should be [absolute]",
+          "status": "fail"
+        }
+      ],
+      "subtests_passed": 44,
+      "subtests_total": 97
     },
     "css/css-position/animations/right-composition.html": {
       "status": "fail",
@@ -5134,8 +5525,191 @@
       "status": "skip"
     },
     "css/css-position/position-absolute-fit-content-auto-margin.html": {
-      "reason": "evaluation-threw",
-      "status": "error"
+      "status": "fail",
+      "subtests": [
+        {
+          "name": "#tests .abspos 1",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 2",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 3",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 4",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 5",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 6",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 7",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 8",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 9",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 10",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 11",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 12",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 13",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 14",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 15",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 16",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 17",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 18",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 19",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 20",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 21",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 22",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 23",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 24",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 25",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 26",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 27",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 28",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 29",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 30",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 31",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 32",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 33",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 34",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 35",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 36",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 37",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 38",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 39",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 40",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 41",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 42",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 43",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 44",
+          "status": "fail"
+        },
+        {
+          "name": "#tests .abspos 45",
+          "status": "fail"
+        }
+      ],
+      "subtests_passed": 0,
+      "subtests_total": 45
     },
     "css/css-position/position-absolute-fit-content.html": {
       "reason": "non-testharness",

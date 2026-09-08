@@ -101,7 +101,7 @@ where
         D::NodeId: Copy + Eq + Hash,
     {
         nodes.insert(node);
-        for child in dom.dom_children(node) {
+        for child in dom.flat_children(node) {
             visit(dom, child, nodes);
         }
     }

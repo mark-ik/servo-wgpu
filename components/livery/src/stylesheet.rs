@@ -842,6 +842,18 @@ impl StyleRule {
         self.source_order
     }
 
+    /// The cascade origin this rule came from. The shadow tree-scope boundary
+    /// applies to author rules only: UA rules style every tree.
+    pub fn origin(&self) -> Origin {
+        self.origin
+    }
+
+    /// Whether any selector in this rule can reach out of its own tree scope
+    /// (`:host`, `::slotted()`, `::part()`).
+    pub fn crosses_tree_scope(&self) -> bool {
+        self.selectors.crosses_tree_scope()
+    }
+
     pub fn matched_declarations<E>(&self, element: &E, device: &Device) -> Vec<MatchedDeclaration>
     where
         E: Element<Impl = crate::selector::LiverySelectorImpl>,
@@ -854,6 +866,23 @@ impl StyleRule {
         element: &E,
         device: &Device,
         containers: &[ContainerSnapshot],
+    ) -> Vec<MatchedDeclaration>
+    where
+        E: Element<Impl = crate::selector::LiverySelectorImpl>,
+    {
+        self.matched_declarations_scoped(element, device, containers, true, None)
+    }
+
+    /// [`matched_declarations_with_containers`](Self::matched_declarations_with_containers)
+    /// with the shadow tree-scope boundary applied. See
+    /// [`SelectorList::matching_specificity_scoped`](crate::selector::SelectorList::matching_specificity_scoped).
+    pub fn matched_declarations_scoped<E>(
+        &self,
+        element: &E,
+        device: &Device,
+        containers: &[ContainerSnapshot],
+        same_scope: bool,
+        shadow_host: Option<E>,
     ) -> Vec<MatchedDeclaration>
     where
         E: Element<Impl = crate::selector::LiverySelectorImpl>,
@@ -873,7 +902,10 @@ impl StyleRule {
         {
             return Vec::new();
         }
-        let Some(specificity) = self.selectors.matching_specificity(element) else {
+        let Some(specificity) =
+            self.selectors
+                .matching_specificity_scoped(element, same_scope, shadow_host)
+        else {
             return Vec::new();
         };
         self.declarations
@@ -915,6 +947,22 @@ impl StyleRule {
     where
         E: Element<Impl = crate::selector::LiverySelectorImpl>,
     {
+        self.matched_custom_declarations_scoped(element, device, containers, true, None)
+    }
+
+    /// Scoped twin of
+    /// [`matched_custom_declarations_with_containers`](Self::matched_custom_declarations_with_containers).
+    pub fn matched_custom_declarations_scoped<E>(
+        &self,
+        element: &E,
+        device: &Device,
+        containers: &[ContainerSnapshot],
+        same_scope: bool,
+        shadow_host: Option<E>,
+    ) -> Vec<MatchedCustomDeclaration>
+    where
+        E: Element<Impl = crate::selector::LiverySelectorImpl>,
+    {
         if self
             .media
             .as_ref()
@@ -930,7 +978,10 @@ impl StyleRule {
         {
             return Vec::new();
         }
-        let Some(specificity) = self.selectors.matching_specificity(element) else {
+        let Some(specificity) =
+            self.selectors
+                .matching_specificity_scoped(element, same_scope, shadow_host)
+        else {
             return Vec::new();
         };
         self.declarations

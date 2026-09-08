@@ -681,6 +681,13 @@ fn collect_stylesheets<D>(
     for child in dom.dom_children(node) {
         collect_stylesheets(dom, child, document_url, fetch, sheets, diagnostics, limits);
     }
+    // A shadow tree's `<style>` is not among its host's children, so without
+    // this descent a shadow tree could never carry a stylesheet at all. The
+    // sheets it yields are scoped at match time by their owner node; collecting
+    // them here does not make them document-wide.
+    if let Some(root) = dom.shadow_root(node) {
+        collect_stylesheets(dom, root, document_url, fetch, sheets, diagnostics, limits);
+    }
 }
 
 #[derive(Debug)]

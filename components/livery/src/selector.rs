@@ -15,7 +15,7 @@ use selectors::context::{
 };
 use selectors::matching::{MatchingContext, matches_selector};
 use selectors::parser::{
-    NonTSPseudoClass, ParseRelative, Parser, PseudoElement, SelectorImpl,
+    Component, NonTSPseudoClass, ParseRelative, Parser, PseudoElement, Selector, SelectorImpl,
     SelectorList as SubstrateSelectorList, SelectorParseErrorKind,
 };
 
@@ -204,6 +204,23 @@ impl<'i> Parser<'i> for LiverySelectorParser {
         true
     }
 
+    /// `:host` and `:host(...)`. The selectors crate implements both against
+    /// `MatchingContext::shadow_host`; Livery only has to say yes here.
+    fn parse_host(&self) -> bool {
+        true
+    }
+
+    /// `::slotted(...)`. The crate models it as a jump through
+    /// `Element::assigned_slot`, which Livery's adapter now answers.
+    fn parse_slotted(&self) -> bool {
+        true
+    }
+
+    /// `::part(...)`, matched against `Element::is_part` / `imported_part`.
+    fn parse_part(&self) -> bool {
+        true
+    }
+
     fn parse_non_ts_pseudo_class(
         &self,
         location: cssparser::SourceLocation,
@@ -245,10 +262,30 @@ struct SelectorDependencies {
 /// Parsed selectors plus the small dependency summary the neutral invalidator
 /// needs to choose a sound restyle root. This is deliberately conservative:
 /// an uncertain selector expands the scope, never narrows it.
+/// How far out of its own tree scope one selector in a list can reach.
+/// A stylesheet in a shadow tree styles that tree, but three constructs
+/// deliberately cross the boundary, and a document sheet must not reach in
+/// except through `::part()`. Classified once at parse time so the cascade's
+/// per-element loop is a comparison, not a selector inspection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SelectorReach {
+    /// Ordinary: matches only inside the selector's own tree scope.
+    Inner,
+    /// `:host` / `:host(...)`: matches the scope's own host element, which
+    /// lives in the outer tree.
+    Host,
+    /// `::slotted(...)`: matches a light-DOM node assigned into this tree.
+    Slotted,
+    /// `::part(...)`: matches an element inside a shadow tree from outside it.
+    Part,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SelectorList {
     selectors: SubstrateSelectorList<LiverySelectorImpl>,
     dependencies: SelectorDependencies,
+    /// Per-selector reach, aligned with `selectors.slice()`.
+    reach: Vec<SelectorReach>,
 }
 
 impl SelectorList {
@@ -257,6 +294,7 @@ impl SelectorList {
         let mut input = CssParser::new(&mut input_buffer);
         SubstrateSelectorList::parse(&LiverySelectorParser, &mut input, ParseRelative::No)
             .map(|selectors| Self {
+                reach: selectors.slice().iter().map(selector_reach).collect(),
                 selectors,
                 dependencies: selector_dependencies(source),
             })
@@ -277,6 +315,28 @@ impl SelectorList {
     where
         E: Element<Impl = LiverySelectorImpl>,
     {
+        self.matching_specificity_scoped(element, true, None)
+    }
+
+    /// Match with a tree-scope boundary.
+    ///
+    /// `same_scope` says whether this selector list's stylesheet lives in the
+    /// same tree scope as `element`. When it does not, only the three
+    /// boundary-crossing reaches are offered — that, and nothing about the
+    /// selectors themselves, is what makes a shadow tree's styles private and
+    /// keeps the document's styles out of it.
+    ///
+    /// `shadow_host` is the host of the *stylesheet's* scope, which is what
+    /// `:host` compares against and what `::part()` climbs from.
+    pub fn matching_specificity_scoped<E>(
+        &self,
+        element: &E,
+        same_scope: bool,
+        shadow_host: Option<E>,
+    ) -> Option<Specificity>
+    where
+        E: Element<Impl = LiverySelectorImpl>,
+    {
         let mut caches = SelectorCaches::default();
         let mut context = MatchingContext::new(
             MatchingMode::Normal,
@@ -286,13 +346,41 @@ impl SelectorList {
             NeedsSelectorFlags::No,
             MatchingForInvalidation::No,
         );
-        self.selectors
-            .slice()
-            .iter()
-            .filter(|selector| matches_selector(selector, 0, None, element, &mut context))
-            .map(|selector| Specificity(selector.specificity()))
-            .max()
+        context.with_shadow_host(shadow_host, |context| {
+            self.selectors
+                .slice()
+                .iter()
+                .zip(&self.reach)
+                .filter(|(_, reach)| same_scope || **reach != SelectorReach::Inner)
+                .filter(|(selector, _)| matches_selector(selector, 0, None, element, context))
+                .map(|(selector, _)| Specificity(selector.specificity()))
+                .max()
+        })
     }
+
+    /// Whether any selector in this list can reach outside its own tree scope.
+    /// A rule with none is skipped wholesale across a boundary.
+    pub fn crosses_tree_scope(&self) -> bool {
+        self.reach
+            .iter()
+            .any(|reach| *reach != SelectorReach::Inner)
+    }
+}
+
+/// Classify one selector's reach. `is_slotted` / `is_part` are the crate's own
+/// parse-time flags; `:host` is read off the rightmost compound, which is the
+/// only place the parser accepts it.
+fn selector_reach(selector: &Selector<LiverySelectorImpl>) -> SelectorReach {
+    if selector.is_slotted() {
+        return SelectorReach::Slotted;
+    }
+    if selector.is_part() {
+        return SelectorReach::Part;
+    }
+    if selector.iter().any(Component::is_host) {
+        return SelectorReach::Host;
+    }
+    SelectorReach::Inner
 }
 
 fn selector_dependencies(input: &str) -> SelectorDependencies {

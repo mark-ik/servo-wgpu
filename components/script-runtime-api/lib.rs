@@ -1711,6 +1711,10 @@ const EVENT_TARGET_BOOTSTRAP: &str = r#"
     init = init || {};
     this.bubbles = !!init.bubbles;
     this.cancelable = !!init.cancelable;
+    // `composed` decides whether this event escapes a shadow boundary. Read at
+    // dispatch time to build the propagation path; false by default, which is
+    // why a `click` script constructs without it stops at the shadow root.
+    this.composed = !!init.composed;
     this.defaultPrevented = false;
     this.__canceled = false;
     this.eventPhase = 0; // NONE until dispatch sets the phase

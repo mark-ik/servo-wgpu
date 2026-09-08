@@ -82,14 +82,14 @@ where
         {
             match dom.kind(node) {
                 NodeKind::Document | NodeKind::DocumentFragment => {
-                    for child in dom.dom_children(node) {
+                    for child in dom.flat_children(node) {
                         collect(dom, styles, child, inherited, output);
                     }
                 },
                 NodeKind::Element => {
                     let computed = styles.get(node).cloned().unwrap_or_default();
                     let mut children = Vec::new();
-                    for child in dom.dom_children(node) {
+                    for child in dom.flat_children(node) {
                         collect(dom, styles, child, Some(&computed), &mut children);
                     }
                     output.push(

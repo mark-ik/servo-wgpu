@@ -94,6 +94,22 @@ pub(crate) fn clone_into<D: LayoutDom>(
                 }
                 dst.append_child(dst_parent, el);
                 clone_into(src, child, dst, el);
+                // A `<template>`'s contents are not its children: the copier has
+                // to ask for the fragment, or the scripted tier would show an
+                // empty `template.content` for a parsed template.
+                if let Some(contents) = src.template_contents(child) {
+                    let dst_contents = dst.ensure_template_contents(el);
+                    clone_into(src, contents, dst, dst_contents);
+                }
+                // Nor is a shadow root. The static tier's declarative post-parse
+                // pass has already run, so what arrives here is a real shadow
+                // root; carrying it over is what makes a scripted page and a
+                // script-free page agree on the flat tree.
+                if let Some(root) = src.shadow_root(child) {
+                    let init = src.shadow_init(child).unwrap_or_default();
+                    let dst_root = dst.attach_shadow_unchecked(el, init, true);
+                    clone_into(src, root, dst, dst_root);
+                }
             },
             NodeKind::Text => {
                 let t = dst.create_text(src.text(child).unwrap_or(""));
@@ -121,7 +137,7 @@ pub(crate) fn clone_into<D: LayoutDom>(
                 };
                 dst.append_child(dst_parent, d);
             },
-            NodeKind::Document | NodeKind::DocumentFragment => {},
+            NodeKind::Document | NodeKind::DocumentFragment | NodeKind::ShadowRoot => {},
         }
     }
 }
@@ -135,6 +151,7 @@ fn first_element_child(dom: &ScriptedDom, node: NodeId) -> Option<NodeId> {
 /// Install the `document`/`Node` surface: native sinks, then the JS bootstrap that
 /// builds `document` and the node wrappers over them.
 pub(crate) fn install_dom_surface<E: ScriptEngine>(engine: &mut E) -> Result<(), E::Error> {
+    shadow::install(engine)?;
     engine.set_function::<DocumentRoot>("__documentRoot", 0)?;
     engine.set_function::<ReflectNode>("__reflectNode", 1)?;
     engine.set_function::<CreateElement>("__createElement", 1)?;
@@ -1134,6 +1151,11 @@ pub(crate) fn root_connected_subtree<E: ScriptEngine>(cx: &mut E::CallCx<'_>, no
             }
             let kids: Vec<NodeId> = host.dom.dom_children(id).collect();
             stack.extend(kids);
+            // A shadow tree hangs off its host rather than sitting among its
+            // children, so its wrappers need the host's rooting explicitly.
+            if let Some(root) = host.dom.shadow_root_of(id) {
+                stack.push(root);
+            }
         }
         out
     };
@@ -1186,6 +1208,7 @@ mod html_interfaces_generated;
 mod mutation_observer;
 mod query_traverse;
 mod selection;
+mod shadow;
 pub use selection::SelectionHandler;
 mod tree;
 mod xpath_eval;

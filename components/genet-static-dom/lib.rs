@@ -15,6 +15,11 @@ use html5ever::interface::tree_builder::{ElementFlags, NodeOrText, QuirksMode, T
 use html5ever::tendril::{StrTendril, TendrilSink};
 use html5ever::{Attribute, LocalName, Namespace, QualName, parse_document};
 use layout_dom_api::{AttributeView, DoctypeView, LayoutDom, NodeKind as LayoutDomNodeKind};
+pub use layout_dom_api::{
+    ShadowRootInit, ShadowRootMode, SlotAssignmentMode, may_host_shadow_tree,
+};
+
+mod shadow;
 
 /// Stable identifier for a node in a [`StaticDocument`].
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -26,11 +31,28 @@ pub struct StaticDocument {
     nodes: Vec<StaticNode>,
     document: StaticNodeId,
     quirks_mode: StaticQuirksMode,
+    /// Shadow-tree tables, empty unless the declarative post-parse pass found a
+    /// `<template shadowrootmode>`. A script-free page renders its declarative
+    /// shadow trees through these, which is why the static DOM learns the flat
+    /// tree at all.
+    shadow: shadow::ShadowTables,
 }
 
 impl StaticDocument {
     /// Parse a full HTML document with html5ever.
     pub fn parse(input: &str) -> Self {
+        let mut document: Self =
+            parse_document(StaticTreeSink::new(), Default::default()).one(input);
+        document.realize_declarative_shadow_roots();
+        document
+    }
+
+    /// Parse HTML **as a fragment source**: identical to [`parse`](Self::parse)
+    /// except that `<template shadowrootmode>` stays an ordinary template.
+    /// The `innerHTML` setter parses this way, because HTML only creates a
+    /// declarative shadow root from the document parser and from
+    /// `setHTMLUnsafe`, never from `innerHTML`.
+    pub fn parse_fragment_source(input: &str) -> Self {
         parse_document(StaticTreeSink::new(), Default::default()).one(input)
     }
 
@@ -42,7 +64,10 @@ impl StaticDocument {
     pub fn parse_xml(input: &str) -> Self {
         use xml5ever::driver::{XmlParseOpts, parse_document as parse_xml_document};
         use xml5ever::tendril::TendrilSink;
-        parse_xml_document(StaticTreeSink::new(), XmlParseOpts::default()).one(input)
+        let mut document: Self =
+            parse_xml_document(StaticTreeSink::new(), XmlParseOpts::default()).one(input);
+        document.realize_declarative_shadow_roots();
+        document
     }
 
     /// Parse choosing HTML vs XML by sniffing the source. XML/XHTML is marked by
@@ -77,6 +102,19 @@ impl StaticDocument {
     /// Return a node by id.
     pub fn node(&self, id: StaticNodeId) -> &StaticNode {
         &self.nodes[id.0]
+    }
+
+    /// The `<template>` element's contents fragment, if `id` is a template.
+    /// Detached from the tree: it is owned by the document's inert template
+    /// document, not by the template's parent, so no walk of the main tree
+    /// reaches it.
+    pub fn template_contents(&self, id: StaticNodeId) -> Option<StaticNodeId> {
+        match &self.nodes[id.0].kind {
+            StaticNodeKind::Element {
+                template_contents, ..
+            } => *template_contents,
+            _ => None,
+        }
     }
 
     /// Return the first element child of the document, normally `<html>`.
@@ -140,6 +178,8 @@ impl StaticNode {
 pub enum StaticNodeKind {
     /// The document root.
     Document,
+    /// A detached `DocumentFragment` — today only a `<template>`'s contents.
+    DocumentFragment,
     /// A doctype node.
     Doctype {
         /// Doctype name.
@@ -153,6 +193,14 @@ pub enum StaticNodeKind {
     Text(String),
     /// A comment node.
     Comment(String),
+    /// A shadow root: the root of a shadow tree hanging off `host`. Built only
+    /// by the declarative post-parse pass; the parser never produces one.
+    ShadowRoot {
+        /// The host element this tree hangs off.
+        host: StaticNodeId,
+        /// The mode and flags the `<template shadowroot*>` attributes named.
+        init: ShadowRootInit,
+    },
     /// An element node.
     Element {
         /// Qualified element name.
@@ -214,11 +262,50 @@ impl LayoutDom for StaticDocument {
         self.nodes[id.0].children.iter().copied()
     }
 
+    fn flat_children(&self, id: StaticNodeId) -> impl Iterator<Item = StaticNodeId> + '_ {
+        self.flat_children_of(id).copied()
+    }
+
+    fn has_shadow_trees(&self) -> bool {
+        self.has_shadow_roots()
+    }
+
+    fn shadow_root(&self, id: StaticNodeId) -> Option<StaticNodeId> {
+        self.shadow_root_of(id)
+    }
+
+    fn shadow_host(&self, id: StaticNodeId) -> Option<StaticNodeId> {
+        self.shadow_host_of(id)
+    }
+
+    fn shadow_roots(&self) -> Vec<StaticNodeId> {
+        self.shadow_root_ids()
+    }
+
+    fn assigned_slot(&self, id: StaticNodeId) -> Option<StaticNodeId> {
+        self.assigned_slot_of(id)
+    }
+
+    fn assigned_nodes(&self, id: StaticNodeId) -> Vec<StaticNodeId> {
+        self.assigned_nodes_of(id).to_vec()
+    }
+
+    fn template_contents(&self, id: StaticNodeId) -> Option<StaticNodeId> {
+        StaticDocument::template_contents(self, id)
+    }
+
+    fn shadow_init(&self, id: StaticNodeId) -> Option<ShadowRootInit> {
+        self.shadow_root_of(id)
+            .and_then(|root| self.shadow_init_of(root))
+    }
+
     fn kind(&self, id: StaticNodeId) -> LayoutDomNodeKind {
         match &self.nodes[id.0].kind {
             StaticNodeKind::Document => LayoutDomNodeKind::Document,
+            StaticNodeKind::DocumentFragment => LayoutDomNodeKind::DocumentFragment,
             StaticNodeKind::Doctype { .. } => LayoutDomNodeKind::Doctype,
             StaticNodeKind::Element { .. } => LayoutDomNodeKind::Element,
+            StaticNodeKind::ShadowRoot { .. } => LayoutDomNodeKind::ShadowRoot,
             StaticNodeKind::Text(_) => LayoutDomNodeKind::Text,
             StaticNodeKind::Comment(_) => LayoutDomNodeKind::Comment,
             StaticNodeKind::ProcessingInstruction { .. } => {
@@ -405,6 +492,7 @@ impl TreeSink for StaticTreeSink {
             nodes: tree.nodes,
             document: StaticNodeId(0),
             quirks_mode: tree.quirks_mode,
+            shadow: shadow::ShadowTables::default(),
         }
     }
 
@@ -428,7 +516,12 @@ impl TreeSink for StaticTreeSink {
         flags: ElementFlags,
     ) -> StaticNodeId {
         let mut tree = self.tree.borrow_mut();
-        let template_contents = flags.template.then(|| tree.push(StaticNodeKind::Document));
+        // `template.content` is a DocumentFragment in the DOM, not a document;
+        // the *owner* is the inert template document, which the scripted tier
+        // materializes because only it exposes `ownerDocument`.
+        let template_contents = flags
+            .template
+            .then(|| tree.push(StaticNodeKind::DocumentFragment));
         tree.push(StaticNodeKind::Element {
             name,
             attrs,

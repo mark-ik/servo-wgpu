@@ -4,7 +4,7 @@
   "manifest_sha256": "d5ec5be9bf1a75ed00d7e7ab28afe8a694a55e11682ba74305874d70b18dd422",
   "policy": "exact",
   "renderer": "livery",
-  "runner_sha256": "af36c1c80c77b48334a0c0c6cc754f31c84fef70ec7139e81b74739241714d43",
+  "runner_sha256": "183a3c7f1f8a3aa1da106d42900451af33b8740daeee6833d7362ef8267347f3",
   "subset": "dom/nodes",
   "tests": {
     "dom/nodes/CharacterData-appendChild.html": {
@@ -11881,10 +11881,10 @@
         },
         {
           "name": "It must return the first element when there are matches, using a template",
-          "status": "fail"
+          "status": "pass"
         }
       ],
-      "subtests_passed": 3,
+      "subtests_passed": 4,
       "subtests_total": 5
     },
     "dom/nodes/DocumentFragment-querySelectorAll-after-modification.html": {
@@ -19777,7 +19777,7 @@
         },
         {
           "name": "createElement(template)",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "createElement(textarea)",
@@ -19888,7 +19888,7 @@
           "status": "pass"
         }
       ],
-      "subtests_passed": 133,
+      "subtests_passed": 134,
       "subtests_total": 135
     },
     "dom/nodes/Node-compareDocumentPosition.html": {
@@ -36378,7 +36378,7 @@
         },
         {
           "name": "DocumentFragment.replaceChildren() should move nodes in the right order",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "There should be a MutationRecord for the node removed from another parent node.",
@@ -36389,7 +36389,7 @@
           "status": "pass"
         }
       ],
-      "subtests_passed": 13,
+      "subtests_passed": 14,
       "subtests_total": 29
     },
     "dom/nodes/ProcessingInstruction-escapes-1.xhtml": {
@@ -39479,14 +39479,14 @@
       "subtests_total": 1
     },
     "dom/nodes/moveBefore/moveBefore-shadow-root.html": {
-      "status": "fail",
+      "status": "pass",
       "subtests": [
         {
           "name": "moveBefore() is allowed in ShadowRoots (i.e., connected DocumentFragments)",
-          "status": "fail"
+          "status": "pass"
         }
       ],
-      "subtests_passed": 0,
+      "subtests_passed": 1,
       "subtests_total": 1
     },
     "dom/nodes/moveBefore/moveBefore-size-query.html": {
@@ -39840,11 +39840,11 @@
       "status": "skip"
     },
     "dom/nodes/rootNode.html": {
-      "status": "fail",
+      "status": "pass",
       "subtests": [
         {
           "name": "getRootNode() must return context object's shadow-including root if options's composed is true, and context object's root otherwise",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "getRootNode() must return the context object when it does not have any parent",
@@ -39863,26 +39863,26 @@
           "status": "pass"
         }
       ],
-      "subtests_passed": 4,
+      "subtests_passed": 5,
       "subtests_total": 5
     },
     "dom/nodes/svg-template-querySelector.html": {
-      "status": "fail",
+      "status": "pass",
       "subtests": [
         {
           "name": "querySelector works on template contents fragments with HTML elements (sanity check)",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "querySelector works on template contents fragments with SVG elements",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "querySelector works on template contents fragments with nested SVG elements",
-          "status": "fail"
+          "status": "pass"
         }
       ],
-      "subtests_passed": 0,
+      "subtests_passed": 3,
       "subtests_total": 3
     }
   },

@@ -614,7 +614,7 @@ impl TextSystem {
             inline_parent_style.vertical_align = VerticalAlign::Baseline;
         }
         let mut group = Vec::new();
-        for child in dom.dom_children(parent) {
+        for child in dom.flat_children(parent) {
             if is_inline(dom, styles, child) {
                 group.push(child);
             } else {
@@ -2472,7 +2472,7 @@ where
     D::NodeId: Copy + Eq + Hash,
 {
     nodes.insert(node);
-    for child in dom.dom_children(node) {
+    for child in dom.flat_children(node) {
         collect_subtree_nodes(dom, child, nodes);
     }
 }
@@ -2502,7 +2502,7 @@ where
             matches!(style.display, Display::Inline | Display::InlineBlock)
                 && !matches!(style.position, Position::Absolute | Position::Fixed)
                 && !(style.display == Display::Inline
-                    && dom.dom_children(id).any(|child| {
+                    && dom.flat_children(id).any(|child| {
                         !is_inline(dom, styles, child)
                             && !styles
                                 .get(child)
@@ -2930,7 +2930,7 @@ where
                 self.push_positioned_start_marker(id, &style, &ancestor_owners);
                 let content_start = self.inline_boxes.len();
                 self.owners.push(id);
-                for child in self.dom.dom_children(id) {
+                for child in self.dom.flat_children(id) {
                     if is_inline(self.dom, self.styles, child) {
                         self.collect(child, &style);
                     }

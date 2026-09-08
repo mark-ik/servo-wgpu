@@ -202,6 +202,13 @@ head, title, meta, link, style, script, template {
     display: none;
 }
 
+/* HTML's rendering section: a slot is a transparent box in the flat tree. Its
+   flat children are its assigned nodes, or its own children as fallback; the
+   slot element itself never generates a box of its own. */
+slot {
+    display: contents;
+}
+
 html { width: 100%; }
 body { inline-size: 100%; margin: 8px; }
 h1 { font-size: 2em; margin: 0.67em 0; font-weight: bold; }

@@ -179,6 +179,10 @@ pub struct StyleSet {
     ua: Stylesheet,
     authors: Vec<AuthorStylesheet>,
     rules: Vec<StyleRule>,
+    /// The author sheet each entry of `rules` came from, `None` for a UA rule.
+    /// The style pass turns this into a tree scope per rule; without it a
+    /// flattened cascade cannot say which shadow tree a rule belongs to.
+    rule_sheets: Vec<Option<usize>>,
     font_faces: Vec<FontFaceRule>,
     keyframes: Vec<Keyframes>,
     diagnostics: Vec<StylesheetDiagnostic>,
@@ -324,22 +328,30 @@ impl StyleSet {
     /// author source order running across sheets in document order.
     fn rebuild(&mut self) {
         self.rules.clear();
+        self.rule_sheets.clear();
         self.font_faces.clear();
         self.keyframes.clear();
         self.diagnostics.clear();
         self.diagnostics.extend_from_slice(self.ua.diagnostics());
         self.rules.extend(self.ua.reindexed_rules(0));
+        self.rule_sheets.resize(self.rules.len(), None);
         self.font_faces.extend(self.ua.font_faces().iter().cloned());
         self.keyframes.extend(self.ua.keyframes().iter().cloned());
         let mut source_order = 0_u64;
-        for author in &self.authors {
+        for (index, author) in self.authors.iter().enumerate() {
             self.diagnostics.extend_from_slice(author.diagnostics());
             self.rules.extend(author.reindexed_rules(source_order));
+            self.rule_sheets.resize(self.rules.len(), Some(index));
             source_order = source_order.saturating_add(author.rules().len() as u64);
             self.font_faces.extend(author.resolved_font_faces());
             self.keyframes.extend(author.keyframes().iter().cloned());
         }
         self.generation = self.generation.saturating_add(1);
+    }
+
+    /// The author sheet index each flattened rule came from (`None` for UA).
+    pub fn rule_sheets(&self) -> &[Option<usize>] {
+        &self.rule_sheets
     }
 
     /// The retained author sheets, in document order.
@@ -1041,6 +1053,7 @@ where
         &mut plane,
         hints,
         None,
+        &tree_scopes(dom, style_set),
     );
     plane
 }
@@ -1088,8 +1101,74 @@ where
         &mut plane,
         hints,
         Some(containers),
+        &tree_scopes(dom, style_set),
     );
     plane
+}
+
+#[allow(clippy::too_many_arguments)]
+/// Which tree scope each flattened rule belongs to, and that scope's host.
+///
+/// A shadow tree's stylesheet styles that tree; the document's does not reach
+/// in, and the shadow tree's does not leak out. The boundary is decided *per
+/// rule* rather than per element because a flattened cascade has already lost
+/// the sheet it came from — [`StyleSet::rule_sheets`] is what puts it back.
+///
+/// Empty, and built in no time at all, for a document with no shadow tree.
+pub(crate) struct TreeScopes<Id> {
+    /// Per flattened rule: the shadow root's opaque id and its host, or `None`
+    /// for a rule in the document scope (which includes every UA rule).
+    rule: Vec<Option<(u64, Id)>>,
+}
+
+impl<Id: Copy> TreeScopes<Id> {
+    fn empty() -> Self {
+        Self { rule: Vec::new() }
+    }
+
+    fn scope_of(&self, rule_index: usize) -> Option<(u64, Id)> {
+        self.rule.get(rule_index).copied().flatten()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.rule.is_empty()
+    }
+}
+
+/// Build the per-rule scope table by resolving each author sheet's owner node
+/// to the shadow root that contains it. The owner node is an opaque id, so the
+/// shadow trees are walked once to build the opaque -> root index; a document
+/// with no shadow tree skips the walk entirely.
+pub(crate) fn tree_scopes<D>(dom: &D, style_set: &StyleSet) -> TreeScopes<D::NodeId>
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    if !dom.has_shadow_trees() {
+        return TreeScopes::empty();
+    }
+    let mut owner_scope: HashMap<u64, (u64, D::NodeId)> = HashMap::new();
+    for root in dom.shadow_roots() {
+        let Some(host) = dom.shadow_host(root) else {
+            continue;
+        };
+        let key = (dom.opaque_id(root), host);
+        let mut pending = vec![root];
+        while let Some(id) = pending.pop() {
+            owner_scope.insert(dom.opaque_id(id), key);
+            pending.extend(dom.dom_children(id));
+        }
+    }
+    let sheets = style_set.author_sheets();
+    let rule = style_set
+        .rule_sheets()
+        .iter()
+        .map(|sheet| {
+            let owner = sheets.get((*sheet)?)?.owner_node()?;
+            owner_scope.get(&owner).copied()
+        })
+        .collect();
+    TreeScopes { rule }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1108,6 +1187,7 @@ where
     D::NodeId: Copy + Eq + Hash,
 {
     let hints = PresentationalHints::from_html_dom(selector_tree.dom());
+    let scopes = tree_scopes(selector_tree.dom(), style_set);
     resolve_subtree_with_containers(
         selector_tree,
         style_set,
@@ -1119,7 +1199,46 @@ where
         plane,
         &hints,
         None,
+        &scopes,
     )
+}
+
+/// The children the cascade descends into, each with the tree counts its
+/// `:nth-child` family needs.
+///
+/// The two trees are deliberately different here. Descent follows the **flat
+/// tree**, because inheritance does: a slotted element inherits from its slot's
+/// parent, not from its own DOM parent. The ordinals follow the **node tree**,
+/// because `:nth-child` is defined over an element's parent in its own tree —
+/// slotting must not renumber a light-DOM child. On a document with no shadow
+/// tree the two coincide and this is the old function verbatim.
+fn cascade_children<D>(dom: &D, id: D::NodeId) -> Vec<(D::NodeId, TreeCounts)>
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    if !dom.has_shadow_trees() {
+        return child_tree_counts(dom, id);
+    }
+    let flat: Vec<D::NodeId> = dom.flat_children(id).collect();
+    // One `child_tree_counts` per distinct node-tree parent, not per child: a
+    // slot's assigned nodes all share one parent, so the ordinals cost one walk
+    // for the whole group rather than one per node.
+    let mut by_parent: HashMap<D::NodeId, Vec<(D::NodeId, TreeCounts)>> = HashMap::new();
+    flat.into_iter()
+        .map(|child| {
+            let counts = match dom.parent(child) {
+                Some(parent) => by_parent
+                    .entry(parent)
+                    .or_insert_with(|| child_tree_counts(dom, parent))
+                    .iter()
+                    .find_map(|(candidate, counts)| (*candidate == child).then_some(*counts))
+                    .unwrap_or(TreeCounts::Deferred),
+                None => TreeCounts::Deferred,
+            };
+            (child, counts)
+        })
+        .collect()
 }
 
 /// The one-based position of every element child of `id`, in tree order, and
@@ -1183,6 +1302,7 @@ fn resolve_subtree_with_containers<D, P>(
     plane: &mut StylePlane<D::NodeId>,
     hints: &P,
     containers: Option<&HashMap<D::NodeId, Vec<ContainerSnapshot>>>,
+    scopes: &TreeScopes<D::NodeId>,
 ) -> usize
 where
     D: LayoutDom,
@@ -1201,6 +1321,7 @@ where
             plane,
             hints,
             containers,
+            scopes,
         )
     })
 }
@@ -1217,6 +1338,7 @@ fn resolve_subtree_on_this_stack<D, P>(
     plane: &mut StylePlane<D::NodeId>,
     hints: &P,
     containers: Option<&HashMap<D::NodeId, Vec<ContainerSnapshot>>>,
+    scopes: &TreeScopes<D::NodeId>,
 ) -> usize
 where
     D: LayoutDom,
@@ -1235,11 +1357,43 @@ where
             .map_or(&[][..], Vec::as_slice);
         let mut matched = Vec::new();
         let mut matched_custom = Vec::new();
-        for rule in &style_set.rules {
-            matched.extend(rule.matched_declarations_with_containers(&element, device, candidates));
-            matched_custom.extend(
-                rule.matched_custom_declarations_with_containers(&element, device, candidates),
-            );
+        if scopes.is_empty() {
+            for rule in &style_set.rules {
+                matched.extend(
+                    rule.matched_declarations_with_containers(&element, device, candidates),
+                );
+                matched_custom.extend(
+                    rule.matched_custom_declarations_with_containers(&element, device, candidates),
+                );
+            }
+        } else {
+            // This element's own tree scope: the shadow root containing it, or
+            // the document. A rule matches normally only inside its own scope;
+            // across the boundary only `:host`, `::slotted()` and `::part()`
+            // are offered, and only those three can then match.
+            let element_scope = selector_tree
+                .dom()
+                .containing_shadow_root(id)
+                .map(|root| selector_tree.dom().opaque_id(root));
+            for (index, rule) in style_set.rules.iter().enumerate() {
+                let rule_scope = scopes.scope_of(index);
+                // UA rules are not scoped: `slot { display: contents }` has to
+                // reach inside every shadow tree.
+                let same_scope = rule.origin() == Origin::UserAgent
+                    || rule_scope.map(|(root, _)| root) == element_scope;
+                if !same_scope && !rule.crosses_tree_scope() {
+                    continue;
+                }
+                let host = rule_scope.and_then(|(_, host)| selector_tree.element(host));
+                matched.extend(
+                    rule.matched_declarations_scoped(
+                        &element, device, candidates, same_scope, host,
+                    ),
+                );
+                matched_custom.extend(rule.matched_custom_declarations_scoped(
+                    &element, device, candidates, same_scope, host,
+                ));
+            }
         }
 
         if let Some(declarations) = hints.declarations_for(id) {
@@ -1302,7 +1456,7 @@ where
         resolve_viewport_units(&mut computed, device, tree_counts);
         resolve_font_metrics(&mut computed, parent);
         let mut resolved = 1;
-        for (child, child_counts) in child_tree_counts(selector_tree.dom(), id) {
+        for (child, child_counts) in cascade_children(selector_tree.dom(), id) {
             resolved += resolve_subtree_with_containers(
                 selector_tree,
                 style_set,
@@ -1314,6 +1468,7 @@ where
                 plane,
                 hints,
                 containers,
+                scopes,
             );
         }
         plane.values.insert(id, computed);
@@ -1321,7 +1476,7 @@ where
         resolved
     } else {
         let mut resolved = 0;
-        for (child, child_counts) in child_tree_counts(selector_tree.dom(), id) {
+        for (child, child_counts) in cascade_children(selector_tree.dom(), id) {
             resolved += resolve_subtree_with_containers(
                 selector_tree,
                 style_set,
@@ -1333,6 +1488,7 @@ where
                 plane,
                 hints,
                 containers,
+                scopes,
             );
         }
         resolved

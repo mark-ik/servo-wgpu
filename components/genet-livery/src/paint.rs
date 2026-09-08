@@ -1655,11 +1655,14 @@ where
             if replaced || (!is_root && has_visible_box_decoration(style)) {
                 return true;
             }
-            dom.dom_children(id)
+            dom.flat_children(id)
                 .any(|child| table_cell_has_visible_content(dom, styles, child, false))
         },
-        NodeKind::Document | NodeKind::DocumentFragment | NodeKind::Comment => dom
-            .dom_children(id)
+        NodeKind::Document
+        | NodeKind::DocumentFragment
+        | NodeKind::ShadowRoot
+        | NodeKind::Comment => dom
+            .flat_children(id)
             .any(|child| table_cell_has_visible_content(dom, styles, child, false)),
         NodeKind::Doctype | NodeKind::ProcessingInstruction => false,
     }
@@ -2156,7 +2159,7 @@ where
             return true;
         }
     }
-    dom.dom_children(id)
+    dom.flat_children(id)
         .any(|child| subtree_has_visible_box_decoration(dom, styles, child))
 }
 
@@ -2167,7 +2170,7 @@ where
 {
     dom.kind(id) == NodeKind::Text && dom.text(id).is_some_and(|text| !text.trim().is_empty())
         || dom
-            .dom_children(id)
+            .flat_children(id)
             .any(|child| has_text_descendant(dom, child))
 }
 
@@ -2420,7 +2423,7 @@ fn emit_inline_descendant_decorations<D>(
     }
     emit_inline_element_decoration(frame, fragments, id, style, list);
     if style.display == Display::Inline {
-        for child in dom.dom_children(id) {
+        for child in dom.flat_children(id) {
             if is_inline_node(dom, styles, child) {
                 emit_inline_descendant_decorations(
                     dom,
@@ -2585,7 +2588,7 @@ where
             matches!(style.display, Display::Inline | Display::InlineBlock)
                 && !matches!(style.position, Position::Absolute | Position::Fixed)
                 && !(style.display == Display::Inline
-                    && dom.dom_children(id).any(|child| {
+                    && dom.flat_children(id).any(|child| {
                         !is_inline_node(dom, styles, child)
                             && !styles
                                 .get(child)

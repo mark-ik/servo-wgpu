@@ -490,7 +490,8 @@ impl<E: ScriptEngine> NativeFn<E> for NodeType {
             NodeKind::Comment => 8,
             NodeKind::Document => 9,
             NodeKind::Doctype => 10,
-            NodeKind::DocumentFragment => 11,
+            // A ShadowRoot is a DocumentFragment subtype: nodeType 11.
+            NodeKind::DocumentFragment | NodeKind::ShadowRoot => 11,
         })
         .unwrap_or(0);
         cx.make_string(&n.to_string())

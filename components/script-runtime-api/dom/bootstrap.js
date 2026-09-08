@@ -161,7 +161,8 @@
             : nt === 8 ? Comment.prototype
             : nt === 7 ? ProcessingInstruction.prototype
             : nt === 10 ? DocumentType.prototype
-            : nt === 11 ? DocumentFragment.prototype
+            : nt === 11 ? (__shadowHost(ref) === null ? DocumentFragment.prototype
+                                                      : ShadowRoot.prototype)
             : Node.prototype;
     }
     var node = Object.create(proto);
@@ -231,9 +232,25 @@
       throw new DOMException("The new child is an ancestor of the parent.", "HierarchyRequestError");
     }
   }
-  function rootDocument(node) {
+  // The node tree root of `node`: parents only, so a shadow-tree node stops at
+  // its shadow root. `getRootNode()` without `composed`.
+  function nodeTreeRoot(node) {
     var n = node;
     while (n && n.parentNode) n = n.parentNode;
+    return n;
+  }
+  // The shadow-including root: a shadow root continues through its host. This is
+  // the composed root, and it is also the tree whose document owns the node.
+  function composedTreeRoot(node) {
+    var n = nodeTreeRoot(node);
+    for (;;) {
+      var host = n && n.nodeType === 11 ? wrapNode(__shadowHost(n.__ref)) : null;
+      if (!host) return n;
+      n = nodeTreeRoot(host);
+    }
+  }
+  function rootDocument(node) {
+    var n = composedTreeRoot(node);
     return (n && n.nodeType === 9) ? n : null;
   }
   function ownerDocumentOf(node) {
@@ -241,7 +258,13 @@
     if (node.nodeType === 9) return null;
     var root = rootDocument(node);
     if (root) return root;
-    return ownerDocuments.get(node) || document;
+    // Detached: the node's own recorded owner, else its tree root's — which is
+    // how everything inside a `<template>`'s contents reports the shared inert
+    // template document rather than the page's.
+    var own = ownerDocuments.get(node);
+    if (own) return own;
+    var top = composedTreeRoot(node);
+    return (top && ownerDocuments.get(top)) || document;
   }
   function documentForInsertionTarget(parent) {
     return parent ? (parent.nodeType === 9 ? parent : ownerDocumentOf(parent)) : null;
@@ -413,8 +436,8 @@
     return String(url);
   }
   Node.prototype.isSameNode = function(other) { return other === this; };
-  Node.prototype.getRootNode = function() {
-    var n = this; while (n.parentNode) n = n.parentNode; return n;
+  Node.prototype.getRootNode = function(options) {
+    return (options && options.composed) ? composedTreeRoot(this) : nodeTreeRoot(this);
   };
   // DOCUMENT_POSITION_* bit constants (on both constructor and prototype).
   var DP = {
@@ -521,12 +544,31 @@
     // (CDATA section, doctype) do not, and would otherwise fall back to the
     // primary document.
     if (copy && copy.nodeType !== 9) ownerDocuments.set(copy, copyDocument);
+    // A **clonable** shadow root travels with its host, and it is always cloned
+    // *deeply* even for a shallow `cloneNode(false)` — the shadow tree is the
+    // element's own construction, not its children (DOM "clone a node").
+    if (node.nodeType === 1 && globalThis.__cloneShadowRootInto) {
+      globalThis.__cloneShadowRootInto(node, copy, copyDocument);
+    }
+    // A `<template>`'s contents are not its children, so the child loop below
+    // never reaches them; HTML's template cloning steps copy the contents
+    // fragment deeply, whatever `deep` says.
+    if (node.nodeType === 1 && node.localName === 'template' && node.content && copy.content) {
+      var tk = node.content.childNodes;
+      for (var t = 0; t < tk.length; t++) {
+        copy.content.appendChild(cloneNodeInto(tk[t], copyDocument, true));
+      }
+    }
     if (deep) {
       var kids = node.childNodes;
       for (var k = 0; k < kids.length; k++) { copy.appendChild(cloneNodeInto(kids[k], copyDocument, true)); }
     }
     return copy;
   }
+  // Set by the shadow section below, once `attachShadow` exists. Hoisting the
+  // hook rather than the logic keeps the clone walker unaware of shadow trees
+  // on a build where that section has not run yet.
+  globalThis.__cloneNodeInto = cloneNodeInto;
   Node.prototype.cloneNode = function(deep) {
     return cloneNodeInto(this, this.nodeType === 9 ? document : ownerDocumentOf(this), !!deep);
   };
@@ -688,9 +730,36 @@
       throw new DOMException("The event is not initialized or is being dispatched.", "InvalidStateError");
     }
     event.__dispatch = true;
+    // The propagation path is the **shadow-including** ancestor chain: at the
+    // top of a shadow tree it continues through the host, but only for an event
+    // whose `composed` flag is set. A non-composed event stops at the shadow
+    // root, which is what makes a shadow tree's events private.
+    //
+    // Each entry carries the target the listeners on that node must see —
+    // "retargeting". Inside the shadow tree the target is the real one; once the
+    // path crosses out through a host, every node above sees the *host* as
+    // `event.target`, because the outer tree may not learn about nodes it cannot
+    // reach. `composedPath()` returns the nodes themselves, trimmed to what the
+    // currently-firing node is allowed to see.
     var path = [];
+    var targets = [];
     var n = this;
-    while (n) { path.push(n); n = n.parentNode; }
+    var currentTarget = this;
+    while (n) {
+      path.push(n);
+      targets.push(currentTarget);
+      var parent = n.parentNode;
+      if (!parent && n.nodeType === 11) {
+        var host = wrapNode(__shadowHost(n.__ref));
+        if (host) {
+          if (!event.composed) break;
+          parent = host;
+          // Everything at or above the host sees the host as the target.
+          currentTarget = host;
+        }
+      }
+      n = parent;
+    }
     // window sits above the document in the propagation path (DOM: the event
     // path's root is the Window for a node in a document). window shares the
     // EventTarget listener-record shape, so `fire` handles it like any node.
@@ -698,30 +767,39 @@
     // detached subtrees don't spuriously route to window.
     if (path.length && path[path.length - 1].nodeType === 9 && globalThis.window) {
       path.push(globalThis.window);
+      targets.push(currentTarget);
     }
     event.target = this;
     event.srcElement = this; // legacy alias for target
-    event.__path = path;     // composedPath() (no shadow DOM: target → root + window)
+    event.__path = path;
+    event.__pathTargets = targets;
     // The stop-propagation flags are NOT cleared here. The DOM clears them
     // *after* dispatch (§dispatch), so an event whose `cancelBubble` /
     // `stopPropagation()` was set *before* dispatch arrives already stopped and
     // fires nothing — every phase below is guarded on `__stop`. Clearing them
     // here instead silently un-stopped such an event.
+    // Fire one path entry with the target that entry is allowed to see.
+    function fireAt(index, kind) {
+      event.__pathIndex = index;
+      event.target = targets[index] || targets[targets.length - 1] || null;
+      event.srcElement = event.target;
+      fire(path[index], event, kind + ':' + event.type);
+    }
     // eventPhase constants: NONE 0, CAPTURING 1, AT_TARGET 2, BUBBLING 3.
     // Capture: root → just above the target.
     event.eventPhase = 1;
     for (var i = path.length - 1; i >= 1 && !event.__stop; i--) {
-      fire(path[i], event, 'c:' + event.type);
+      fireAt(i, 'c');
     }
     // Target: capture- then bubble-registered listeners on the target itself.
     event.eventPhase = 2;
-    if (!event.__stop) { fire(this, event, 'c:' + event.type); }
-    if (!event.__stop) { fire(this, event, 'b:' + event.type); }
+    if (!event.__stop) { fireAt(0, 'c'); }
+    if (!event.__stop) { fireAt(0, 'b'); }
     // Bubble: just above the target → root, when the event bubbles.
     event.eventPhase = 3;
     if (event.bubbles) {
       for (var j = 1; j < path.length && !event.__stop; j++) {
-        fire(path[j], event, 'b:' + event.type);
+        fireAt(j, 'b');
       }
     }
     // Clear the dispatch flag + transient fields (DOM: after dispatch
@@ -732,6 +810,9 @@
     event.eventPhase = 0;
     event.__stop = false;
     event.__stopImmediate = false;
+    event.__pathIndex = undefined;
+    event.target = this;
+    event.srcElement = this;
     return !event.__canceled;
   };
   // stopPropagation halts further nodes (the current node's other listeners still
@@ -762,11 +843,19 @@
       get: function() { return !!this.__stop; },
       set: function(v) { if (v) { this.__stop = true; } },
     });
-    // composedPath(): the propagation path recorded during dispatch (target →
-    // root). No shadow DOM, so no retargeting/composed boundary to honor yet;
-    // returns a fresh copy, or [] outside a dispatch (DOM spec).
+    // composedPath(): the propagation path recorded during dispatch, minus the
+    // nodes the node currently firing may not see. An **open** shadow tree is
+    // visible to everyone on the path; a **closed** one is visible only from
+    // inside itself, which is the whole point of closed mode. Returns a fresh
+    // array, or [] outside a dispatch (DOM spec).
     globalThis.Event.prototype.composedPath = function() {
-      return this.__path ? this.__path.slice() : [];
+      if (!this.__path) return [];
+      var index = this.__pathIndex;
+      var viewer = index === undefined ? null : this.__path[index];
+      var self = this;
+      return this.__path.filter(function(node) {
+        return globalThis.__composedPathVisible(node, viewer, self.__path);
+      });
     };
     // eventPhase constants (DOM). Instances carry a live `eventPhase` number set
     // during dispatch; these are the named values, on the constructor + proto.
@@ -2014,6 +2103,17 @@
   installMixin(DocumentType.prototype, childNodeMixin);
   installMixin(Element.prototype, parentNodeMixin);
   installMixin(DocumentFragment.prototype, parentNodeMixin);
+  // `ParentNode`'s element views belong to every parent node, not only to
+  // elements: a `DocumentFragment` — and therefore a `ShadowRoot`, which is one
+  // — answers `children` / `firstElementChild` the same way. They were defined
+  // on `Element.prototype` alone, so a shadow root reported `undefined` for all
+  // four. (`Document`'s own copy is left alone: that is a separate gap, and
+  // this lane measures what it changes.)
+  for (var pnI = 0; pnI < 4; pnI++) {
+    var pnName = ['children', 'firstElementChild', 'lastElementChild', 'childElementCount'][pnI];
+    var pnDesc = Object.getOwnPropertyDescriptor(Element.prototype, pnName);
+    if (pnDesc) Object.defineProperty(DocumentFragment.prototype, pnName, pnDesc);
+  }
 
   // Keyed by the **local name**, case-sensitively: a valid custom element name
   // contains no ASCII uppercase, so folding the key would let `foo-BAR` match a
@@ -3167,7 +3267,15 @@
   // Neither backend allows interposing on the natives themselves (Nova's
   // globals are non-writable), so the funnel is these twelve call sites.
   var moGroupDepth = 0;
-  function moAfterMutation() { if (moActive && !moGroupDepth) moFlush(); }
+  // Every DOM mutation funnels through here, so it is also where `slotchange`
+  // is delivered: the arena has already decided which slots moved, and this
+  // drains that list. Guarded on there being any shadow root at all, so a
+  // document with none pays one native call that returns the empty string
+  // — and only outside a coalescing group, so `replaceChild` fires once.
+  function moAfterMutation() {
+    if (moActive && !moGroupDepth) moFlush();
+    if (!moGroupDepth) flushSlotChanges();
+  }
   function moBeginGroup() { if (moGroupDepth++ === 0) __moGroup('1'); }
   function moEndGroup() {
     if (--moGroupDepth === 0) { __moGroup('0'); moAfterMutation(); }
@@ -4755,10 +4863,23 @@
   // of an element with the same id observable without pinning its wrapper.
   // HTML's complete WindowNamedProperties rules are broader; this retained
   // lane intentionally covers non-colliding element ids.
+  // Each entry is `{ name, get }`: the accessor this function installed. A
+  // refresh may only remove a name that is *still* that accessor. The setter
+  // below lets script replace a named property with a data property (which is
+  // how HTML's prototype-chain shadowing reads from here); deleting it blindly
+  // on the next refresh would take the script's value back out again — and
+  // since `setHTMLUnsafe` and every `innerHTML` write trigger a refresh, an
+  // `id="test"` element in the document would delete testharness's own `test()`
+  // mid-file and the next `test(...)` call would throw "not a callable
+  // function".
   var installedNamedProperties = [];
   globalThis.__refreshNamedProperties = function() {
     for (var oldIndex = 0; oldIndex < installedNamedProperties.length; oldIndex++) {
-      delete globalThis[installedNamedProperties[oldIndex]];
+      var entry = installedNamedProperties[oldIndex];
+      var current = Object.getOwnPropertyDescriptor(globalThis, entry.name);
+      if (current && current.get === entry.get) {
+        delete globalThis[entry.name];
+      }
     }
     installedNamedProperties = [];
     var elements = document.querySelectorAll('*');
@@ -4768,10 +4889,11 @@
         continue;
       }
       (function(namedId) {
+        var getter = function() { return document.getElementById(namedId); };
         Object.defineProperty(globalThis, namedId, {
           configurable: true,
           enumerable: true,
-          get: function() { return document.getElementById(namedId); },
+          get: getter,
           // HTML puts named properties on Window's prototype chain, so a
           // script assigning the same name shadows them. Here they are own
           // accessors, and a getter-only accessor would make that assignment
@@ -4787,8 +4909,8 @@
             });
           }
         });
+        installedNamedProperties.push({ name: namedId, get: getter });
       })(name);
-      installedNamedProperties.push(name);
     }
   };
 
@@ -5334,5 +5456,274 @@
     if (!node) throw new TypeError('XMLSerializer.serializeToString: not a Node');
     return serializeXml(node, null);
   };
+
+  // ---- Shadow DOM ---------------------------------------------------------
+  //
+  // The arena owns the shadow root, its init dictionary and the slot assignment
+  // table (see genet-scripted-dom/shadow.rs). What lives here is the DOM
+  // surface over them plus the one policy the arena deliberately does not
+  // apply: a **closed** root is invisible to `element.shadowRoot`, but is fully
+  // present to layout, serialization and the reflector-liveness policy, which
+  // all need it regardless of mode.
+
+  // ShadowRoot : DocumentFragment.
+  function ShadowRoot() {
+    throw new TypeError('Illegal constructor');
+  }
+  ShadowRoot.prototype = Object.create(DocumentFragment.prototype);
+  ShadowRoot.prototype.constructor = ShadowRoot;
+  // The shape-interface installer already minted a `ShadowRoot` stub with the
+  // right class string; replacing the constructor here loses it unless it is
+  // re-stamped, and `Object.prototype.toString.call(root)` is observable.
+  setClassString(ShadowRoot.prototype, 'ShadowRoot');
+  globalThis.ShadowRoot = ShadowRoot;
+
+  function shadowInitOf(root) {
+    var raw = __shadowInit(root.__ref);
+    if (!raw) return null;
+    var parts = String(raw).split(',');
+    return {
+      mode: parts[0],
+      delegatesFocus: parts[1] === '1',
+      clonable: parts[2] === '1',
+      serializable: parts[3] === '1',
+      slotAssignment: parts[4]
+    };
+  }
+
+  function defineShadowRootField(name, read) {
+    Object.defineProperty(ShadowRoot.prototype, name, {
+      configurable: true,
+      get: function() { var init = shadowInitOf(this); return init ? read(init) : undefined; }
+    });
+  }
+  defineShadowRootField('mode', function(i) { return i.mode; });
+  defineShadowRootField('delegatesFocus', function(i) { return i.delegatesFocus; });
+  defineShadowRootField('clonable', function(i) { return i.clonable; });
+  defineShadowRootField('serializable', function(i) { return i.serializable; });
+  defineShadowRootField('slotAssignment', function(i) { return i.slotAssignment; });
+  Object.defineProperty(ShadowRoot.prototype, 'host', {
+    configurable: true,
+    get: function() { return wrapNode(__shadowHost(this.__ref)); }
+  });
+  // A shadow root's `innerHTML` is its own children, like any fragment's; the
+  // scripted arena already serializes a fragment as its children.
+  Object.defineProperty(ShadowRoot.prototype, 'innerHTML', {
+    configurable: true,
+    get: function() { return String(__getInnerHtml(this.__ref)); },
+    set: function(value) {
+      moSetInnerHtml(this.__ref, String(value));
+      flushSlotChanges();
+    }
+  });
+  // Focus is not tracked per tree scope in this lane; `activeElement` on a
+  // shadow root is a named residual rather than a wrong answer dressed up.
+  Object.defineProperty(ShadowRoot.prototype, 'activeElement', {
+    configurable: true, get: function() { return null; }
+  });
+
+  // The shadow root whose tree contains `node`, or null.
+  function shadowRootContaining(node) {
+    var root = nodeTreeRoot(node);
+    return (root && root.nodeType === 11 && __shadowHost(root.__ref) !== null) ? root : null;
+  }
+
+  // Element.attachShadow / shadowRoot.
+  Element.prototype.attachShadow = function(init) {
+    init = init || {};
+    var mode = String(init.mode === undefined ? '' : init.mode);
+    if (mode !== 'open' && mode !== 'closed') {
+      throw new TypeError('attachShadow: mode must be open or closed');
+    }
+    var assignment = init.slotAssignment === undefined ? 'named' : String(init.slotAssignment);
+    if (assignment !== 'named' && assignment !== 'manual') {
+      throw new TypeError('attachShadow: slotAssignment must be named or manual');
+    }
+    var result = __attachShadow(
+      this.__ref, mode,
+      init.delegatesFocus ? '1' : '0',
+      init.clonable ? '1' : '0',
+      init.serializable ? '1' : '0',
+      assignment
+    );
+    if (typeof result === 'string') {
+      if (result === 'TypeError') throw new TypeError('attachShadow: invalid init');
+      throw new DOMException(
+        'attachShadow: this element cannot host a shadow root', result);
+    }
+    var root = wrapNode(result);
+    flushSlotChanges();
+    return root;
+  };
+  Object.defineProperty(Element.prototype, 'shadowRoot', {
+    configurable: true,
+    get: function() {
+      var root = wrapNode(__shadowRoot(this.__ref));
+      if (!root) return null;
+      var init = shadowInitOf(root);
+      return (init && init.mode === 'closed') ? null : root;
+    }
+  });
+
+  // The slot a node is assigned to. On Node, not Element: a text node is a
+  // slottable too.
+  Object.defineProperty(Node.prototype, 'assignedSlot', {
+    configurable: true,
+    get: function() {
+      var slot = wrapNode(__assignedSlot(this.__ref));
+      if (!slot) return null;
+      // A slot inside a closed tree is not exposed to the light DOM.
+      var root = shadowRootContaining(slot);
+      var init = root ? shadowInitOf(root) : null;
+      return (init && init.mode === 'closed') ? null : slot;
+    }
+  });
+
+  // HTMLSlotElement.
+  function slotAssignedNodes(slot) {
+    var raw = String(__assignedNodes(slot.__ref));
+    if (!raw) return [];
+    var out = [];
+    var parts = raw.split(',');
+    for (var i = 0; i < parts.length; i++) {
+      var node = wrapNode(__reflectNode(parts[i]));
+      if (node) out.push(node);
+    }
+    return out;
+  }
+  function installSlotInterface() {
+    var Slot = globalThis.HTMLSlotElement;
+    if (!Slot || !Slot.prototype) return;
+    Slot.prototype.assignedNodes = function(options) {
+      var nodes = slotAssignedNodes(this);
+      // Not flattened: the assignment as recorded, and nothing else.
+      if (!options || !options.flatten) return nodes;
+      // Flattened: fallback content stands in for an empty slot, and a nested
+      // slot is replaced by whatever it would itself show.
+      if (!nodes.length) nodes = rawChildNodes(this);
+      var out = [];
+      for (var i = 0; i < nodes.length; i++) {
+        var node = nodes[i];
+        if (node.nodeType === 1 && node.localName === 'slot') {
+          var inner = node.assignedNodes({ flatten: true });
+          for (var j = 0; j < inner.length; j++) out.push(inner[j]);
+        } else {
+          out.push(node);
+        }
+      }
+      return out;
+    };
+    Slot.prototype.assignedElements = function(options) {
+      return this.assignedNodes(options).filter(function(n) { return n.nodeType === 1; });
+    };
+    Slot.prototype.assign = function() {
+      var refs = [];
+      for (var i = 0; i < arguments.length; i++) {
+        var node = arguments[i];
+        if (node && node.__ref !== undefined) refs.push(String(__nodeRawId(node.__ref)));
+      }
+      __slotAssign(this.__ref, refs.join(','));
+      flushSlotChanges();
+    };
+  }
+
+  // `slotchange` fires at the slot, bubbling, once per slot whose assignment
+  // moved. The arena records which slots those are at the mutation itself;
+  // nothing here walks the tree looking for them.
+  function flushSlotChanges() {
+    var raw = String(__takeSlotChanges());
+    if (!raw) return;
+    var parts = raw.split(',');
+    for (var i = 0; i < parts.length; i++) {
+      var slot = wrapNode(__reflectNode(parts[i]));
+      if (slot) slot.dispatchEvent(new Event('slotchange', { bubbles: true, composed: false }));
+    }
+  }
+  globalThis.__flushSlotChanges = flushSlotChanges;
+
+  // HTMLTemplateElement.content — the inert fragment, owned by the shared inert
+  // template document, so two templates' contents share one ownerDocument.
+  function installTemplateInterface() {
+    var Template = globalThis.HTMLTemplateElement;
+    if (!Template || !Template.prototype) return;
+    Object.defineProperty(Template.prototype, 'content', {
+      configurable: true,
+      get: function() {
+        var fragment = wrapNode(__templateContent(this.__ref));
+        // Record the inert owner once: `content.ownerDocument` is the shared
+        // template-contents document, not the page's, and the fragment is
+        // detached so no tree walk could work that out.
+        if (fragment && !ownerDocuments.get(fragment)) {
+          ownerDocuments.set(fragment, wrapNode(__templateOwnerDocument()));
+        }
+        return fragment;
+      }
+    });
+  }
+
+  // `getHTML` / `setHTMLUnsafe`: the two operations that may cross a shadow
+  // boundary on purpose. `innerHTML` never does, in either direction — that
+  // separation is the reason these two exist at all.
+  function getHTMLOf(node, options) {
+    var include = options && options.serializableShadowRoots ? '1' : '0';
+    return String(__getHTML(node.__ref, include));
+  }
+  Element.prototype.getHTML = function(options) { return getHTMLOf(this, options); };
+  ShadowRoot.prototype.getHTML = function(options) { return getHTMLOf(this, options); };
+  Element.prototype.setHTMLUnsafe = function(html) {
+    this.innerHTML = String(html);
+    __realizeDeclarativeShadow(this.__ref);
+    flushSlotChanges();
+  };
+  ShadowRoot.prototype.setHTMLUnsafe = Element.prototype.setHTMLUnsafe;
+
+  // composedPath()'s visibility rule, called from Event.prototype.composedPath:
+  // an **open** shadow tree is visible to every node on the path; a **closed**
+  // one only from inside itself.
+  globalThis.__composedPathVisible = function(node, viewer, path) {
+    if (!viewer || node === viewer) return true;
+    var root = shadowRootContaining(node);
+    while (root) {
+      var init = shadowInitOf(root);
+      if (init && init.mode === 'closed') {
+        var viewerRoot = shadowRootContaining(viewer);
+        var inside = false;
+        while (viewerRoot) {
+          if (viewerRoot === root) { inside = true; break; }
+          var outer = wrapNode(__shadowHost(viewerRoot.__ref));
+          viewerRoot = outer ? shadowRootContaining(outer) : null;
+        }
+        if (!inside) return false;
+      }
+      var host = wrapNode(__shadowHost(root.__ref));
+      root = host ? shadowRootContaining(host) : null;
+    }
+    return true;
+  };
+
+  // The clone walker's shadow hook (declared above it, defined here because it
+  // needs `attachShadow`). Only a **clonable** root is carried, and it is
+  // always deep — `cloneNode(false)` on a host still gets the whole tree.
+  globalThis.__cloneShadowRootInto = function(source, copy, copyDocument) {
+    var root = wrapNode(__shadowRoot(source.__ref));
+    if (!root) return;
+    var init = shadowInitOf(root);
+    if (!init || !init.clonable) return;
+    var cloned = copy.attachShadow({
+      mode: init.mode,
+      delegatesFocus: init.delegatesFocus,
+      clonable: true,
+      serializable: init.serializable,
+      slotAssignment: init.slotAssignment
+    });
+    var kids = root.childNodes;
+    for (var i = 0; i < kids.length; i++) {
+      cloned.appendChild(globalThis.__cloneNodeInto(kids[i], copyDocument, true));
+    }
+  };
+
+  installSlotInterface();
+  installTemplateInterface();
+
   globalThis.XMLSerializer = XMLSerializer;
 })();

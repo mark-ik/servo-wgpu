@@ -848,7 +848,7 @@ fn collect_container_snapshots<D>(
             );
         }
     }
-    for child in dom.dom_children(id) {
+    for child in dom.flat_children(id) {
         collect_container_snapshots(dom, child, styles, fragments, &descendants, snapshots);
     }
 }
@@ -908,7 +908,7 @@ fn resolve_relative_subtree<D>(
             .is_some_and(|style| style.writing_mode.is_vertical()),
     );
     styles.resolve_relative_lengths(id, environment);
-    for child in dom.dom_children(id) {
+    for child in dom.flat_children(id) {
         resolve_relative_subtree(dom, child, styles, environment);
     }
 }
@@ -968,7 +968,7 @@ fn resolve_container_subtree<D>(
         }
     }
 
-    for child in dom.dom_children(id) {
+    for child in dom.flat_children(id) {
         resolve_container_subtree(dom, child, styles, fragments, viewport, next);
     }
 }

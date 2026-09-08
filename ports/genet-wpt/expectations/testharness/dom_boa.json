@@ -4,7 +4,7 @@
   "manifest_sha256": "d5ec5be9bf1a75ed00d7e7ab28afe8a694a55e11682ba74305874d70b18dd422",
   "policy": "exact",
   "renderer": "livery",
-  "runner_sha256": "af36c1c80c77b48334a0c0c6cc754f31c84fef70ec7139e81b74739241714d43",
+  "runner_sha256": "183a3c7f1f8a3aa1da106d42900451af33b8740daeee6833d7362ef8267347f3",
   "subset": "dom",
   "tests": {
     "dom/abort/AbortSignal.any.html": {
@@ -1778,8 +1778,539 @@
       "subtests_total": 1
     },
     "dom/events/Event-dispatch-single-activation-behavior.html": {
-      "reason": "evaluation-threw",
-      "status": "error"
+      "status": "fail",
+      "subtests": [
+        {
+          "name": "When clicking child <INPUT type=checkbox></INPUT> of parent <INPUT type=radio></INPUT>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <INPUT type=checkbox></INPUT> of parent <FORM><INPUT type=submit></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <INPUT type=checkbox></INPUT> of parent <FORM><INPUT type=image></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <INPUT type=checkbox></INPUT> of parent <FORM><INPUT type=reset></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <INPUT type=checkbox></INPUT> of parent <FORM><BUTTON type=submit></BUTTON></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <INPUT type=checkbox></INPUT> of parent <FORM><BUTTON type=reset></BUTTON></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <INPUT type=checkbox></INPUT> of parent <A></A>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <INPUT type=checkbox></INPUT> of parent <AREA></AREA>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <INPUT type=checkbox></INPUT> of parent <DETAILS><SUMMARY></SUMMARY></DETAILS>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <INPUT type=checkbox></INPUT> of parent <LABEL><INPUT type=checkbox></INPUT><SPAN></SPAN></LABEL>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <INPUT type=checkbox></INPUT> of parent <LABEL><BUTTON type=button></BUTTON></LABEL>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <INPUT type=radio></INPUT> of parent <INPUT type=checkbox></INPUT>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <INPUT type=radio></INPUT> of parent <FORM><INPUT type=submit></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <INPUT type=radio></INPUT> of parent <FORM><INPUT type=image></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <INPUT type=radio></INPUT> of parent <FORM><INPUT type=reset></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <INPUT type=radio></INPUT> of parent <FORM><BUTTON type=submit></BUTTON></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <INPUT type=radio></INPUT> of parent <FORM><BUTTON type=reset></BUTTON></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <INPUT type=radio></INPUT> of parent <A></A>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <INPUT type=radio></INPUT> of parent <AREA></AREA>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <INPUT type=radio></INPUT> of parent <DETAILS><SUMMARY></SUMMARY></DETAILS>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <INPUT type=radio></INPUT> of parent <LABEL><INPUT type=checkbox></INPUT><SPAN></SPAN></LABEL>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <INPUT type=radio></INPUT> of parent <LABEL><BUTTON type=button></BUTTON></LABEL>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=submit></INPUT></FORM> of parent <INPUT type=checkbox></INPUT>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=submit></INPUT></FORM> of parent <INPUT type=radio></INPUT>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=submit></INPUT></FORM> of parent <FORM><INPUT type=image></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=submit></INPUT></FORM> of parent <FORM><INPUT type=reset></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=submit></INPUT></FORM> of parent <FORM><BUTTON type=submit></BUTTON></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=submit></INPUT></FORM> of parent <FORM><BUTTON type=reset></BUTTON></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=submit></INPUT></FORM> of parent <A></A>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=submit></INPUT></FORM> of parent <AREA></AREA>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=submit></INPUT></FORM> of parent <DETAILS><SUMMARY></SUMMARY></DETAILS>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=submit></INPUT></FORM> of parent <LABEL><INPUT type=checkbox></INPUT><SPAN></SPAN></LABEL>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=submit></INPUT></FORM> of parent <LABEL><BUTTON type=button></BUTTON></LABEL>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=image></INPUT></FORM> of parent <INPUT type=checkbox></INPUT>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=image></INPUT></FORM> of parent <INPUT type=radio></INPUT>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=image></INPUT></FORM> of parent <FORM><INPUT type=submit></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=image></INPUT></FORM> of parent <FORM><INPUT type=reset></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=image></INPUT></FORM> of parent <FORM><BUTTON type=submit></BUTTON></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=image></INPUT></FORM> of parent <FORM><BUTTON type=reset></BUTTON></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=image></INPUT></FORM> of parent <A></A>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=image></INPUT></FORM> of parent <AREA></AREA>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=image></INPUT></FORM> of parent <DETAILS><SUMMARY></SUMMARY></DETAILS>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=image></INPUT></FORM> of parent <LABEL><INPUT type=checkbox></INPUT><SPAN></SPAN></LABEL>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=image></INPUT></FORM> of parent <LABEL><BUTTON type=button></BUTTON></LABEL>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=reset></INPUT></FORM> of parent <INPUT type=checkbox></INPUT>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=reset></INPUT></FORM> of parent <INPUT type=radio></INPUT>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=reset></INPUT></FORM> of parent <FORM><INPUT type=submit></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=reset></INPUT></FORM> of parent <FORM><INPUT type=image></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=reset></INPUT></FORM> of parent <FORM><BUTTON type=submit></BUTTON></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=reset></INPUT></FORM> of parent <FORM><BUTTON type=reset></BUTTON></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=reset></INPUT></FORM> of parent <A></A>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=reset></INPUT></FORM> of parent <AREA></AREA>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=reset></INPUT></FORM> of parent <DETAILS><SUMMARY></SUMMARY></DETAILS>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=reset></INPUT></FORM> of parent <LABEL><INPUT type=checkbox></INPUT><SPAN></SPAN></LABEL>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><INPUT type=reset></INPUT></FORM> of parent <LABEL><BUTTON type=button></BUTTON></LABEL>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><BUTTON type=submit></BUTTON></FORM> of parent <INPUT type=checkbox></INPUT>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><BUTTON type=submit></BUTTON></FORM> of parent <INPUT type=radio></INPUT>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><BUTTON type=submit></BUTTON></FORM> of parent <FORM><INPUT type=submit></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><BUTTON type=submit></BUTTON></FORM> of parent <FORM><INPUT type=image></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><BUTTON type=submit></BUTTON></FORM> of parent <FORM><INPUT type=reset></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><BUTTON type=submit></BUTTON></FORM> of parent <FORM><BUTTON type=reset></BUTTON></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><BUTTON type=submit></BUTTON></FORM> of parent <A></A>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><BUTTON type=submit></BUTTON></FORM> of parent <AREA></AREA>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><BUTTON type=submit></BUTTON></FORM> of parent <DETAILS><SUMMARY></SUMMARY></DETAILS>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><BUTTON type=submit></BUTTON></FORM> of parent <LABEL><INPUT type=checkbox></INPUT><SPAN></SPAN></LABEL>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><BUTTON type=submit></BUTTON></FORM> of parent <LABEL><BUTTON type=button></BUTTON></LABEL>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><BUTTON type=reset></BUTTON></FORM> of parent <INPUT type=checkbox></INPUT>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><BUTTON type=reset></BUTTON></FORM> of parent <INPUT type=radio></INPUT>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><BUTTON type=reset></BUTTON></FORM> of parent <FORM><INPUT type=submit></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><BUTTON type=reset></BUTTON></FORM> of parent <FORM><INPUT type=image></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><BUTTON type=reset></BUTTON></FORM> of parent <FORM><INPUT type=reset></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><BUTTON type=reset></BUTTON></FORM> of parent <FORM><BUTTON type=submit></BUTTON></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><BUTTON type=reset></BUTTON></FORM> of parent <A></A>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><BUTTON type=reset></BUTTON></FORM> of parent <AREA></AREA>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><BUTTON type=reset></BUTTON></FORM> of parent <DETAILS><SUMMARY></SUMMARY></DETAILS>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><BUTTON type=reset></BUTTON></FORM> of parent <LABEL><INPUT type=checkbox></INPUT><SPAN></SPAN></LABEL>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <FORM><BUTTON type=reset></BUTTON></FORM> of parent <LABEL><BUTTON type=button></BUTTON></LABEL>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <A></A> of parent <INPUT type=checkbox></INPUT>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <A></A> of parent <INPUT type=radio></INPUT>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <A></A> of parent <FORM><INPUT type=submit></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <A></A> of parent <FORM><INPUT type=image></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <A></A> of parent <FORM><INPUT type=reset></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <A></A> of parent <FORM><BUTTON type=submit></BUTTON></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <A></A> of parent <FORM><BUTTON type=reset></BUTTON></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <A></A> of parent <AREA></AREA>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <A></A> of parent <DETAILS><SUMMARY></SUMMARY></DETAILS>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <A></A> of parent <LABEL><INPUT type=checkbox></INPUT><SPAN></SPAN></LABEL>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <A></A> of parent <LABEL><BUTTON type=button></BUTTON></LABEL>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <AREA></AREA> of parent <INPUT type=checkbox></INPUT>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <AREA></AREA> of parent <INPUT type=radio></INPUT>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <AREA></AREA> of parent <FORM><INPUT type=submit></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <AREA></AREA> of parent <FORM><INPUT type=image></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <AREA></AREA> of parent <FORM><INPUT type=reset></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <AREA></AREA> of parent <FORM><BUTTON type=submit></BUTTON></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <AREA></AREA> of parent <FORM><BUTTON type=reset></BUTTON></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <AREA></AREA> of parent <A></A>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <AREA></AREA> of parent <DETAILS><SUMMARY></SUMMARY></DETAILS>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <AREA></AREA> of parent <LABEL><INPUT type=checkbox></INPUT><SPAN></SPAN></LABEL>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <AREA></AREA> of parent <LABEL><BUTTON type=button></BUTTON></LABEL>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <DETAILS><SUMMARY></SUMMARY></DETAILS> of parent <INPUT type=checkbox></INPUT>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <DETAILS><SUMMARY></SUMMARY></DETAILS> of parent <INPUT type=radio></INPUT>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <DETAILS><SUMMARY></SUMMARY></DETAILS> of parent <FORM><INPUT type=submit></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <DETAILS><SUMMARY></SUMMARY></DETAILS> of parent <FORM><INPUT type=image></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <DETAILS><SUMMARY></SUMMARY></DETAILS> of parent <FORM><INPUT type=reset></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <DETAILS><SUMMARY></SUMMARY></DETAILS> of parent <FORM><BUTTON type=submit></BUTTON></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <DETAILS><SUMMARY></SUMMARY></DETAILS> of parent <FORM><BUTTON type=reset></BUTTON></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <DETAILS><SUMMARY></SUMMARY></DETAILS> of parent <A></A>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <DETAILS><SUMMARY></SUMMARY></DETAILS> of parent <AREA></AREA>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <DETAILS><SUMMARY></SUMMARY></DETAILS> of parent <LABEL><INPUT type=checkbox></INPUT><SPAN></SPAN></LABEL>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <DETAILS><SUMMARY></SUMMARY></DETAILS> of parent <LABEL><BUTTON type=button></BUTTON></LABEL>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <LABEL><INPUT type=checkbox></INPUT><SPAN></SPAN></LABEL> of parent <INPUT type=checkbox></INPUT>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <LABEL><INPUT type=checkbox></INPUT><SPAN></SPAN></LABEL> of parent <INPUT type=radio></INPUT>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <LABEL><INPUT type=checkbox></INPUT><SPAN></SPAN></LABEL> of parent <FORM><INPUT type=submit></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <LABEL><INPUT type=checkbox></INPUT><SPAN></SPAN></LABEL> of parent <FORM><INPUT type=image></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <LABEL><INPUT type=checkbox></INPUT><SPAN></SPAN></LABEL> of parent <FORM><INPUT type=reset></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <LABEL><INPUT type=checkbox></INPUT><SPAN></SPAN></LABEL> of parent <FORM><BUTTON type=submit></BUTTON></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <LABEL><INPUT type=checkbox></INPUT><SPAN></SPAN></LABEL> of parent <FORM><BUTTON type=reset></BUTTON></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <LABEL><INPUT type=checkbox></INPUT><SPAN></SPAN></LABEL> of parent <A></A>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <LABEL><INPUT type=checkbox></INPUT><SPAN></SPAN></LABEL> of parent <AREA></AREA>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <LABEL><INPUT type=checkbox></INPUT><SPAN></SPAN></LABEL> of parent <DETAILS><SUMMARY></SUMMARY></DETAILS>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <LABEL><INPUT type=checkbox></INPUT><SPAN></SPAN></LABEL> of parent <LABEL><BUTTON type=button></BUTTON></LABEL>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <LABEL><BUTTON type=button></BUTTON></LABEL> of parent <INPUT type=checkbox></INPUT>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <LABEL><BUTTON type=button></BUTTON></LABEL> of parent <INPUT type=radio></INPUT>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <LABEL><BUTTON type=button></BUTTON></LABEL> of parent <FORM><INPUT type=submit></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <LABEL><BUTTON type=button></BUTTON></LABEL> of parent <FORM><INPUT type=image></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <LABEL><BUTTON type=button></BUTTON></LABEL> of parent <FORM><INPUT type=reset></INPUT></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <LABEL><BUTTON type=button></BUTTON></LABEL> of parent <FORM><BUTTON type=submit></BUTTON></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <LABEL><BUTTON type=button></BUTTON></LABEL> of parent <FORM><BUTTON type=reset></BUTTON></FORM>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <LABEL><BUTTON type=button></BUTTON></LABEL> of parent <A></A>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <LABEL><BUTTON type=button></BUTTON></LABEL> of parent <AREA></AREA>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <LABEL><BUTTON type=button></BUTTON></LABEL> of parent <DETAILS><SUMMARY></SUMMARY></DETAILS>, only child should be activated.",
+          "status": "fail"
+        },
+        {
+          "name": "When clicking child <LABEL><BUTTON type=button></BUTTON></LABEL> of parent <LABEL><INPUT type=checkbox></INPUT><SPAN></SPAN></LABEL>, only child should be activated.",
+          "status": "fail"
+        }
+      ],
+      "subtests_passed": 0,
+      "subtests_total": 132
     },
     "dom/events/Event-dispatch-target-moved.html": {
       "status": "pass",
@@ -3927,8 +4458,15 @@
       "subtests_total": 100
     },
     "dom/events/pointer-event-document-move.html": {
-      "reason": "evaluation-threw",
-      "status": "error"
+      "status": "fail",
+      "subtests": [
+        {
+          "name": "Moving a node to new document should move the registered event listeners together",
+          "status": "fail"
+        }
+      ],
+      "subtests_passed": 0,
+      "subtests_total": 1
     },
     "dom/events/preventDefault-during-activation-behavior.html": {
       "status": "fail",
@@ -3942,8 +4480,35 @@
       "subtests_total": 1
     },
     "dom/events/relatedTarget.window.html": {
-      "reason": "evaluation-threw",
-      "status": "error"
+      "status": "fail",
+      "subtests": [
+        {
+          "name": "Reset if target pointed to a shadow tree",
+          "status": "fail"
+        },
+        {
+          "name": "Retarget a shadow-tree relatedTarget",
+          "status": "fail"
+        },
+        {
+          "name": "Reset if target pointed to a shadow tree pre-dispatch",
+          "status": "fail"
+        },
+        {
+          "name": "Retarget a shadow-tree relatedTarget, part 2",
+          "status": "fail"
+        },
+        {
+          "name": "Reset targets on early return",
+          "status": "fail"
+        },
+        {
+          "name": "Reset targets before activation behavior",
+          "status": "fail"
+        }
+      ],
+      "subtests_passed": 0,
+      "subtests_total": 6
     },
     "dom/events/remove-all-listeners.html": {
       "status": "fail",
@@ -4361,8 +4926,19 @@
       "status": "no-results"
     },
     "dom/events/shadow-relatedTarget.html": {
-      "reason": "evaluation-threw",
-      "status": "error"
+      "status": "fail",
+      "subtests": [
+        {
+          "name": "relatedTarget should not leak at capturing phase, at window object.",
+          "status": "fail"
+        },
+        {
+          "name": "relatedTarget should not leak at target.",
+          "status": "fail"
+        }
+      ],
+      "subtests_passed": 0,
+      "subtests_total": 2
     },
     "dom/events/webkit-animation-end-event.html": {
       "reason": "evaluation-threw",
@@ -17460,10 +18036,10 @@
         },
         {
           "name": "It must return the first element when there are matches, using a template",
-          "status": "fail"
+          "status": "pass"
         }
       ],
-      "subtests_passed": 3,
+      "subtests_passed": 4,
       "subtests_total": 5
     },
     "dom/nodes/DocumentFragment-querySelectorAll-after-modification.html": {
@@ -25356,7 +25932,7 @@
         },
         {
           "name": "createElement(template)",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "createElement(textarea)",
@@ -25467,7 +26043,7 @@
           "status": "pass"
         }
       ],
-      "subtests_passed": 133,
+      "subtests_passed": 134,
       "subtests_total": 135
     },
     "dom/nodes/Node-compareDocumentPosition.html": {
@@ -41957,7 +42533,7 @@
         },
         {
           "name": "DocumentFragment.replaceChildren() should move nodes in the right order",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "There should be a MutationRecord for the node removed from another parent node.",
@@ -41968,7 +42544,7 @@
           "status": "pass"
         }
       ],
-      "subtests_passed": 13,
+      "subtests_passed": 14,
       "subtests_total": 29
     },
     "dom/nodes/ProcessingInstruction-escapes-1.xhtml": {
@@ -45058,14 +45634,14 @@
       "subtests_total": 1
     },
     "dom/nodes/moveBefore/moveBefore-shadow-root.html": {
-      "status": "fail",
+      "status": "pass",
       "subtests": [
         {
           "name": "moveBefore() is allowed in ShadowRoots (i.e., connected DocumentFragments)",
-          "status": "fail"
+          "status": "pass"
         }
       ],
-      "subtests_passed": 0,
+      "subtests_passed": 1,
       "subtests_total": 1
     },
     "dom/nodes/moveBefore/moveBefore-size-query.html": {
@@ -45419,11 +45995,11 @@
       "status": "skip"
     },
     "dom/nodes/rootNode.html": {
-      "status": "fail",
+      "status": "pass",
       "subtests": [
         {
           "name": "getRootNode() must return context object's shadow-including root if options's composed is true, and context object's root otherwise",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "getRootNode() must return the context object when it does not have any parent",
@@ -45442,26 +46018,26 @@
           "status": "pass"
         }
       ],
-      "subtests_passed": 4,
+      "subtests_passed": 5,
       "subtests_total": 5
     },
     "dom/nodes/svg-template-querySelector.html": {
-      "status": "fail",
+      "status": "pass",
       "subtests": [
         {
           "name": "querySelector works on template contents fragments with HTML elements (sanity check)",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "querySelector works on template contents fragments with SVG elements",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "querySelector works on template contents fragments with nested SVG elements",
-          "status": "fail"
+          "status": "pass"
         }
       ],
-      "subtests_passed": 0,
+      "subtests_passed": 3,
       "subtests_total": 3
     },
     "dom/observable/tentative/crashtests/observable-gc.any.html": {
@@ -118175,14 +118751,14 @@
       "subtests_total": 1
     },
     "dom/ranges/Range-intersectsNode-shadow.html": {
-      "status": "fail",
+      "status": "pass",
       "subtests": [
         {
           "name": "Range.intersectsNode() doesn't return true for shadow children in other trees",
-          "status": "fail"
+          "status": "pass"
         }
       ],
-      "subtests_passed": 0,
+      "subtests_passed": 1,
       "subtests_total": 1
     },
     "dom/ranges/Range-intersectsNode.html": {

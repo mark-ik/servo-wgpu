@@ -93,8 +93,102 @@ pub trait LayoutDom {
 
     /// Flat-tree children (slot-assigned for shadow hosts, otherwise DOM
     /// order). Backends without shadow DOM should leave this defaulted.
+    ///
+    /// The three cases a shadow-aware backend must answer
+    /// ([CSS Scoping §flat tree](https://drafts.csswg.org/css-scoping-1/#flat-tree)):
+    ///
+    /// - a **shadow host** yields its shadow root's flat children, never its
+    ///   own light-DOM children (those reach the tree through slots);
+    /// - a **slot** yields its assigned nodes, or — when nothing is assigned —
+    ///   its own children, which are the slot's fallback content;
+    /// - anything else yields [`dom_children`](Self::dom_children).
     fn flat_children(&self, id: Self::NodeId) -> impl Iterator<Item = Self::NodeId> + '_ {
         self.dom_children(id)
+    }
+
+    /// Whether this document contains any shadow root at all. The one cheap
+    /// question every flat-tree consumer asks before paying for the shadow
+    /// bookkeeping: a document with no shadow tree must cost exactly what it
+    /// cost before shadow DOM existed. Defaults to `false`.
+    fn has_shadow_trees(&self) -> bool {
+        false
+    }
+
+    /// The `ShadowRootInit` the shadow root on element `id` was created with.
+    fn shadow_init(&self, _id: Self::NodeId) -> Option<ShadowRootInit> {
+        None
+    }
+
+    /// The shadow root attached to element `id`, if any. Answers `shadowRoot`
+    /// for an open root; the DOM layer applies the mode policy, since layout
+    /// and serialization consumers need the root regardless of mode.
+    fn shadow_root(&self, _id: Self::NodeId) -> Option<Self::NodeId> {
+        None
+    }
+
+    /// Every shadow root in this document, in creation order. Empty unless
+    /// [`has_shadow_trees`](Self::has_shadow_trees); the style pass needs the
+    /// enumeration to work out which tree scope each stylesheet belongs to.
+    fn shadow_roots(&self) -> Vec<Self::NodeId> {
+        Vec::new()
+    }
+
+    /// The host element of shadow root `id`, if `id` is a shadow root.
+    fn shadow_host(&self, _id: Self::NodeId) -> Option<Self::NodeId> {
+        None
+    }
+
+    /// The `<slot>` element `id` is assigned to, if any (`assignedSlot`).
+    fn assigned_slot(&self, _id: Self::NodeId) -> Option<Self::NodeId> {
+        None
+    }
+
+    /// The nodes assigned to slot `id`, in tree order (`assignedNodes()` with
+    /// `flatten: false`). Empty for a slot with nothing assigned — the caller
+    /// substitutes fallback content, which is the slot's own children.
+    fn assigned_nodes(&self, _id: Self::NodeId) -> Vec<Self::NodeId> {
+        Vec::new()
+    }
+
+    /// The root of `id`'s **node tree** — the topmost node reachable by parent
+    /// links, which for a node inside a shadow tree is that shadow root, not
+    /// the document. `getRootNode()` without `composed`.
+    fn node_tree_root(&self, id: Self::NodeId) -> Self::NodeId {
+        let mut current = id;
+        while let Some(parent) = self.parent(current) {
+            current = parent;
+        }
+        current
+    }
+
+    /// The **shadow-including** root of `id`: like [`node_tree_root`], but a
+    /// shadow root continues through its host. `getRootNode({composed: true})`,
+    /// and the opaque root the reflector-identity policy groups wrappers by.
+    ///
+    /// [`node_tree_root`]: Self::node_tree_root
+    fn composed_tree_root(&self, id: Self::NodeId) -> Self::NodeId {
+        let mut current = self.node_tree_root(id);
+        while let Some(host) = self.shadow_host(current) {
+            current = self.node_tree_root(host);
+        }
+        current
+    }
+
+    /// The contents `DocumentFragment` of `<template>` element `id`. Detached
+    /// and owned by an inert template document, so no tree walk reaches it —
+    /// a generic tree copier must ask for it explicitly.
+    fn template_contents(&self, _id: Self::NodeId) -> Option<Self::NodeId> {
+        None
+    }
+
+    /// The shadow root whose tree contains `id`, if `id` is in a shadow tree.
+    /// Its host is the "containing shadow host" selector matching asks for.
+    fn containing_shadow_root(&self, id: Self::NodeId) -> Option<Self::NodeId> {
+        if !self.has_shadow_trees() {
+            return None;
+        }
+        let root = self.node_tree_root(id);
+        (self.kind(root) == NodeKind::ShadowRoot).then_some(root)
     }
 
     // ---- kind and hot primitives ----------------------------------------
@@ -480,6 +574,146 @@ pub enum NodeKind {
     /// A `DocumentFragment` (nodeType 11): a parentless container, used as the
     /// scripted-DOM holder for `createDocumentFragment` and fragment parsing.
     DocumentFragment,
+    /// A `ShadowRoot` — a `DocumentFragment` subtype (nodeType 11 as well) that
+    /// is the root of a shadow tree hanging off a **host** element. It is not a
+    /// child of its host: `parent` is `None` and it never appears in the host's
+    /// [`dom_children`](LayoutDom::dom_children). It reaches layout through
+    /// [`flat_children`](LayoutDom::flat_children), which returns the shadow
+    /// root's children in place of the host's own.
+    ShadowRoot,
+}
+
+impl NodeKind {
+    /// Whether this kind is a `DocumentFragment` for DOM purposes. A
+    /// `ShadowRoot` **is** a `DocumentFragment` in the DOM's own hierarchy
+    /// (nodeType 11), so consumers that treat a fragment as a transparent
+    /// container should treat a shadow root the same.
+    pub fn is_document_fragment(self) -> bool {
+        matches!(self, Self::DocumentFragment | Self::ShadowRoot)
+    }
+}
+
+/// Encapsulation mode of a shadow root (`ShadowRootMode`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ShadowRootMode {
+    /// `element.shadowRoot` returns the root.
+    Open,
+    /// `element.shadowRoot` returns null; only the attacher holds the handle.
+    Closed,
+}
+
+impl ShadowRootMode {
+    /// Parse the IDL enumeration value; anything else is not a valid mode.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "open" => Some(Self::Open),
+            "closed" => Some(Self::Closed),
+            _ => None,
+        }
+    }
+
+    /// The IDL enumeration value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Closed => "closed",
+        }
+    }
+}
+
+/// How slottables reach slots (`SlotAssignmentMode`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SlotAssignmentMode {
+    /// Assignment follows the `slot` attribute and slot `name`s.
+    Named,
+    /// Assignment is whatever `HTMLSlotElement.assign()` last said.
+    Manual,
+}
+
+impl SlotAssignmentMode {
+    /// Parse the IDL enumeration value.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "named" => Some(Self::Named),
+            "manual" => Some(Self::Manual),
+            _ => None,
+        }
+    }
+
+    /// The IDL enumeration value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Named => "named",
+            Self::Manual => "manual",
+        }
+    }
+}
+
+/// The `ShadowRootInit` dictionary, as the arena stores it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ShadowRootInit {
+    /// Encapsulation mode.
+    pub mode: ShadowRootMode,
+    /// Whether focusing the host moves focus to the first focusable descendant.
+    pub delegates_focus: bool,
+    /// Whether `cloneNode` on the host also clones this root.
+    pub clonable: bool,
+    /// Whether `getHTML({serializableShadowRoots: true})` includes this root.
+    pub serializable: bool,
+    /// Named or manual slot assignment.
+    pub slot_assignment: SlotAssignmentMode,
+}
+
+impl Default for ShadowRootInit {
+    fn default() -> Self {
+        Self {
+            mode: ShadowRootMode::Open,
+            delegates_focus: false,
+            clonable: false,
+            serializable: false,
+            slot_assignment: SlotAssignmentMode::Named,
+        }
+    }
+}
+
+/// The HTML element local names `attachShadow` accepts, plus any valid custom
+/// element name (which the caller checks — the arena has no definition
+/// registry). HTML "attach a shadow root" step 1.
+const SHADOW_HOST_LOCAL_NAMES: &[&str] = &[
+    "article",
+    "aside",
+    "blockquote",
+    "body",
+    "div",
+    "footer",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "main",
+    "nav",
+    "p",
+    "section",
+    "span",
+];
+
+/// Whether `local` is one of the built-in element names that may host a shadow
+/// tree. A valid custom element name also may; that check needs the "-" rule
+/// only, which is applied here too so both DOMs answer the same question.
+pub fn may_host_shadow_tree(local: &str) -> bool {
+    SHADOW_HOST_LOCAL_NAMES.contains(&local) || is_valid_custom_element_local_name(local)
+}
+
+/// The part of "valid custom element name" a tree can decide on its own: an
+/// ASCII-lowercase-initial name containing a hyphen and no ASCII uppercase.
+/// The reserved-name list is the script tier's business.
+fn is_valid_custom_element_local_name(local: &str) -> bool {
+    local.starts_with(|c: char| c.is_ascii_lowercase())
+        && local.contains('-')
+        && !local.bytes().any(|b| b.is_ascii_uppercase())
 }
 
 /// Borrowed view of a doctype node's three strings.
@@ -539,6 +773,25 @@ where
         Descent::Descend => {
             for child in dom.dom_children(root) {
                 walk_subtree(dom, child, visitor)?;
+            }
+            visitor.exit(dom, root)
+        },
+    }
+}
+
+/// Walk `root`'s subtree with `visitor`, descending via
+/// [`LayoutDom::flat_children`] — the rendering traversal. Identical to
+/// [`walk_subtree`] on a document with no shadow tree.
+pub fn walk_flat_subtree<D, V>(dom: &D, root: D::NodeId, visitor: &mut V) -> ControlFlow<V::Stop>
+where
+    D: LayoutDom + ?Sized,
+    V: NodeVisitor<D> + ?Sized,
+{
+    match visitor.enter(dom, root)? {
+        Descent::Skip => ControlFlow::Continue(()),
+        Descent::Descend => {
+            for child in dom.flat_children(root).collect::<Vec<_>>() {
+                walk_flat_subtree(dom, child, visitor)?;
             }
             visitor.exit(dom, root)
         },

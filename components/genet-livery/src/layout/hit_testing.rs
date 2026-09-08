@@ -80,7 +80,7 @@ where
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
 {
-    let mut children = dom.dom_children(parent).collect::<Vec<_>>();
+    let mut children = dom.flat_children(parent).collect::<Vec<_>>();
     let is_flex_or_grid = styles
         .get(parent)
         .is_some_and(|style| matches!(style.display, CssDisplay::Flex | CssDisplay::Grid));

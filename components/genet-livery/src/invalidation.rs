@@ -363,7 +363,7 @@ where
     D: LayoutDom,
 {
     if dom.is_live(root) {
-        for child in dom.dom_children(root) {
+        for child in dom.flat_children(root) {
             remove_subtree(dom, plane, child);
         }
     }

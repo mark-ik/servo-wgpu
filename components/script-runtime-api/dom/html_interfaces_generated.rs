@@ -3074,7 +3074,7 @@ pub(crate) const HTML_INTERFACES: &[HtmlInterface] = &[
     HtmlInterface {
         name: "HTMLTemplateElement",
         parent: "HTMLElement",
-        tags: &[],
+        tags: &["template"],
         reflected: &[
             ReflectedAttribute {
                 idl: "shadowRootDelegatesFocus",
