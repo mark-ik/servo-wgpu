@@ -121,6 +121,11 @@ fn generated_property_names_round_trip() {
         assert!(!metadata.initial.is_empty());
         assert!(!metadata.grammar.is_empty());
         assert!(!metadata.seed_values.is_empty());
+        // The contract is the stable w3.org TR URL, not an editor's draft: every
+        // property must cite a published Technical Report page. css-masking-1
+        // (clip-path) has a w3.org TR mirror at the same #propdef-clip-path
+        // anchor as the FXTF editor's draft, so properties.toml points there
+        // rather than widening this test to accept drafts.fxtf.org et al.
         assert!(metadata.source_url.starts_with("https://www.w3.org/"));
     }
 }
