@@ -1,0 +1,26 @@
+<!-- Copyright 2026 Mark Alan Boykin
+     This Source Code Form is subject to the terms of the Mozilla Public
+     License, v. 2.0. If a copy of the MPL was not distributed with this
+     file, You can obtain one at https://mozilla.org/MPL/2.0/.
+     SPDX-License-Identifier: MPL-2.0 -->
+<!doctype html>
+<meta charset="utf-8">
+<title>Ortet worker receipt</title>
+<style>
+  html, body { margin: 0; min-height: 400px; color: #f9f4e8; background: #17324d; font: 22px sans-serif; }
+  main { padding: 28px; }
+  html.complete, html.complete body { background: #5b3b78; }
+</style>
+<main>
+  <h1 id="state">Ortet O5 worker waiting</h1>
+  <p>The worker waits on a live resource before sending its result.</p>
+</main>
+<script>
+  var worker = new Worker("/worker.js?case=worker");
+  worker.onmessage = function (event) {
+    if (event.data !== "WORKER_OK") throw new Error("unexpected worker receipt body");
+    document.documentElement.className = "complete";
+    document.getElementById("state").textContent = "Ortet O5 worker idle wake complete";
+  };
+  worker.postMessage("start");
+</script>

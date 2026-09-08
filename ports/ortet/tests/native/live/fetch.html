@@ -1,0 +1,26 @@
+<!-- Copyright 2026 Mark Alan Boykin
+     This Source Code Form is subject to the terms of the Mozilla Public
+     License, v. 2.0. If a copy of the MPL was not distributed with this
+     file, You can obtain one at https://mozilla.org/MPL/2.0/.
+     SPDX-License-Identifier: MPL-2.0 -->
+<!doctype html>
+<meta charset="utf-8">
+<title>Ortet delayed fetch receipt</title>
+<style>
+  html, body { margin: 0; min-height: 400px; color: #f9f4e8; background: #17324d; font: 22px sans-serif; }
+  main { padding: 28px; }
+  html.complete, html.complete body { background: #185d8c; }
+</style>
+<main>
+  <h1 id="state">Ortet O5 fetch waiting</h1>
+  <p>The completion is supplied by the live server after this host is idle.</p>
+</main>
+<script>
+  fetch("/delayed-fetch?case=fetch")
+    .then(function (response) { return response.text(); })
+    .then(function (text) {
+      if (text !== "FETCH_OK") throw new Error("unexpected fetch receipt body");
+      document.documentElement.className = "complete";
+      document.getElementById("state").textContent = "Ortet O5 fetch idle wake complete";
+    });
+</script>

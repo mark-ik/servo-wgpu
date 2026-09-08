@@ -1,0 +1,25 @@
+<!-- Copyright 2026 Mark Alan Boykin
+     This Source Code Form is subject to the terms of the Mozilla Public
+     License, v. 2.0. If a copy of the MPL was not distributed with this
+     file, You can obtain one at https://mozilla.org/MPL/2.0/.
+     SPDX-License-Identifier: MPL-2.0 -->
+<!doctype html>
+<meta charset="utf-8">
+<title>Ortet stale completion replacement</title>
+<style>
+  html, body { margin: 0; min-height: 400px; color: #f9f4e8; background: #185d8c; font: 22px sans-serif; }
+  main { padding: 28px; }
+  html.complete, html.complete body { background: #17324d; }
+</style>
+<main>
+  <h1 id="state">Ortet O5 replacement waiting</h1>
+  <p>The late result from the replaced session must never arrive here.</p>
+</main>
+<script>
+  // The server releases the former document's delayed fetch after 250ms. This
+  // legitimate new-document timer completes later, leaving time to reject it.
+  setTimeout(function () {
+    document.documentElement.className = "complete";
+    document.getElementById("state").textContent = "Ortet O5 stale completion rejected";
+  }, 500);
+</script>
