@@ -178,7 +178,9 @@ impl<E: ScriptEngine> NativeFn<E> for WsClose {
 }
 
 /// Install the WebSocket sinks and the `WebSocket` / `CloseEvent` bootstrap.
-pub(crate) fn install_websocket_surface<E: ScriptEngine>(engine: &mut E) -> Result<(), E::Error> {
+pub(crate) fn install_websocket_surface<E: ScriptEngine>(
+    engine: &mut crate::Surface<'_, '_, E>,
+) -> Result<(), crate::SurfaceError<E::Error>> {
     engine.set_function::<WsConnect>("__websocket_connect", 4)?;
     engine.set_function::<WsSendText>("__websocket_send_text", 2)?;
     engine.set_function::<WsSendBinary>("__websocket_send_binary", 2)?;

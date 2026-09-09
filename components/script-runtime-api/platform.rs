@@ -381,7 +381,9 @@ impl<E: ScriptEngine> NativeFn<E> for HistoryGo {
     }
 }
 
-pub(crate) fn install_platform_surface<E: ScriptEngine>(engine: &mut E) -> Result<(), E::Error> {
+pub(crate) fn install_platform_surface<E: ScriptEngine>(
+    engine: &mut crate::Surface<'_, '_, E>,
+) -> Result<(), crate::SurfaceError<E::Error>> {
     engine.set_function::<LocationField>("__locationField", 1)?;
     engine.set_function::<LocationAssign>("__locationAssign", 1)?;
     engine.set_function::<HistoryPush>("__historyPush", 3)?;

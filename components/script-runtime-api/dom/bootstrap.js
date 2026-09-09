@@ -218,8 +218,8 @@
   var upgradedCustomElements = new WeakMap();
   var connectedCustomElements = new WeakMap();
   var ownerDocuments = new WeakMap();
-  var iframeDocuments = new WeakMap();
-  var iframeWindows = new WeakMap();
+
+
   var htmlElementConstructionStack = [];
   var customElementReactionQueue = [];
   var customElementReactionScheduled = false;
@@ -2402,6 +2402,10 @@
     return doc;
   }
   Document.prototype = Object.create(Node.prototype);
+  Object.defineProperty(Document.prototype, 'defaultView', {
+    get: function() { return this === globalThis.document ? globalThis : null; },
+    configurable: true
+  });
   Object.defineProperty(Document.prototype, 'styleSheets', {
     configurable: true, get: function() { return documentStyleSheets; }
   });
@@ -2773,39 +2777,22 @@
 
   function installHtmlInterfaceMembers(name, proto) {
     if (name === 'HTMLIFrameElement') {
-      Object.defineProperty(proto, 'contentDocument', {
+      Object.defineProperty(proto, 'srcdoc', {
         configurable: true,
-        get: function() {
-          var child = iframeDocuments.get(this);
-          if (!child) {
-            child = document.implementation.createHTMLDocument('');
-            iframeDocuments.set(this, child);
-          }
-          return child;
-        }
+        get: function() { return this.getAttribute('srcdoc') || ''; },
+        set: function(value) { this.setAttribute('srcdoc', String(value)); }
       });
       Object.defineProperty(proto, 'contentWindow', {
         configurable: true,
+        get: function() { return typeof __frameWindow === 'function' ? __frameWindow(this.__ref) : null; }
+      });
+      Object.defineProperty(proto, 'contentDocument', {
+        configurable: true,
         get: function() {
-          var childWindow = iframeWindows.get(this);
-          if (!childWindow) {
-            var frame = this;
-            childWindow = Object.create(globalThis.EventTarget && globalThis.EventTarget.prototype || Object.prototype);
-            childWindow.document = frame.contentDocument;
-            childWindow.getComputedStyle = function(el) { return makeComputedStyle(el, frame); };
-            Object.defineProperty(childWindow, 'innerWidth', {
-              configurable: true,
-              get: function() { return parseFloat(makeComputedStyle(frame).width) || 300; }
-            });
-            Object.defineProperty(childWindow, 'innerHeight', {
-              configurable: true,
-              get: function() { return parseFloat(makeComputedStyle(frame).height) || 150; }
-            });
-            childWindow.window = childWindow;
-            childWindow.self = childWindow;
-            iframeWindows.set(frame, childWindow);
-          }
-          return childWindow;
+          var child = this.contentWindow;
+          if (!child) return null;
+          try { return child.document; }
+          catch (error) { if (error && error.name === 'SecurityError') return null; throw error; }
         }
       });
       return;
@@ -3323,11 +3310,11 @@
   // reference child's old index).
   function moAppendChild(p, c) {
     rangeWillRemove(wrapNode(c)); __appendChild(p, c);
-    rangeDidInsert(wrapNode(c)); moAfterMutation();
+    rangeDidInsert(wrapNode(c)); moAfterMutation(); syncFrameSubtree(wrapNode(c));
   }
   function moInsertBefore(p, n, r) {
     rangeWillRemove(wrapNode(n)); __insertBefore(p, n, r);
-    rangeDidInsert(wrapNode(n)); moAfterMutation();
+    rangeDidInsert(wrapNode(n)); moAfterMutation(); syncFrameSubtree(wrapNode(n));
   }
   function moMoveBefore(p, n, r) {
     rangeWillRemove(wrapNode(n)); __moveBefore(p, n, r);
@@ -3345,7 +3332,16 @@
   }
   function moSetInnerHtml(n, h) {
     rangeWillReplaceAll(wrapNode(n)); __setInnerHtml(n, h); moAfterMutation();
+    syncFrameSubtree(wrapNode(n));
   }
+
+  function syncFrameSubtree(node) {
+    if (!node || typeof __frameWindow !== 'function' || !node.isConnected) return;
+    if (node.localName === 'iframe') { __frameWindow(node.__ref); __refreshNamedProperties(); return; }
+    var children = node.childNodes;
+    for (var i = 0; i < children.length; i++) syncFrameSubtree(children[i]);
+  }
+  globalThis.__frameElementById = function(raw) { return wrapNode(__reflectNode(String(raw))); };
 
   // The runtime calls this at the head of every microtask checkpoint while any
   // observer is registered, which is what turns the arena's pending record into

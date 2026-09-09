@@ -717,7 +717,9 @@ impl<E: ScriptEngine> NativeFn<E> for PrepareScriptEnd {
     }
 }
 
-pub(crate) fn install<E: ScriptEngine>(engine: &mut E) -> Result<(), E::Error> {
+pub(crate) fn install<E: ScriptEngine>(
+    engine: &mut crate::Surface<'_, '_, E>,
+) -> Result<(), crate::SurfaceError<E::Error>> {
     engine.set_function::<ReadyStateOf>("__readyState", 0)?;
     engine.set_function::<CurrentScript>("__currentScript", 0)?;
     engine.set_function::<DocOpen>("__docOpen", 1)?;

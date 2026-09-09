@@ -153,6 +153,10 @@ impl CallCx for PiccoloCallCx<'_> {
     type Value = StashedValue;
     type Error = String;
 
+    fn error(&mut self, message: &str) -> Self::Error {
+        message.to_string()
+    }
+
     fn arg(&mut self, i: usize) -> Self::Value {
         match self.args.get(i) {
             Some(v) => v.clone(),

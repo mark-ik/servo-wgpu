@@ -29,6 +29,7 @@ livery-scripted = ["scripted"]
 scripted-nova = ["scripted", "dep:script-engine-nova"]
 
 [dependencies]
+browsing-context-api = { path = "../shared/browsing-context" }
 # The engine contracts this component implements (SessionEngine<Scene>).
 document-session-api = { workspace = true }
 # The product-neutral host fetch seam.

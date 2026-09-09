@@ -19,7 +19,7 @@
 
 use script_engine_api::ScriptEngine;
 
-pub(crate) fn install_messaging_surface<E: ScriptEngine>(engine: &mut E) -> Result<(), E::Error> {
+pub(crate) fn install_messaging_surface<E: ScriptEngine>(engine: &mut crate::Surface<'_, '_, E>) -> Result<(), crate::SurfaceError<E::Error>> {
     engine.eval(MESSAGING_BOOTSTRAP)?;
     Ok(())
 }

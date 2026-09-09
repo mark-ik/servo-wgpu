@@ -39,7 +39,9 @@ impl TestResult {
 
 /// Install the `__reportResult` native sink. The completion-callback JS (installed
 /// by [`install_bridge`] after `testharness.js` loads) calls it per subtest.
-pub(crate) fn install_report_sink<E: ScriptEngine>(engine: &mut E) -> Result<(), E::Error> {
+pub(crate) fn install_report_sink<E: ScriptEngine>(
+    engine: &mut crate::Surface<'_, '_, E>,
+) -> Result<(), crate::SurfaceError<E::Error>> {
     engine.set_function::<ReportResult>("__reportResult", 3)
 }
 

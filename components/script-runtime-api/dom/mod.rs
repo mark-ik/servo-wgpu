@@ -150,7 +150,9 @@ fn first_element_child(dom: &ScriptedDom, node: NodeId) -> Option<NodeId> {
 
 /// Install the `document`/`Node` surface: native sinks, then the JS bootstrap that
 /// builds `document` and the node wrappers over them.
-pub(crate) fn install_dom_surface<E: ScriptEngine>(engine: &mut E) -> Result<(), E::Error> {
+pub(crate) fn install_dom_surface<E: ScriptEngine>(
+    engine: &mut crate::Surface<'_, '_, E>,
+) -> Result<(), crate::SurfaceError<E::Error>> {
     shadow::install(engine)?;
     markup_insertion::install(engine)?;
     engine.set_function::<DocumentRoot>("__documentRoot", 0)?;

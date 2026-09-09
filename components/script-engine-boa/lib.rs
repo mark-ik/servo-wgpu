@@ -22,11 +22,12 @@ use boa_engine::{
         WeakJsObject,
         builtins::{JsFunction, JsPromise},
     },
+    realm::Realm,
 };
-use boa_gc::{Finalize, GcRefCell, Trace};
+use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 use script_engine_api::{
-    Budget, CallCx, HostData, NativeFn, PromiseToken, PumpOutcome, ReflectorData, ScriptEngine,
-    ScriptEngineLive,
+    Budget, CallCx, HostData, MAIN_REALM, NativeFn, PromiseToken, PumpOutcome, RealmError, RealmId,
+    ReflectorData, ScriptEngine, ScriptEngineLive,
 };
 
 /// Native-data reflector (Appendix A Finding 2): a JS object carrying only the host
@@ -61,6 +62,13 @@ struct PendingPromise {
     reject: JsFunction,
 }
 
+#[derive(Trace, Finalize)]
+struct RealmRegistry {
+    realms: GcRefCell<HashMap<RealmId, Realm>>,
+    #[unsafe_ignore_trace]
+    next_realm: Cell<RealmId>,
+}
+
 /// Host-data slot stored in Boa's `Context` host-defined data. Holds the
 /// engine-neutral [`HostData`] (the `Rc<dyn Any>` is not traced — it holds host
 /// state, never JS values) plus the canonical-reflector cache (`NodeId →
@@ -74,6 +82,37 @@ struct PendingPromise {
 /// state.
 #[derive(Trace, Finalize, JsData)]
 struct HostCell {
+    registry: Gc<RealmRegistry>,
+    #[unsafe_ignore_trace]
+    data: RefCell<Option<HostData>>,
+    pending: GcRefCell<HashMap<u64, PendingPromise>>,
+    #[unsafe_ignore_trace]
+    next_token: Cell<u64>,
+}
+
+impl HostCell {
+    fn new(registry: Gc<RealmRegistry>) -> Self {
+        Self {
+            registry,
+            data: RefCell::new(None),
+            pending: GcRefCell::new(HashMap::new()),
+            next_token: Cell::new(0),
+        }
+    }
+}
+
+/// Per-realm host slot, stored in Boa's `Realm::host_defined()`.
+///
+/// Each slot owns its document's reflector identity and strong-root policy.
+/// Raw reflector IDs may repeat in different host arenas. A platform object's
+/// associated realm stays fixed when script in another realm references it.
+///
+/// `HostData` is `Rc<dyn Any>` and holds host state, never JS values, so it is
+/// not traced — the same reasoning as [`HostCell::data`].
+#[derive(Trace, Finalize, JsData)]
+struct RealmSlot {
+    #[unsafe_ignore_trace]
+    id: RealmId,
     #[unsafe_ignore_trace]
     data: RefCell<Option<HostData>>,
     reflectors: GcRefCell<HashMap<u64, WeakJsObject>>,
@@ -82,21 +121,15 @@ struct HostCell {
     /// wrapper and every expando on it — survives collection for as long as its
     /// node is reachable.
     roots: GcRefCell<HashMap<u64, JsObject>>,
-    pending: GcRefCell<HashMap<u64, PendingPromise>>,
-    #[unsafe_ignore_trace]
-    next_token: Cell<u64>,
 }
 
-impl HostCell {
-    fn new() -> Self {
-        Self {
-            data: RefCell::new(None),
-            reflectors: GcRefCell::new(HashMap::new()),
-            roots: GcRefCell::new(HashMap::new()),
-            pending: GcRefCell::new(HashMap::new()),
-            next_token: Cell::new(0),
-        }
-    }
+/// Read the current realm's id, or [`MAIN_REALM`] if the realm carries no slot
+/// (which cannot happen for a realm this crate created, but keeps the read total).
+fn realm_id_of(ctx: &Context) -> RealmId {
+    ctx.realm()
+        .host_defined()
+        .get::<RealmSlot>()
+        .map_or(MAIN_REALM, |slot| slot.id)
 }
 
 /// Mint a pending promise and register its resolving functions in the host cell.
@@ -211,11 +244,37 @@ pub struct BoaEngine {
     ctx: Context,
     /// The module loader installed on `ctx`; `eval_module` sets its resolver per call.
     loader: Rc<HostModuleLoader>,
+    /// Live realms of this engine (this is one **agent**), including
+    /// [`MAIN_REALM`], which is the realm `Context::default()` built. Boa's
+    /// `Realm` is a `Gc` handle, so holding one here roots it; `discard_realm`
+    /// drops the handle and the realm becomes collectable.
+    registry: Gc<RealmRegistry>,
+}
+
+impl BoaEngine {
+    /// Enter `realm`, run `f`, and restore the previous realm — including on the
+    /// error path, which is why this is a helper rather than three lines at each
+    /// call site. Boa's `enter_realm` swaps the *current call frame's* realm, so
+    /// the restore has to happen before the frame is used again.
+    fn with_realm<R>(
+        &mut self,
+        realm: RealmId,
+        f: impl FnOnce(&mut Context) -> R,
+    ) -> Result<R, RealmError> {
+        let Some(target) = self.registry.realms.borrow().get(&realm).cloned() else {
+            return Err(RealmError::NoSuchRealm(realm));
+        };
+        let previous = self.ctx.enter_realm(target);
+        let out = f(&mut self.ctx);
+        let _ = self.ctx.enter_realm(previous);
+        Ok(out)
+    }
 }
 
 /// The call context handed to a native callback. Boa's callback gives
 /// `(this, &[JsValue], &mut Context)`, so one lifetime suffices.
 pub struct BoaCallCx<'a> {
+    this: JsValue,
     ctx: &'a mut Context,
     args: &'a [JsValue],
 }
@@ -224,20 +283,49 @@ impl CallCx for BoaCallCx<'_> {
     type Value = JsValue;
     type Error = JsError;
 
+    fn error(&mut self, message: &str) -> Self::Error {
+        JsNativeError::error()
+            .with_message(message.to_owned())
+            .into()
+    }
+
     fn arg(&mut self, i: usize) -> JsValue {
         self.args.get(i).cloned().unwrap_or_default()
     }
 
     fn host_data(&self) -> Option<HostData> {
+        let hd = self.ctx.realm().host_defined();
+        let slot = hd.get::<RealmSlot>()?;
+        if slot.id != MAIN_REALM {
+            return slot.data.borrow().clone();
+        }
+        let data = slot.data.borrow().clone();
+        data.or_else(|| {
+            self.ctx
+                .get_data::<HostCell>()
+                .and_then(|c| c.data.borrow().clone())
+        })
+    }
+
+    fn this_value(&mut self) -> Self::Value {
+        self.this.clone()
+    }
+
+    fn caller_realm(&mut self) -> RealmId {
         self.ctx
-            .get_data::<HostCell>()
-            .and_then(|c| c.data.borrow().clone())
+            .native_caller_realm()
+            .and_then(|realm| realm.host_defined().get::<RealmSlot>().map(|slot| slot.id))
+            .unwrap_or_else(|| realm_id_of(self.ctx))
+    }
+
+    fn current_realm(&mut self) -> RealmId {
+        realm_id_of(self.ctx)
     }
 
     fn reflector_for(&mut self, data: ReflectorData) -> Result<JsValue, JsError> {
         // Cache hit *and still alive*: return the same object so reflectors compare
         // `===`. A dead weak (script dropped it) falls through to a fresh mint.
-        if let Some(cell) = self.ctx.get_data::<HostCell>() {
+        if let Some(cell) = self.ctx.realm().host_defined().get::<RealmSlot>() {
             if let Some(obj) = cell
                 .reflectors
                 .borrow()
@@ -248,7 +336,7 @@ impl CallCx for BoaCallCx<'_> {
             }
         }
         let v = self.make_reflector(data)?;
-        if let Some(cell) = self.ctx.get_data::<HostCell>() {
+        if let Some(cell) = self.ctx.realm().host_defined().get::<RealmSlot>() {
             if let Some(obj) = v.as_object() {
                 cell.reflectors.borrow_mut().insert(data, obj.downgrade());
             }
@@ -263,7 +351,7 @@ impl CallCx for BoaCallCx<'_> {
         let Some(obj) = v.as_object() else {
             return false;
         };
-        match self.ctx.get_data::<HostCell>() {
+        match self.ctx.realm().host_defined().get::<RealmSlot>() {
             Some(cell) => {
                 cell.roots.borrow_mut().insert(data, obj);
                 true
@@ -273,7 +361,7 @@ impl CallCx for BoaCallCx<'_> {
     }
 
     fn unroot_reflector(&mut self, data: ReflectorData) {
-        if let Some(cell) = self.ctx.get_data::<HostCell>() {
+        if let Some(cell) = self.ctx.realm().host_defined().get::<RealmSlot>() {
             cell.roots.borrow_mut().remove(&data);
         }
     }
@@ -322,8 +410,24 @@ impl ScriptEngine for BoaEngine {
         let loader = Rc::new(HostModuleLoader::default());
         let mut ctx = Context::builder().module_loader(loader.clone()).build()?;
         ctx.register_global_class::<Reflector>()?;
-        ctx.insert_data(HostCell::new());
-        Ok(Self { ctx, loader })
+        let registry = Gc::new(RealmRegistry {
+            realms: GcRefCell::new(HashMap::new()),
+            next_realm: Cell::new(MAIN_REALM + 1),
+        });
+        ctx.insert_data(HostCell::new(registry.clone()));
+        let main = ctx.realm().clone();
+        main.host_defined_mut().insert(RealmSlot {
+            id: MAIN_REALM,
+            data: RefCell::new(None),
+            reflectors: GcRefCell::new(HashMap::new()),
+            roots: GcRefCell::new(HashMap::new()),
+        });
+        registry.realms.borrow_mut().insert(MAIN_REALM, main);
+        Ok(Self {
+            ctx,
+            loader,
+            registry,
+        })
     }
 
     fn eval(&mut self, source: &str) -> Result<Self::Value, Self::Error> {
@@ -395,11 +499,15 @@ impl ScriptEngine for BoaEngine {
         // A captures-free trampoline, monomorphized per `F` to a distinct fn
         // pointer — Boa's cheap native-function path, matching Nova's.
         fn trampoline<F: NativeFn<BoaEngine>>(
-            _this: &JsValue,
+            this: &JsValue,
             args: &[JsValue],
             ctx: &mut Context,
         ) -> JsResult<JsValue> {
-            let mut cx = BoaCallCx { ctx, args };
+            let mut cx = BoaCallCx {
+                ctx,
+                args,
+                this: this.clone(),
+            };
             F::call(&mut cx)
         }
         self.ctx.register_global_callable(
@@ -462,79 +570,455 @@ impl ScriptEngine for BoaEngine {
     }
 
     fn minted_reflectors(&mut self) -> Vec<ReflectorData> {
-        self.ctx
-            .get_data::<HostCell>()
-            .map(|cell| cell.reflectors.borrow().keys().copied().collect())
-            .unwrap_or_default()
+        self.minted_reflectors_in_realm(MAIN_REALM)
+            .expect("main realm exists")
     }
 
-    fn root_reflectors(&mut self, data: &[ReflectorData]) {
-        for &d in data {
-            // Through the canonical cache, so a root and a `reflector_for` hit are
-            // the same object; an id whose weak has already died is re-minted here,
-            // which is the correct outcome (the node is reachable again).
-            let obj = match self.ctx.get_data::<HostCell>() {
-                Some(cell) => cell
-                    .reflectors
-                    .borrow()
-                    .get(&d)
-                    .and_then(WeakJsObject::upgrade),
-                None => None,
-            };
-            let obj = match obj {
-                Some(o) => o,
-                None => {
-                    let Ok(v) = ScriptEngineLive::make_reflector(self, d) else {
-                        continue;
-                    };
-                    let Some(o) = v.as_object() else { continue };
-                    if let Some(cell) = self.ctx.get_data::<HostCell>() {
-                        cell.reflectors.borrow_mut().insert(d, o.downgrade());
-                    }
-                    o
-                },
-            };
-            if let Some(cell) = self.ctx.get_data::<HostCell>() {
-                cell.roots.borrow_mut().insert(d, obj);
-            }
-        }
+    fn minted_reflectors_in_realm(
+        &mut self,
+        realm: RealmId,
+    ) -> Result<Vec<ReflectorData>, RealmError> {
+        let target = self
+            .registry
+            .realms
+            .borrow()
+            .get(&realm)
+            .cloned()
+            .ok_or(RealmError::NoSuchRealm(realm))?;
+        let previous = self.ctx.enter_realm(target);
+        let out = (|| {
+            self.ctx
+                .realm()
+                .host_defined()
+                .get::<RealmSlot>()
+                .map(|cell| cell.reflectors.borrow().keys().copied().collect())
+                .unwrap_or_default()
+        })();
+        self.ctx.enter_realm(previous);
+        Ok(out)
     }
 
-    fn unroot_reflectors(&mut self, data: &[ReflectorData]) {
-        if let Some(cell) = self.ctx.get_data::<HostCell>() {
-            let mut roots = cell.roots.borrow_mut();
-            for d in data {
-                roots.remove(d);
+    fn root_reflectors(&mut self, data: &[ReflectorData]) -> () {
+        self.root_reflectors_in_realm(MAIN_REALM, data)
+            .expect("main realm exists")
+    }
+
+    fn root_reflectors_in_realm(
+        &mut self,
+        realm: RealmId,
+        data: &[ReflectorData],
+    ) -> Result<(), RealmError> {
+        let target = self
+            .registry
+            .realms
+            .borrow()
+            .get(&realm)
+            .cloned()
+            .ok_or(RealmError::NoSuchRealm(realm))?;
+        let previous = self.ctx.enter_realm(target);
+        let out = (|| {
+            for &d in data {
+                // Through the canonical cache, so a root and a `reflector_for` hit are
+                // the same object; an id whose weak has already died is re-minted here,
+                // which is the correct outcome (the node is reachable again).
+                let obj = match self.ctx.realm().host_defined().get::<RealmSlot>() {
+                    Some(cell) => cell
+                        .reflectors
+                        .borrow()
+                        .get(&d)
+                        .and_then(WeakJsObject::upgrade),
+                    None => None,
+                };
+                let obj = match obj {
+                    Some(o) => o,
+                    None => {
+                        let Ok(v) = ScriptEngineLive::make_reflector(self, d) else {
+                            continue;
+                        };
+                        let Some(o) = v.as_object() else { continue };
+                        if let Some(cell) = self.ctx.realm().host_defined().get::<RealmSlot>() {
+                            cell.reflectors.borrow_mut().insert(d, o.downgrade());
+                        }
+                        o
+                    },
+                };
+                if let Some(cell) = self.ctx.realm().host_defined().get::<RealmSlot>() {
+                    cell.roots.borrow_mut().insert(d, obj);
+                }
             }
-        }
+        })();
+        self.ctx.enter_realm(previous);
+        Ok(out)
+    }
+
+    fn unroot_reflectors(&mut self, data: &[ReflectorData]) -> () {
+        self.unroot_reflectors_in_realm(MAIN_REALM, data)
+            .expect("main realm exists")
+    }
+
+    fn unroot_reflectors_in_realm(
+        &mut self,
+        realm: RealmId,
+        data: &[ReflectorData],
+    ) -> Result<(), RealmError> {
+        let target = self
+            .registry
+            .realms
+            .borrow()
+            .get(&realm)
+            .cloned()
+            .ok_or(RealmError::NoSuchRealm(realm))?;
+        let previous = self.ctx.enter_realm(target);
+        let out = (|| {
+            if let Some(cell) = self.ctx.realm().host_defined().get::<RealmSlot>() {
+                let mut roots = cell.roots.borrow_mut();
+                for d in data {
+                    roots.remove(d);
+                }
+            }
+        })();
+        self.ctx.enter_realm(previous);
+        Ok(out)
     }
 
     fn rooted_reflector_count(&mut self) -> usize {
-        self.ctx
+        self.rooted_reflector_count_in_realm(MAIN_REALM)
+            .expect("main realm exists")
+    }
+
+    fn rooted_reflector_count_in_realm(&mut self, realm: RealmId) -> Result<usize, RealmError> {
+        let target = self
+            .registry
+            .realms
+            .borrow()
+            .get(&realm)
+            .cloned()
+            .ok_or(RealmError::NoSuchRealm(realm))?;
+        let previous = self.ctx.enter_realm(target);
+        let out = (|| {
+            self.ctx
+                .realm()
+                .host_defined()
+                .get::<RealmSlot>()
+                .map(|cell| cell.roots.borrow().len())
+                .unwrap_or(0)
+        })();
+        self.ctx.enter_realm(previous);
+        Ok(out)
+    }
+
+    // ---- Realms ------------------------------------------------------------
+    //
+    // Boa gives an embedder everything this needs: `Context::create_realm`
+    // builds a realm with its own global and intrinsics on the *same* heap and
+    // job queue, `enter_realm` swaps the active one, and `Realm::host_defined`
+    // is a per-realm slot map. One `BoaEngine` is therefore one agent with as
+    // many realms as the host asks for, and a value from one is an ordinary
+    // `JsValue` in another — no marshalling anywhere.
+
+    fn create_realm_from_call(
+        cx: &mut Self::CallCx<'_>,
+        data: HostData,
+        initialize: impl for<'a> FnOnce(&mut Self::CallCx<'a>) -> Result<(), RealmError>,
+    ) -> Result<RealmId, RealmError> {
+        let registry = cx
+            .ctx
             .get_data::<HostCell>()
-            .map(|cell| cell.roots.borrow().len())
-            .unwrap_or(0)
+            .expect("host cell")
+            .registry
+            .clone();
+        let id = registry.next_realm.get();
+        registry.next_realm.set(
+            id.checked_add(1)
+                .ok_or(RealmError::Refused("realm ids exhausted"))?,
+        );
+        let realm = cx
+            .ctx
+            .create_realm()
+            .map_err(|e| RealmError::Engine(format!("{e:?}")))?;
+        realm.host_defined_mut().insert(RealmSlot {
+            id,
+            data: RefCell::new(Some(data)),
+            reflectors: GcRefCell::new(HashMap::new()),
+            roots: GcRefCell::new(HashMap::new()),
+        });
+        registry.realms.borrow_mut().insert(id, realm.clone());
+        let previous = cx.ctx.enter_realm(realm);
+        let result = cx
+            .ctx
+            .register_global_class::<Reflector>()
+            .map_err(|e| RealmError::Engine(format!("{e:?}")))
+            .and_then(|_| {
+                initialize(&mut BoaCallCx {
+                    this: JsValue::undefined(),
+                    ctx: cx.ctx,
+                    args: &[],
+                })
+            });
+        cx.ctx.enter_realm(previous);
+        if result.is_err() {
+            registry.realms.borrow_mut().remove(&id);
+        }
+        result.map(|()| id)
+    }
+
+    fn eval_from_call(cx: &mut Self::CallCx<'_>, source: &str) -> Result<Self::Value, RealmError> {
+        cx.ctx
+            .eval(Source::from_bytes(source))
+            .map_err(|e| RealmError::Engine(format!("{e:?}")))
+    }
+
+    fn set_function_from_call<F: NativeFn<Self>>(
+        cx: &mut Self::CallCx<'_>,
+        name: &str,
+        length: usize,
+    ) -> Result<(), RealmError> {
+        fn trampoline<F: NativeFn<BoaEngine>>(
+            this: &JsValue,
+            args: &[JsValue],
+            ctx: &mut Context,
+        ) -> JsResult<JsValue> {
+            F::call(&mut BoaCallCx {
+                ctx,
+                args,
+                this: this.clone(),
+            })
+        }
+        cx.ctx
+            .register_global_callable(
+                JsString::from(name),
+                length,
+                NativeFunction::from_fn_ptr(trampoline::<F>),
+            )
+            .map_err(|e| RealmError::Engine(format!("{e:?}")))
+    }
+
+    fn eval_in_realm_from_call(
+        cx: &mut Self::CallCx<'_>,
+        realm: RealmId,
+        source: &str,
+    ) -> Result<Self::Value, RealmError> {
+        let target = cx
+            .ctx
+            .get_data::<HostCell>()
+            .expect("host cell")
+            .registry
+            .realms
+            .borrow()
+            .get(&realm)
+            .cloned()
+            .ok_or(RealmError::NoSuchRealm(realm))?;
+        let previous = cx.ctx.enter_realm(target);
+        let result = cx
+            .ctx
+            .eval(Source::from_bytes(source))
+            .map_err(|e| RealmError::Engine(format!("{e:?}")));
+        cx.ctx.enter_realm(previous);
+        result
+    }
+
+    fn call_from_call(
+        cx: &mut Self::CallCx<'_>,
+        function: &Self::Value,
+        this: &Self::Value,
+        args: &[Self::Value],
+    ) -> Result<Self::Value, RealmError> {
+        let function = function
+            .as_callable()
+            .ok_or(RealmError::Refused("value is not callable"))?;
+        function
+            .call(this, args, cx.ctx)
+            .map_err(|e| RealmError::Engine(format!("{e:?}")))
+    }
+
+    fn realm_global_from_call(
+        cx: &mut Self::CallCx<'_>,
+        realm: RealmId,
+    ) -> Result<Self::Value, RealmError> {
+        let target = cx
+            .ctx
+            .get_data::<HostCell>()
+            .expect("host cell")
+            .registry
+            .realms
+            .borrow()
+            .get(&realm)
+            .cloned()
+            .ok_or(RealmError::NoSuchRealm(realm))?;
+        let previous = cx.ctx.enter_realm(target);
+        let global = cx.ctx.global_object().into();
+        cx.ctx.enter_realm(previous);
+        Ok(global)
+    }
+
+    fn set_global_from_call(
+        cx: &mut Self::CallCx<'_>,
+        name: &str,
+        value: &Self::Value,
+    ) -> Result<(), RealmError> {
+        let global = cx.ctx.global_object();
+        global
+            .set(JsString::from(name), value.clone(), false, cx.ctx)
+            .map(|_| ())
+            .map_err(|e| RealmError::Engine(format!("{e:?}")))
+    }
+
+    fn supports_realms(&self) -> bool {
+        true
+    }
+
+    fn create_realm(&mut self) -> Result<RealmId, RealmError> {
+        let realm = self
+            .ctx
+            .create_realm()
+            .map_err(|e| RealmError::Engine(format!("{e:?}")))?;
+        let id = self.registry.next_realm.get();
+        self.registry.next_realm.set(
+            id.checked_add(1)
+                .ok_or(RealmError::Refused("realm ids exhausted"))?,
+        );
+        realm.host_defined_mut().insert(RealmSlot {
+            id,
+            data: RefCell::new(None),
+            reflectors: GcRefCell::new(HashMap::new()),
+            roots: GcRefCell::new(HashMap::new()),
+        });
+        // The reflector class is per-realm in Boa (`host_classes` lives on the
+        // `Realm`), so a realm that will be handed reflectors needs its own
+        // registration; without it `Reflector::from_data` in this realm cannot
+        // find its prototype.
+        self.registry.realms.borrow_mut().insert(id, realm);
+        if let Err(e) = self
+            .with_realm(id, |ctx| ctx.register_global_class::<Reflector>())
+            .and_then(|r| r.map_err(|e| RealmError::Engine(format!("{e:?}"))))
+        {
+            self.registry.realms.borrow_mut().remove(&id);
+            return Err(e);
+        }
+        Ok(id)
+    }
+
+    fn discard_realm(&mut self, realm: RealmId) -> Result<(), RealmError> {
+        if realm == MAIN_REALM {
+            return Err(RealmError::Refused(
+                "the main realm is the agent's initial realm and cannot be discarded",
+            ));
+        }
+        match self.registry.realms.borrow_mut().remove(&realm) {
+            Some(_) => Ok(()),
+            None => Err(RealmError::NoSuchRealm(realm)),
+        }
+    }
+
+    fn eval_in_realm(&mut self, realm: RealmId, source: &str) -> Result<Self::Value, RealmError> {
+        let src = source.to_string();
+        self.with_realm(realm, |ctx| ctx.eval(Source::from_bytes(src.as_bytes())))?
+            .map_err(|e| RealmError::Engine(format!("{e:?}")))
+    }
+
+    fn realm_global(&mut self, realm: RealmId) -> Result<Self::Value, RealmError> {
+        // `Realm::global_object` is `pub(crate)` in Boa, so the global is only
+        // reachable by *entering* the realm and asking the `Context` — which
+        // reads the active call frame's realm and so answers for the realm we
+        // just entered. Recorded rather than patched: the fork under
+        // `Code/crates/boa` is outside this lane.
+        self.with_realm(realm, |ctx| JsValue::from(ctx.global_object()))
+    }
+
+    fn set_global_in_realm(
+        &mut self,
+        realm: RealmId,
+        name: &str,
+        value: &Self::Value,
+    ) -> Result<(), RealmError> {
+        let name = JsString::from(name);
+        let value = value.clone();
+        self.with_realm(realm, |ctx| {
+            let global = ctx.global_object();
+            global.set(name, value, false, ctx)
+        })?
+        .map(|_| ())
+        .map_err(|e| RealmError::Engine(format!("{e:?}")))
+    }
+
+    fn set_function_in_realm<F: NativeFn<Self>>(
+        &mut self,
+        realm: RealmId,
+        name: &str,
+        length: usize,
+    ) -> Result<(), RealmError> {
+        fn trampoline<F: NativeFn<BoaEngine>>(
+            this: &JsValue,
+            args: &[JsValue],
+            ctx: &mut Context,
+        ) -> JsResult<JsValue> {
+            let mut cx = BoaCallCx {
+                ctx,
+                args,
+                this: this.clone(),
+            };
+            F::call(&mut cx)
+        }
+        let name = JsString::from(name);
+        self.with_realm(realm, |ctx| {
+            ctx.register_global_callable(name, length, NativeFunction::from_fn_ptr(trampoline::<F>))
+        })?
+        .map_err(|e| RealmError::Engine(format!("{e:?}")))
+    }
+
+    fn set_host_data_in_realm(&mut self, realm: RealmId, data: HostData) -> Result<(), RealmError> {
+        match self.registry.realms.borrow().get(&realm) {
+            Some(r) => {
+                let hd = r.host_defined();
+                let Some(slot) = hd.get::<RealmSlot>() else {
+                    return Err(RealmError::Refused("realm carries no host slot"));
+                };
+                *slot.data.borrow_mut() = Some(data);
+                Ok(())
+            },
+            None => Err(RealmError::NoSuchRealm(realm)),
+        }
     }
 
     fn drain_dead_reflectors(&mut self) -> Vec<ReflectorData> {
-        // Real death-reporting: sweep the weak canonical cache and report (and
-        // forget) the reflectors whose JS objects have been collected since the
-        // last call. A rooted reflector (`root_reflectors`) cannot appear here:
-        // its strong root keeps the weak upgradeable. Backed by the vendored boa patch (`JsObject::downgrade` /
-        // `WeakJsObject::upgrade`). The host unpins each returned id, freeing the
-        // underlying detached node for collection (G3).
-        let mut dead = Vec::new();
-        if let Some(cell) = self.ctx.get_data::<HostCell>() {
-            cell.reflectors.borrow_mut().retain(|&data, weak| {
-                if weak.upgrade().is_some() {
-                    true
-                } else {
-                    dead.push(data);
-                    false
-                }
-            });
-        }
-        dead
+        self.drain_dead_reflectors_in_realm(MAIN_REALM)
+            .expect("main realm exists")
+    }
+
+    fn drain_dead_reflectors_in_realm(
+        &mut self,
+        realm: RealmId,
+    ) -> Result<Vec<ReflectorData>, RealmError> {
+        let target = self
+            .registry
+            .realms
+            .borrow()
+            .get(&realm)
+            .cloned()
+            .ok_or(RealmError::NoSuchRealm(realm))?;
+        let previous = self.ctx.enter_realm(target);
+        let out = (|| {
+            // Real death-reporting: sweep the weak canonical cache and report (and
+            // forget) the reflectors whose JS objects have been collected since the
+            // last call. A rooted reflector (`root_reflectors`) cannot appear here:
+            // its strong root keeps the weak upgradeable. Backed by the vendored boa patch (`JsObject::downgrade` /
+            // `WeakJsObject::upgrade`). The host unpins each returned id, freeing the
+            // underlying detached node for collection (G3).
+            let mut dead = Vec::new();
+            if let Some(cell) = self.ctx.realm().host_defined().get::<RealmSlot>() {
+                cell.reflectors.borrow_mut().retain(|&data, weak| {
+                    if weak.upgrade().is_some() {
+                        true
+                    } else {
+                        dead.push(data);
+                        false
+                    }
+                });
+            }
+            dead
+        })();
+        self.ctx.enter_realm(previous);
+        Ok(out)
     }
 }
 
@@ -703,5 +1187,444 @@ mod tests {
         assert_eq!(engine.pump(Budget::Steps(1)), PumpOutcome::Quiescent);
         let n = engine.eval("n").unwrap();
         assert_eq!(engine.value_to_string(&n).unwrap(), "1");
+    }
+
+    // ---- Realms ------------------------------------------------------------
+    //
+    // The named regression set for the realm contract. Every case here has a
+    // Nova twin in `script-engine-nova`; the pair is the both-engine gate,
+    // because the contract's whole point is that a child browsing context works
+    // the same on either backend.
+
+    /// A realm has its own global object: a binding made in one is invisible in
+    /// the other, in both directions.
+    #[test]
+    fn realms_have_separate_globals() {
+        let mut engine = BoaEngine::new().unwrap();
+        assert!(engine.supports_realms());
+        let child = engine.create_realm().unwrap();
+        assert_ne!(child, MAIN_REALM);
+
+        engine.eval("globalThis.here = 'parent'").unwrap();
+        engine
+            .eval_in_realm(child, "globalThis.here = 'child'")
+            .unwrap();
+
+        let a = engine.eval("here").unwrap();
+        assert_eq!(engine.value_to_string(&a).unwrap(), "parent");
+        let b = engine.eval_in_realm(child, "here").unwrap();
+        assert_eq!(engine.value_to_string(&b).unwrap(), "child");
+        let missing = engine.eval("typeof globalThis.childOnly").unwrap();
+        assert_eq!(engine.value_to_string(&missing).unwrap(), "undefined");
+    }
+
+    /// A realm has its own intrinsics: its `Object` is not the parent's, which
+    /// is what makes `instanceof` cross-realm-false and is the reason a realm is
+    /// the right unit for a browsing context rather than a fresh global alone.
+    #[test]
+    fn realms_have_separate_intrinsics() {
+        let mut engine = BoaEngine::new().unwrap();
+        let child = engine.create_realm().unwrap();
+        let child_object = engine.eval_in_realm(child, "Object").unwrap();
+        engine.set_global("childObject", &child_object).unwrap();
+        let same = engine.eval("childObject === Object").unwrap();
+        assert_eq!(engine.value_to_string(&same).unwrap(), "false");
+    }
+
+    /// The whole point of one agent: a value made in the child realm is an
+    /// **ordinary reference** in the parent, with identity preserved across the
+    /// boundary in both directions. No clone, no wire, no marshalling.
+    #[test]
+    fn objects_cross_realms_with_identity() {
+        let mut engine = BoaEngine::new().unwrap();
+        let child = engine.create_realm().unwrap();
+        engine
+            .eval_in_realm(child, "globalThis.thing = { tag: 'child-object' }")
+            .unwrap();
+        let handle = engine.eval_in_realm(child, "thing").unwrap();
+
+        // Parent sees the child's actual object...
+        engine.set_global("fromChild", &handle).unwrap();
+        let tag = engine.eval("fromChild.tag").unwrap();
+        assert_eq!(engine.value_to_string(&tag).unwrap(), "child-object");
+        // ...and mutating it in the parent is visible to the child, which is
+        // only true of a shared reference.
+        engine.eval("fromChild.tag = 'touched-by-parent'").unwrap();
+        let seen = engine.eval_in_realm(child, "thing.tag").unwrap();
+        assert_eq!(engine.value_to_string(&seen).unwrap(), "touched-by-parent");
+        // Identity, stated as the engine sees it.
+        engine.set_global_in_realm(child, "back", &handle).unwrap();
+        let identical = engine.eval_in_realm(child, "back === thing").unwrap();
+        assert_eq!(engine.value_to_string(&identical).unwrap(), "true");
+    }
+
+    /// `realm_global` hands back the child's actual global — the primitive
+    /// `contentWindow` is built from.
+    #[test]
+    fn realm_global_is_the_childs_own_global() {
+        let mut engine = BoaEngine::new().unwrap();
+        let child = engine.create_realm().unwrap();
+        engine
+            .eval_in_realm(child, "globalThis.marker = 41")
+            .unwrap();
+        let global = engine.realm_global(child).unwrap();
+        engine.set_global("contentWindow", &global).unwrap();
+        engine.eval("contentWindow.marker += 1").unwrap();
+        let seen = engine.eval_in_realm(child, "marker").unwrap();
+        assert_eq!(engine.value_to_string(&seen).unwrap(), "42");
+        let is_global = engine.eval_in_realm(child, "globalThis").unwrap();
+        engine.set_global("childGlobalThis", &is_global).unwrap();
+        let same = engine.eval("contentWindow === childGlobalThis").unwrap();
+        assert_eq!(engine.value_to_string(&same).unwrap(), "true");
+    }
+
+    /// A native function installed per realm reports that realm from inside the
+    /// call, and reaches that realm's own host data. This is the per-realm host
+    /// surface in miniature: the same `NativeFn` impl, two realms, two answers,
+    /// and the callback never learns that realms exist.
+    #[test]
+    fn native_fn_sees_its_own_realm_and_host_data() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        type Seen = RefCell<Vec<RealmId>>;
+
+        struct WhereAmI;
+        impl NativeFn<BoaEngine> for WhereAmI {
+            fn call(cx: &mut BoaCallCx<'_>) -> Result<JsValue, JsError> {
+                let realm = cx.current_realm();
+                let hits = cx
+                    .host_data()
+                    .and_then(|d| d.downcast::<Seen>().ok())
+                    .map(|seen| {
+                        seen.borrow_mut().push(realm);
+                        seen.borrow().len()
+                    })
+                    .unwrap_or(0);
+                cx.make_string(&format!("realm={realm} hits={hits}"))
+            }
+        }
+
+        let mut engine = BoaEngine::new().unwrap();
+        let parent_state: Rc<Seen> = Rc::new(RefCell::new(Vec::new()));
+        let child_state: Rc<Seen> = Rc::new(RefCell::new(Vec::new()));
+        engine.set_host_data(parent_state.clone());
+        engine.set_function::<WhereAmI>("whereAmI", 0).unwrap();
+
+        let child = engine.create_realm().unwrap();
+        engine
+            .set_host_data_in_realm(child, child_state.clone())
+            .unwrap();
+        engine
+            .set_function_in_realm::<WhereAmI>(child, "whereAmI", 0)
+            .unwrap();
+
+        let a = engine.eval("whereAmI()").unwrap();
+        assert_eq!(engine.value_to_string(&a).unwrap(), "realm=0 hits=1");
+        let b = engine.eval_in_realm(child, "whereAmI()").unwrap();
+        assert_eq!(
+            engine.value_to_string(&b).unwrap(),
+            format!("realm={child} hits=1")
+        );
+        // Two host states, one per realm; neither saw the other's call.
+        assert_eq!(*parent_state.borrow(), vec![MAIN_REALM]);
+        assert_eq!(*child_state.borrow(), vec![child]);
+    }
+
+    /// A reflector handed into the child realm is recoverable there: the
+    /// reflector bridge is agent-wide, so a node crossing realms is still the
+    /// same node to the host.
+    #[test]
+    fn reflectors_cross_realms() {
+        let mut engine = BoaEngine::new().unwrap();
+        let child = engine.create_realm().unwrap();
+        let reflector = ScriptEngineLive::make_reflector(&mut engine, 0x99).unwrap();
+        engine
+            .set_global_in_realm(child, "node", &reflector)
+            .unwrap();
+        let back = engine.eval_in_realm(child, "node").unwrap();
+        assert_eq!(engine.reflector_data(&back), Some(0x99));
+    }
+
+    /// Refusals are stated, not approximated: an unknown id and the main realm
+    /// both say exactly what is wrong.
+    #[test]
+    fn realm_refusals_are_exact() {
+        let mut engine = BoaEngine::new().unwrap();
+        assert_eq!(
+            engine.eval_in_realm(4242, "1").unwrap_err(),
+            RealmError::NoSuchRealm(4242)
+        );
+        assert!(matches!(
+            engine.discard_realm(MAIN_REALM),
+            Err(RealmError::Refused(_))
+        ));
+        let child = engine.create_realm().unwrap();
+        assert_eq!(engine.discard_realm(child), Ok(()));
+        assert_eq!(
+            engine.discard_realm(child).unwrap_err(),
+            RealmError::NoSuchRealm(child)
+        );
+    }
+
+    #[test]
+    fn equal_raw_reflector_ids_are_isolated_and_rooted_per_realm() {
+        struct Reflect;
+        impl<E: ScriptEngine> NativeFn<E> for Reflect {
+            fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+                cx.reflector_for(7)
+            }
+        }
+        let mut engine = BoaEngine::new().unwrap();
+        let child = engine.create_realm().unwrap();
+        engine.set_function::<Reflect>("reflect", 0).unwrap();
+        engine
+            .set_function_in_realm::<Reflect>(child, "reflect", 0)
+            .unwrap();
+        engine
+            .eval("globalThis.node = reflect(); node.marker = 'parent'")
+            .unwrap();
+        engine
+            .eval_in_realm(child, "globalThis.node = reflect(); node.marker = 'child'")
+            .unwrap();
+        let child_node = engine.eval_in_realm(child, "node").unwrap();
+        engine.set_global("childNode", &child_node).unwrap();
+        let result = engine.eval("node !== childNode && reflect() === node && node.marker === 'parent' && childNode.marker === 'child'").unwrap();
+        assert_eq!(engine.value_to_string(&result).unwrap(), "true");
+        engine.root_reflectors(&[7]);
+        engine.root_reflectors_in_realm(child, &[7]).unwrap();
+        engine.unroot_reflectors(&[7]);
+        assert_eq!(engine.rooted_reflector_count(), 0);
+        assert_eq!(engine.rooted_reflector_count_in_realm(child).unwrap(), 1);
+        engine.force_gc();
+        assert!(
+            engine
+                .drain_dead_reflectors_in_realm(child)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(engine.minted_reflectors_in_realm(child).unwrap(), vec![7]);
+        engine.unroot_reflectors_in_realm(child, &[7]).unwrap();
+        assert_eq!(engine.rooted_reflector_count_in_realm(child).unwrap(), 0);
+        assert_eq!(
+            engine.minted_reflectors_in_realm(99999),
+            Err(RealmError::NoSuchRealm(99999))
+        );
+    }
+
+    #[test]
+    fn child_host_promises_settle_without_parent_token_collisions() {
+        use std::{cell::RefCell, rc::Rc};
+        struct Deferred;
+        impl<E: ScriptEngine> NativeFn<E> for Deferred {
+            fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+                let (value, token) = cx.new_host_promise()?;
+                let data = cx.host_data().unwrap();
+                data.downcast_ref::<RefCell<Vec<u64>>>()
+                    .unwrap()
+                    .borrow_mut()
+                    .push(token);
+                Ok(value)
+            }
+        }
+        let mut engine = BoaEngine::new().unwrap();
+        let child = engine.create_realm().unwrap();
+        let tokens = Rc::new(RefCell::new(Vec::<u64>::new()));
+        engine.set_host_data(tokens.clone());
+        engine
+            .set_host_data_in_realm(child, tokens.clone())
+            .unwrap();
+        engine.set_function::<Deferred>("deferred", 0).unwrap();
+        engine
+            .set_function_in_realm::<Deferred>(child, "deferred", 0)
+            .unwrap();
+        engine
+            .eval("globalThis.answer = 'pending'; deferred().then(v => answer = v)")
+            .unwrap();
+        engine
+            .eval_in_realm(
+                child,
+                "globalThis.answer = 'pending'; deferred().then(v => answer = v)",
+            )
+            .unwrap();
+        let ids = tokens.borrow().clone();
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1]);
+        let value = engine.eval("('child settled')").unwrap();
+        assert_eq!(engine.value_to_string(&value).unwrap(), "child settled");
+        engine.settle_host_promise(ids[1], Ok(&value)).unwrap();
+        engine.pump_microtasks();
+        let value = engine.eval("answer").unwrap();
+        assert_eq!(engine.value_to_string(&value).unwrap(), "pending");
+        let value = engine.eval_in_realm(child, "answer").unwrap();
+        assert_eq!(engine.value_to_string(&value).unwrap(), "child settled");
+        let value = engine.eval("('parent settled')").unwrap();
+        assert_eq!(engine.value_to_string(&value).unwrap(), "parent settled");
+        engine.settle_host_promise(ids[0], Ok(&value)).unwrap();
+        engine.pump_microtasks();
+        let value = engine.eval("answer").unwrap();
+        assert_eq!(engine.value_to_string(&value).unwrap(), "parent settled");
+    }
+
+    #[test]
+    fn uninitialized_child_never_inherits_parent_host_data() {
+        use std::rc::Rc;
+        struct Check;
+        impl<E: ScriptEngine> NativeFn<E> for Check {
+            fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+                let found = cx.host_data().is_some();
+                cx.make_string(if found { "present" } else { "absent" })
+            }
+        }
+        let mut engine = BoaEngine::new().unwrap();
+        engine.set_host_data(Rc::new(17_u32));
+        let child = engine.create_realm().unwrap();
+        engine
+            .set_function_in_realm::<Check>(child, "check", 0)
+            .unwrap();
+        let value = engine.eval_in_realm(child, "check()").unwrap();
+        assert_eq!(engine.value_to_string(&value).unwrap(), "absent");
+    }
+
+    #[test]
+    fn discarding_realm_does_not_revoke_retained_functions() {
+        struct Marker;
+        impl<E: ScriptEngine> NativeFn<E> for Marker {
+            fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+                let id = cx.current_realm();
+                cx.make_string(&id.to_string())
+            }
+        }
+        let mut engine = BoaEngine::new().unwrap();
+        let child = engine.create_realm().unwrap();
+        engine
+            .set_function_in_realm::<Marker>(child, "marker", 0)
+            .unwrap();
+        let function = engine.eval_in_realm(child, "() => marker()").unwrap();
+        engine.set_global("retained", &function).unwrap();
+        engine.discard_realm(child).unwrap();
+        engine.force_gc();
+        let value = engine.eval("retained()").unwrap();
+        assert_eq!(engine.value_to_string(&value).unwrap(), child.to_string());
+    }
+
+    #[test]
+    fn native_callback_creates_and_initializes_child_synchronously() {
+        use std::{cell::RefCell, rc::Rc};
+        struct Who;
+        impl<E: ScriptEngine> NativeFn<E> for Who {
+            fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+                let realm = cx.current_realm();
+                cx.make_string(&realm.to_string())
+            }
+        }
+        struct Spawn;
+        impl<E: ScriptEngine> NativeFn<E> for Spawn {
+            fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+                let parent = cx.current_realm();
+                let data = cx.host_data().unwrap();
+                let records = data.downcast_ref::<RefCell<Vec<RealmId>>>().unwrap();
+                let mut global = None;
+                let id = E::create_realm_from_call(cx, data.clone(), |child| {
+                    E::set_function_from_call::<Who>(child, "who", 0)?;
+                    E::eval_from_call(
+                        child,
+                        "globalThis.childRealm = who(); globalThis.obj = { answer: 42 }",
+                    )?;
+                    global = Some(E::eval_from_call(child, "globalThis")?);
+                    Ok(())
+                })
+                .unwrap();
+                records.borrow_mut().push(id);
+                assert_eq!(cx.current_realm(), parent);
+                Ok(global.unwrap())
+            }
+        }
+        let mut engine = BoaEngine::new().unwrap();
+        let records = Rc::new(RefCell::new(Vec::<RealmId>::new()));
+        engine.set_host_data(records.clone());
+        engine.set_function::<Spawn>("spawn", 0).unwrap();
+        engine
+            .eval("globalThis.child = spawn(); child.obj.answer += 1")
+            .unwrap();
+        let id = records.borrow()[0];
+        let value = engine
+            .eval_in_realm(id, "obj.answer === 43 && childRealm === who()")
+            .unwrap();
+        assert_eq!(engine.value_to_string(&value).unwrap(), "true");
+        let value = engine.eval("typeof who").unwrap();
+        assert_eq!(engine.value_to_string(&value).unwrap(), "undefined");
+        let global = engine.realm_global(id).unwrap();
+        engine.set_global("sameChild", &global).unwrap();
+        let value = engine.eval("sameChild === child").unwrap();
+        assert_eq!(engine.value_to_string(&value).unwrap(), "true");
+    }
+
+    #[test]
+    fn direct_native_child_method_observes_caller_and_receiver() {
+        struct Method;
+        impl<E: ScriptEngine> NativeFn<E> for Method {
+            fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+                let callee = cx.current_realm();
+                let caller = cx.caller_realm();
+                let receiver = cx.this_value();
+                E::set_global_from_call(cx, "received", &receiver).unwrap();
+                let function =
+                    E::eval_from_call(cx, "(function(value) { return value; })").unwrap();
+                let undefined = cx.undefined();
+                let same = E::call_from_call(cx, &function, &undefined, &[receiver]).unwrap();
+                E::set_global_from_call(cx, "receivedCall", &same).unwrap();
+                E::eval_in_realm_from_call(cx, caller, "globalThis.calledBack = 'parent'").unwrap();
+                assert_eq!(cx.current_realm(), callee);
+                let _ = E::eval_in_realm_from_call(cx, caller, "throw new Error('restore')")
+                    .err()
+                    .expect("target throw");
+                assert_eq!(cx.current_realm(), callee);
+                cx.make_string(&format!("{callee}:{caller}"))
+            }
+        }
+        let mut engine = BoaEngine::new().unwrap();
+        let child = engine.create_realm().unwrap();
+        engine
+            .set_function_in_realm::<Method>(child, "method", 0)
+            .unwrap();
+        let global = engine.realm_global(child).unwrap();
+        engine.set_global("child", &global).unwrap();
+        let value = engine.eval("child.method()").unwrap();
+        assert_eq!(
+            engine.value_to_string(&value).unwrap(),
+            format!("{child}:0")
+        );
+        let value = engine.eval("child.received === child && child.receivedCall === child && calledBack === 'parent' && typeof child.calledBack === 'undefined'").unwrap();
+        assert_eq!(engine.value_to_string(&value).unwrap(), "true");
+    }
+
+    #[test]
+    fn host_installed_globals_are_writable_configurable_and_deletable() {
+        struct Install;
+        impl<E: ScriptEngine> NativeFn<E> for Install {
+            fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+                let value = cx.arg(0);
+                E::set_global_from_call(cx, "callbackValue", &value)
+                    .map_err(|error| cx.error(&error.to_string()))?;
+                Ok(cx.undefined())
+            }
+        }
+        let mut engine = BoaEngine::new().unwrap();
+        let child = engine.create_realm().unwrap();
+        let value = engine.eval("42").unwrap();
+        engine.set_global("installedValue", &value).unwrap();
+        engine
+            .set_global_in_realm(child, "installedValue", &value)
+            .unwrap();
+        engine.set_function::<Install>("installValue", 1).unwrap();
+        engine
+            .set_function_in_realm::<Install>(child, "installValue", 1)
+            .unwrap();
+        let script = "installValue(42); ['installedValue','callbackValue'].every(function(name){var d=Object.getOwnPropertyDescriptor(globalThis,name); var flags=d.writable && d.enumerable && d.configurable; globalThis[name]=99; return flags && globalThis[name]===99 && delete globalThis[name] && !(name in globalThis);})";
+        let value = engine.eval(script).unwrap();
+        assert_eq!(engine.value_to_string(&value).unwrap(), "true");
+        let value = engine.eval_in_realm(child, script).unwrap();
+        assert_eq!(engine.value_to_string(&value).unwrap(), "true");
     }
 }

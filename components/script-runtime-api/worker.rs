@@ -395,7 +395,9 @@ fn install_worker_scope<E: ScriptEngine>(engine: &mut E) -> Result<(), E::Error>
 // ── the page side ────────────────────────────────────────────────────────────
 
 /// Install `Worker` and its sinks on a page runtime.
-pub(crate) fn install_worker_surface<E: ScriptEngine>(engine: &mut E) -> Result<(), E::Error> {
+pub(crate) fn install_worker_surface<E: ScriptEngine>(
+    engine: &mut crate::Surface<'_, '_, E>,
+) -> Result<(), crate::SurfaceError<E::Error>> {
     engine.set_function::<WorkerCreate>("__worker_create", 2)?;
     engine.set_function::<WorkerPost>("__worker_post", 2)?;
     engine.set_function::<WorkerTerminate>("__worker_terminate", 1)?;
@@ -657,7 +659,14 @@ impl<E: ScriptEngine> NativeFn<E> for WsImport {
 /// One turn of worker service: drain the channels, answer resource requests,
 /// then dispatch the queued events into JS. Returns how much work happened.
 pub(crate) fn pump<E: ScriptEngine>(rt: &mut Runtime<E>) -> usize {
-    let host = rt.host().clone();
+    pump_in_realm(rt, script_engine_api::MAIN_REALM)
+}
+
+pub(crate) fn pump_in_realm<E: ScriptEngine>(
+    rt: &mut Runtime<E>,
+    realm: script_engine_api::RealmId,
+) -> usize {
+    let host = rt.host_in_realm(realm).expect("registered worker realm");
     let mut work = 0usize;
     let mut requests: Vec<(usize, u64, Box<FetchRequest>)> = Vec::new();
     {
@@ -745,7 +754,11 @@ pub(crate) fn pump<E: ScriptEngine>(rt: &mut Runtime<E>) -> usize {
     }
     let queued = host.borrow().worker_events.len();
     if queued > 0 {
-        let _ = rt.eval("__workerPump()");
+        if realm == script_engine_api::MAIN_REALM {
+            let _ = rt.eval("__workerPump()");
+        } else {
+            let _ = rt.eval_in_realm(realm, "__workerPump()");
+        }
         work += queued;
     }
     work

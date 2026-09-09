@@ -67,6 +67,58 @@ pub enum PumpOutcome {
     Pending,
 }
 
+/// Opaque, engine-assigned identity for a **realm** inside one engine instance.
+///
+/// A realm is ECMAScript's unit of global object + intrinsics. HTML gives one
+/// realm to each browsing context and one *agent* (one event loop, one heap) to
+/// a group of same-origin-domain contexts that can reach each other
+/// synchronously. That is why a child frame is a second realm rather than a
+/// second engine: two engine instances are two agents, and this stack's
+/// cross-instance boundary marshals strings, which cannot carry the object
+/// identity `iframe.contentWindow.document.getElementById(x)` requires.
+///
+/// Ids are per-engine and are not reused while the realm is live. Values are
+/// **agent-wide**, not realm-scoped: a [`ScriptEngine::Value`] obtained from one
+/// realm is an ordinary reference usable in another realm of the same engine, so
+/// "hold a handle to another realm's objects" needs no marshalling API — see
+/// [`realm_global`](ScriptEngine::realm_global).
+pub type RealmId = u32;
+
+/// The realm every engine has from [`ScriptEngine::new`]: the agent's initial
+/// realm, and the one every non-realm-suffixed method on the trait acts on.
+pub const MAIN_REALM: RealmId = 0;
+
+/// Why a realm operation could not be performed.
+///
+/// Deliberately **not** `ScriptEngine::Error`: the defaults below have to be
+/// constructible without an engine, and a backend that cannot do a piece must be
+/// able to say so precisely rather than approximate it. A refusal recorded here
+/// is a fact about the backend, not a runtime failure to retry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RealmError {
+    /// This backend has no realm concept at all (the trait default).
+    Unsupported,
+    /// This backend has realms but cannot perform *this* operation, with the
+    /// exact reason. Used where an engine's own API forbids the shape rather
+    /// than where the operation merely failed.
+    Refused(&'static str),
+    /// The id does not name a live realm of this engine.
+    NoSuchRealm(RealmId),
+    /// The engine raised an error; its `describe_error` rendering.
+    Engine(String),
+}
+
+impl core::fmt::Display for RealmError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Unsupported => write!(f, "this backend has no realms"),
+            Self::Refused(why) => write!(f, "realm operation refused: {why}"),
+            Self::NoSuchRealm(id) => write!(f, "no such realm: {id}"),
+            Self::Engine(msg) => write!(f, "engine error: {msg}"),
+        }
+    }
+}
+
 /// Host state shared with native callbacks. A refcounted `Any` the host downcasts
 /// (typically `Rc<RefCell<…>>` over the live DOM). Engine-neutral: each backend
 /// stashes it in its own host-defined-data slot (Nova realm `[[HostDefined]]`, Boa
@@ -80,7 +132,7 @@ pub trait ScriptEngine: Sized {
     /// A handle to a JS value. For engines whose values are GC-scoped (Nova), this is
     /// a *rooted* handle so it can be held across calls; for others it is the native
     /// value type (Boa `JsValue`).
-    type Value;
+    type Value: 'static;
     type Error: core::fmt::Debug;
 
     /// The per-call context a native callback receives ([`CallCx`]). It is a
@@ -268,8 +320,8 @@ pub trait ScriptEngine: Sized {
     /// pinned the *reflector*, so the (reflector, wrapper) pair was collectable
     /// while the node was still attached to a live document, and the next handoff
     /// minted a blank wrapper in place of the one carrying the node's listeners
-    /// and other JS-side state. WebIDL requires exactly one JS object per platform
-    /// object per realm, so a reachable node's wrapper identity must be stable
+    /// and other JS-side state. A platform object retains its associated realm, so a reachable node's
+    /// wrapper identity must be stable
     /// across collections; a rooted reflector is what makes it so.
     ///
     /// [`drain_dead_reflectors`] must never report a rooted id.
@@ -289,6 +341,213 @@ pub trait ScriptEngine: Sized {
     /// Default 0 — a backend with no rooting.
     fn rooted_reflector_count(&mut self) -> usize {
         0
+    }
+
+    /// Realm-scoped counterpart of [`Self::minted_reflectors`]. IDs are local to the realm's host arena.
+    fn minted_reflectors_in_realm(
+        &mut self,
+        realm: RealmId,
+    ) -> Result<Vec<ReflectorData>, RealmError> {
+        if realm == MAIN_REALM {
+            Ok(self.minted_reflectors())
+        } else {
+            Err(RealmError::Unsupported)
+        }
+    }
+
+    /// Realm-scoped counterpart of [`Self::root_reflectors`]. IDs are local to the realm's host arena.
+    fn root_reflectors_in_realm(
+        &mut self,
+        realm: RealmId,
+        data: &[ReflectorData],
+    ) -> Result<(), RealmError> {
+        if realm == MAIN_REALM {
+            Ok(self.root_reflectors(data))
+        } else {
+            Err(RealmError::Unsupported)
+        }
+    }
+
+    /// Realm-scoped counterpart of [`Self::unroot_reflectors`]. IDs are local to the realm's host arena.
+    fn unroot_reflectors_in_realm(
+        &mut self,
+        realm: RealmId,
+        data: &[ReflectorData],
+    ) -> Result<(), RealmError> {
+        if realm == MAIN_REALM {
+            Ok(self.unroot_reflectors(data))
+        } else {
+            Err(RealmError::Unsupported)
+        }
+    }
+
+    /// Realm-scoped counterpart of [`Self::rooted_reflector_count`]. IDs are local to the realm's host arena.
+    fn rooted_reflector_count_in_realm(&mut self, realm: RealmId) -> Result<usize, RealmError> {
+        if realm == MAIN_REALM {
+            Ok(self.rooted_reflector_count())
+        } else {
+            Err(RealmError::Unsupported)
+        }
+    }
+
+    /// Realm-scoped counterpart of [`Self::drain_dead_reflectors`]. IDs are local to the realm's host arena.
+    fn drain_dead_reflectors_in_realm(
+        &mut self,
+        realm: RealmId,
+    ) -> Result<Vec<ReflectorData>, RealmError> {
+        if realm == MAIN_REALM {
+            Ok(self.drain_dead_reflectors())
+        } else {
+            Err(RealmError::Unsupported)
+        }
+    }
+
+    // ---- Realms ------------------------------------------------------------
+    //
+    // One engine instance is one **agent**: one heap, one event loop, one
+    // microtask queue, one job of `pump`. A realm inside it is one global object
+    // and one set of intrinsics. HTML's same-origin frame tree is exactly that
+    // shape — shared agent, one realm per browsing context — and it is the only
+    // shape in which a parent's `iframe.contentWindow.document.getElementById(x)`
+    // can return the node the child's own script sees, because both sides then
+    // hold ordinary references into one heap.
+    //
+    // Every method here defaults to [`RealmError::Unsupported`]. A backend
+    // without realms therefore compiles unchanged and *says so* when asked,
+    // rather than silently answering from the main realm — which would convert
+    // a missing feature into a plausible wrong answer.
+
+    /// Create and initialize a realm synchronously inside a native callback.
+    /// Installation runs with the child's execution context active. The parent
+    /// callback resumes afterwards; returned values remain ordinary heap references.
+    fn create_realm_from_call(
+        _cx: &mut Self::CallCx<'_>,
+        _data: HostData,
+        _initialize: impl for<'a> FnOnce(&mut Self::CallCx<'a>) -> Result<(), RealmError>,
+    ) -> Result<RealmId, RealmError> {
+        Err(RealmError::Unsupported)
+    }
+
+    /// Evaluate in the active native callback's realm, including during initialization.
+    fn eval_from_call(
+        _cx: &mut Self::CallCx<'_>,
+        _source: &str,
+    ) -> Result<Self::Value, RealmError> {
+        Err(RealmError::Unsupported)
+    }
+
+    /// Install a native function in the active callback's realm.
+    fn set_function_from_call<F: NativeFn<Self>>(
+        _cx: &mut Self::CallCx<'_>,
+        _name: &str,
+        _length: usize,
+    ) -> Result<(), RealmError> {
+        Err(RealmError::Unsupported)
+    }
+
+    /// Evaluate a script in another live realm during a native callback.
+    /// Script execution enters the target realm and restores the caller afterwards.
+    fn eval_in_realm_from_call(
+        _cx: &mut Self::CallCx<'_>,
+        _realm: RealmId,
+        _source: &str,
+    ) -> Result<Self::Value, RealmError> {
+        Err(RealmError::Unsupported)
+    }
+
+    /// Call an engine function without publishing its arguments on a global.
+    fn call_from_call(
+        _cx: &mut Self::CallCx<'_>,
+        _function: &Self::Value,
+        _this: &Self::Value,
+        _args: &[Self::Value],
+    ) -> Result<Self::Value, RealmError> {
+        Err(RealmError::Unsupported)
+    }
+
+    /// Fetch an existing realm's actual global while inside a native callback.
+    fn realm_global_from_call(
+        _cx: &mut Self::CallCx<'_>,
+        _realm: RealmId,
+    ) -> Result<Self::Value, RealmError> {
+        Err(RealmError::Unsupported)
+    }
+
+    /// Install a value in the current callback realm's global object.
+    fn set_global_from_call(
+        _cx: &mut Self::CallCx<'_>,
+        _name: &str,
+        _value: &Self::Value,
+    ) -> Result<(), RealmError> {
+        Err(RealmError::Unsupported)
+    }
+
+    /// Whether this backend can create realms at all. Cheap to ask, so a host
+    /// can choose a degraded path before it starts building one.
+    fn supports_realms(&self) -> bool {
+        false
+    }
+
+    /// Create a fresh realm inside this engine: its own global object and its
+    /// own intrinsics, sharing the engine's heap, job queue and host hooks.
+    fn create_realm(&mut self) -> Result<RealmId, RealmError> {
+        Err(RealmError::Unsupported)
+    }
+
+    /// Drop a realm created by [`create_realm`](Self::create_realm), making its
+    /// global and intrinsics collectable. [`MAIN_REALM`] cannot be discarded.
+    fn discard_realm(&mut self, _realm: RealmId) -> Result<(), RealmError> {
+        Err(RealmError::Unsupported)
+    }
+
+    /// Evaluate `source` in `realm`'s global scope. The realm-scoped
+    /// [`eval`](Self::eval); the returned value is usable from any realm of this
+    /// engine.
+    fn eval_in_realm(&mut self, _realm: RealmId, _source: &str) -> Result<Self::Value, RealmError> {
+        Err(RealmError::Unsupported)
+    }
+
+    /// `realm`'s global object, as a value the caller may hold and hand to
+    /// another realm. This is the primitive `contentWindow` is built from: a
+    /// same-origin parent receives the child's actual global, not a copy.
+    fn realm_global(&mut self, _realm: RealmId) -> Result<Self::Value, RealmError> {
+        Err(RealmError::Unsupported)
+    }
+
+    /// [`set_global`](Self::set_global), scoped to `realm`.
+    fn set_global_in_realm(
+        &mut self,
+        _realm: RealmId,
+        _name: &str,
+        _value: &Self::Value,
+    ) -> Result<(), RealmError> {
+        Err(RealmError::Unsupported)
+    }
+
+    /// [`set_function`](Self::set_function), scoped to `realm`. The same
+    /// captures-free trampoline; only the global it lands on differs.
+    fn set_function_in_realm<F: NativeFn<Self>>(
+        &mut self,
+        _realm: RealmId,
+        _name: &str,
+        _length: usize,
+    ) -> Result<(), RealmError> {
+        Err(RealmError::Unsupported)
+    }
+
+    /// [`set_host_data`](Self::set_host_data), scoped to `realm`.
+    ///
+    /// This is what makes a per-realm host surface possible **without** rekeying
+    /// the host's own state: a child realm gets its own [`HostData`], so every
+    /// native sink that reaches state through [`CallCx::host_data`] lands on the
+    /// child's document, history and markup with no call-site change. The realm
+    /// is the key, and the engine already knows which realm it is in.
+    fn set_host_data_in_realm(
+        &mut self,
+        _realm: RealmId,
+        _data: HostData,
+    ) -> Result<(), RealmError> {
+        Err(RealmError::Unsupported)
     }
 }
 
@@ -319,6 +578,10 @@ pub trait NativeFn<E: ScriptEngine> {
 pub trait CallCx {
     type Value;
     type Error;
+
+    /// Construct a native error from a host failure. This is distinct from a
+    /// platform DOMException, which bindings construct with its specified name.
+    fn error(&mut self, message: &str) -> Self::Error;
 
     /// The `i`th argument, or undefined if absent.
     fn arg(&mut self, i: usize) -> Self::Value;
@@ -391,6 +654,27 @@ pub trait CallCx {
     /// [`ScriptEngine::new_host_promise`], and the primitive an async host call
     /// (`fetch`, `callModel`) is built from: return a promise now, resolve it later.
     fn new_host_promise(&mut self) -> Result<(Self::Value, PromiseToken), Self::Error>;
+
+    /// The realm this callback is running in.
+    ///
+    /// A native sink needs it for exactly one reason: a platform object's
+    /// wrapper is per-realm (WebIDL), and the wrapper a cross-realm read must
+    /// return is the one in the object's **own** realm, not the caller's. A
+    /// backend without realms answers [`MAIN_REALM`], which is true there.
+    /// Actual JavaScript receiver of this native invocation.
+    fn this_value(&mut self) -> Self::Value {
+        self.undefined()
+    }
+
+    /// Realm of the immediate caller at native entry, before the callee realm
+    /// becomes current. Hosts needing incumbent settings must track those separately.
+    fn caller_realm(&mut self) -> RealmId {
+        self.current_realm()
+    }
+
+    fn current_realm(&mut self) -> RealmId {
+        MAIN_REALM
+    }
 }
 
 /// Live-DOM extension: native-data reflectors (plan Part 3 / Appendix A Finding 2).

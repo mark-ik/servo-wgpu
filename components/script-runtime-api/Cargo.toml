@@ -17,6 +17,7 @@ name = "script_runtime_api"
 path = "lib.rs"
 
 [dependencies]
+browsing-context-api = { path = "../shared/browsing-context" }
 script-engine-api = { path = "../script-engine-api" }
 # The DOM the host surface scripts against: a NodeId arena implementing
 # LayoutDom + LayoutDomMut, recording DomMutations for retained Livery hosts.

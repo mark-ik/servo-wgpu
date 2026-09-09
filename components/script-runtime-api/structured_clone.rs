@@ -11,9 +11,10 @@
 //! [`__sc_registerTransferable`](STRUCTURED_CLONE_BOOTSTRAP) rather than being
 //! special-cased here.
 //!
-//! Serialize and deserialize are fused into one memoised walk (`__structuredClone`),
-//! which is what an in-process clone needs; nothing in the scripted tier yet needs a
-//! detached serialization record that outlives the walk.
+//! Same-realm clones use the fused memoised walk (`__structuredClone`). Realm
+//! messages serialize in the sender and deserialize the resulting record in the
+//! recipient, so the clone uses the recipient's intrinsics. Worker messages wrap
+//! that same record in JSON for transport across agents.
 //!
 //! Known gaps, in WPT terms: `SharedArrayBuffer` (no shared memory in the scripted
 //! tier), `ImageData` / `ImageBitmap` / `CryptoKey` / `DOMException` and the other
@@ -23,8 +24,8 @@
 use script_engine_api::ScriptEngine;
 
 pub(crate) fn install_structured_clone_surface<E: ScriptEngine>(
-    engine: &mut E,
-) -> Result<(), E::Error> {
+    engine: &mut crate::Surface<'_, '_, E>,
+) -> Result<(), crate::SurfaceError<E::Error>> {
     engine.eval(STRUCTURED_CLONE_BOOTSTRAP)?;
     Ok(())
 }
@@ -33,9 +34,35 @@ pub(crate) fn install_structured_clone_surface<E: ScriptEngine>(
 /// `__sc_registerTransferable` entry points other surfaces clone through.
 const STRUCTURED_CLONE_BOOTSTRAP: &str = r#"
 (function() {
+  'use strict';
+  // Capture bootstrap intrinsics before authored code can replace globals.
+  // Outgoing records must not retain any source-realm object prototype.
+  var objectCreate = Object.create, objectDefine = Object.defineProperty;
+  var ownDescriptor = Object.getOwnPropertyDescriptor, ownNames = Reflect.ownKeys;
+  var setPrototype = Object.setPrototypeOf, freezeObject = Object.freeze;
+  var hasOwn = Object.prototype.hasOwnProperty, apply = Reflect.apply;
+  var NativeArray = Array, isArray = Array.isArray, NativeMap = Map;
+  var mapGet = Map.prototype.get, mapSet = Map.prototype.set;
+  var NativeSet = Set, setAdd = Set.prototype.add;
+  var NativeBoolean = Boolean, NativeNumber = Number, NativeString = String;
+  var NativeObject = Object, NativeDate = Date, NativeRegExp = RegExp;
+  var NativeDataView = DataView, NativeUint8Array = Uint8Array;
+  var NativeBlob = globalThis.Blob, NativeFile = globalThis.File;
+  var NativeBigInt = globalThis.BigInt, NativeDOMException = DOMException;
+  var jsonParse = JSON.parse, jsonStringify = JSON.stringify;
+  var decodeBase64 = atob;
+  var charCodeAt = String.prototype.charCodeAt;
+  function defineData(target, key, value, writable, configurable) {
+    var descriptor = objectCreate(null);
+    descriptor.value = value;
+    descriptor.enumerable = true;
+    descriptor.writable = !!writable;
+    descriptor.configurable = !!configurable;
+    objectDefine(target, key, descriptor);
+  }
   function tag(v) { return Object.prototype.toString.call(v); }
   function dataClone(what) {
-    return new DOMException(what + " could not be cloned.", "DataCloneError");
+    return new NativeDOMException(what + " could not be cloned.", "DataCloneError");
   }
 
   // Transferable kinds registered by the surface that owns them (MessagePort).
@@ -56,6 +83,10 @@ const STRUCTURED_CLONE_BOOTSTRAP: &str = r#"
   var VIEWS = ['Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array',
                'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array',
                'BigInt64Array', 'BigUint64Array', 'DataView'];
+  var viewConstructors = objectCreate(null), errorConstructors = objectCreate(null);
+  for (var vi = 0; vi < VIEWS.length; vi++) viewConstructors[VIEWS[vi]] = globalThis[VIEWS[vi]];
+  var errorNames = Object.keys(ERROR_NAMES);
+  for (var ei = 0; ei < errorNames.length; ei++) errorConstructors[errorNames[ei]] = globalThis[errorNames[ei]];
   function viewKind(v) {
     for (var i = 0; i < VIEWS.length; i++) {
       var C = globalThis[VIEWS[i]];
@@ -266,13 +297,45 @@ const STRUCTURED_CLONE_BOOTSTRAP: &str = r#"
     return globalThis.__structuredClone(value, transfer);
   };
 
-  // ---- The transportable record (the cross-agent wire) ----
+  // ---- The transportable record (realms and the cross-agent wire) ----
   //
   // The fused walk above cannot cross an agent boundary: its output is live
-  // objects in this VM. `__scSerialize` splits the same type dispatch into a
-  // detached record — a heap array of tagged nodes plus a root value — encoded
-  // as JSON, because a string is the only thing the host boundary marshals.
-  // `__scDeserialize` rebuilds it in the receiving agent.
+  // objects in this realm. Serialize in the sender, where its platform-object
+  // and transferable brands are registered; deserialize in the recipient so
+  // every reconstructed object has the recipient's intrinsics. Inside one agent
+  // the record is passed directly. Workers use the JSON wrappers below.
+
+  // Copy only own data descriptors into an immutable, recursively inert graph.
+  // This also sanitizes a transferable codec's record, without mutating it.
+  // Accessors and executable values are refused rather than called or exposed.
+  // Keep Array identity for JSON, but remove its source-realm prototype.
+  function inertRecord(value, memo) {
+    if (value === null || typeof value === 'undefined' || typeof value === 'string' ||
+        typeof value === 'number' || typeof value === 'boolean') return value;
+    if (typeof value !== 'object') throw dataClone('An executable clone record');
+    var cached = apply(mapGet, memo, [value]);
+    if (cached !== undefined) return cached;
+    var array = isArray(value), out;
+    if (array) {
+      var length = ownDescriptor(value, 'length');
+      if (!length || !apply(hasOwn, length, ['value'])) throw dataClone('An accessor clone record');
+      out = new NativeArray(length.value);
+      setPrototype(out, null);
+    } else {
+      out = objectCreate(null);
+    }
+    apply(mapSet, memo, [value, out]);
+    var keys = ownNames(value);
+    for (var i = 0; i < keys.length; i++) {
+      var key = keys[i];
+      if (typeof key !== 'string') throw dataClone('A symbol clone record key');
+      if (array && key === 'length') continue;
+      var descriptor = ownDescriptor(value, key);
+      if (!descriptor || !apply(hasOwn, descriptor, ['value'])) throw dataClone('An accessor clone record');
+      defineData(out, key, inertRecord(descriptor.value, memo), false, false);
+    }
+    return freezeObject(out);
+  }
 
   function numOut(n) {
     if (n === Infinity) return '+I';
@@ -295,8 +358,8 @@ const STRUCTURED_CLONE_BOOTSTRAP: &str = r#"
     return btoa(s);
   }
   function unb64(s) {
-    var bin = atob(s), u = new Uint8Array(bin.length);
-    for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    var bin = decodeBase64(s), u = new NativeUint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) u[i] = apply(charCodeAt, bin, [i]);
     return u;
   }
 
@@ -411,7 +474,7 @@ const STRUCTURED_CLONE_BOOTSTRAP: &str = r#"
     if (t === 'b') return val[1];
     if (t === 'd') return numIn(val[1]);
     if (t === 's') return val[1];
-    if (t === 'g') return (typeof BigInt === 'function') ? BigInt(val[1]) : Number(val[1]);
+    if (t === 'g') return (typeof NativeBigInt === 'function') ? NativeBigInt(val[1]) : NativeNumber(val[1]);
     if (t === 'r') return desNode(val[1], h, cache);
     return undefined;
   }
@@ -420,23 +483,23 @@ const STRUCTURED_CLONE_BOOTSTRAP: &str = r#"
     if (cache[i] !== undefined) return cache[i];
     var r = h[i], out;
     switch (r.t) {
-      case 'B': return (cache[i] = new Boolean(r.v));
-      case 'N': return (cache[i] = new Number(numIn(r.v)));
-      case 'S': return (cache[i] = new String(r.v));
-      case 'G': return (cache[i] = Object((typeof BigInt === 'function') ? BigInt(r.v) : Number(r.v)));
-      case 'D': return (cache[i] = new Date(r.v));
-      case 'R': return (cache[i] = new RegExp(r.s, r.f));
+      case 'B': return (cache[i] = new NativeBoolean(r.v));
+      case 'N': return (cache[i] = new NativeNumber(numIn(r.v)));
+      case 'S': return (cache[i] = new NativeString(r.v));
+      case 'G': return (cache[i] = NativeObject((typeof NativeBigInt === 'function') ? NativeBigInt(r.v) : NativeNumber(r.v)));
+      case 'D': return (cache[i] = new NativeDate(r.v));
+      case 'R': return (cache[i] = new NativeRegExp(r.s, r.f));
       case 'AB': return (cache[i] = unb64(r.b).buffer);
       case 'TV': {
         var buf = des(r.buf, h, cache);
-        out = (r.k === 'DataView') ? new DataView(buf, r.o, r.l) : new globalThis[r.k](buf, r.o, r.l);
+        out = (r.k === 'DataView') ? new NativeDataView(buf, r.o, r.l) : new viewConstructors[r.k](buf, r.o, r.l);
         return (cache[i] = out);
       }
       case 'BL': {
         var bytes = unb64(r.b);
-        out = (r.n !== undefined && globalThis.File)
-          ? new globalThis.File([bytes.buffer], r.n, { type: r.ty, lastModified: r.lm })
-          : new globalThis.Blob([bytes.buffer], { type: r.ty });
+        out = (r.n !== undefined && NativeFile)
+          ? new NativeFile([bytes.buffer], r.n, { type: r.ty, lastModified: r.lm })
+          : new NativeBlob([bytes.buffer], { type: r.ty });
         return (cache[i] = out);
       }
       case 'X': {
@@ -445,29 +508,29 @@ const STRUCTURED_CLONE_BOOTSTRAP: &str = r#"
         return (cache[i] = codec.deserialize(r.d));
       }
       case 'M':
-        out = new Map(); cache[i] = out;
-        for (var mi = 0; mi < r.p.length; mi++) out.set(des(r.p[mi][0], h, cache), des(r.p[mi][1], h, cache));
+        out = new NativeMap(); cache[i] = out;
+        for (var mi = 0; mi < r.p.length; mi++) apply(mapSet, out, [des(r.p[mi][0], h, cache), des(r.p[mi][1], h, cache)]);
         desProps(r.x2, out, h, cache);
         return out;
       case 'E':
-        out = new Set(); cache[i] = out;
-        for (var si = 0; si < r.p.length; si++) out.add(des(r.p[si], h, cache));
+        out = new NativeSet(); cache[i] = out;
+        for (var si = 0; si < r.p.length; si++) apply(setAdd, out, [des(r.p[si], h, cache)]);
         desProps(r.x2, out, h, cache);
         return out;
       case 'A':
-        out = new Array(r.n); cache[i] = out;
+        out = new NativeArray(r.n); cache[i] = out;
         desProps(r.p, out, h, cache);
         return out;
       case 'ER': {
-        var C = globalThis[r.n] || Error;
+        var C = errorConstructors[r.n] || errorConstructors.Error;
         out = (r.m !== undefined) ? new C(r.m) : new C();
-        if (r.m === undefined && Object.prototype.hasOwnProperty.call(out, 'message')) {
+        if (r.m === undefined && apply(hasOwn, out, ['message'])) {
           try { delete out.message; } catch (e) {}
         }
-        out.name = r.n;
+        defineData(out, 'name', r.n, true, true);
         cache[i] = out;
-        if (r.c !== undefined) out.cause = des(r.c, h, cache);
-        if (typeof r.st === 'string') out.stack = r.st;
+        if (r.c !== undefined) defineData(out, 'cause', des(r.c, h, cache), true, true);
+        if (typeof r.st === 'string') defineData(out, 'stack', r.st, true, true);
         return out;
       }
       default:
@@ -478,21 +541,39 @@ const STRUCTURED_CLONE_BOOTSTRAP: &str = r#"
   }
 
   function desProps(pairs, dst, h, cache) {
-    for (var i = 0; i < pairs.length; i++) dst[pairs[i][0]] = des(pairs[i][1], h, cache);
+    for (var i = 0; i < pairs.length; i++) {
+      defineData(dst, pairs[i][0], des(pairs[i][1], h, cache), true, true);
+    }
   }
 
-  // Serialize `value` (applying `transfer`) to the JSON wire record.
-  globalThis.__scSerialize = function(value, transfer) {
+  // Build a detached record in the sending realm. It contains data rather than
+  // references to the input graph; cycles and aliases are explicit heap indexes.
+  function serializeRecord(value, transfer) {
     var moved = performTransfer(transfer);
     var h = [];
     var root = ser(value, h, new Map(), moved);
-    return JSON.stringify({ r: root, h: h });
-  };
+    return inertRecord({ r: root, h: h }, new NativeMap());
+  }
+  globalThis.__scSerializeRecord = serializeRecord;
 
-  // Rebuild a record produced by `__scSerialize` in this agent.
+  // Run this function from the receiving realm, even when `rec` was allocated
+  // in another realm of this agent. The reconstructed objects are local.
+  function deserializeRecord(record) {
+    // Validate/copy incoming records by descriptor before following fields.
+    // Ordinary accessors are rejected without executing their getter.
+    var rec = inertRecord(record, new NativeMap());
+    var cache = new NativeArray(rec.h.length);
+    setPrototype(cache, null);
+    return des(rec.r, rec.h, cache);
+  }
+  globalThis.__scDeserializeRecord = deserializeRecord;
+
+  // Keep the Worker wire format and entry points unchanged.
+  globalThis.__scSerialize = function(value, transfer) {
+    return jsonStringify(serializeRecord(value, transfer));
+  };
   globalThis.__scDeserialize = function(text) {
-    var rec = JSON.parse(text);
-    return des(rec.r, rec.h, new Array(rec.h.length));
+    return deserializeRecord(jsonParse(text));
   };
 })();
 "#;

@@ -35,8 +35,8 @@ use paint_list_api::{ColorF, DeviceIntSize, LayoutPoint, LayoutRect, LayoutSize}
 use script_engine_api::ScriptEngine;
 use script_runtime_api::{
     ComputedStyleHandler, HostState, InlineStyleHandler, InlineStyleValueResult, MediaQueryHandler,
-    Runtime, SelectionHandler, StyleSheetHandler, StyleSheetImportOwner, StyleSheetImportRule,
-    StyleSheetMutationError, StyleSheetRule, StyleSheetRuleKind,
+    Runtime, SelectionHandler, SharedHost, StyleSheetHandler, StyleSheetImportOwner,
+    StyleSheetImportRule, StyleSheetMutationError, StyleSheetRule, StyleSheetRuleKind,
 };
 
 struct LiveryState {
@@ -350,10 +350,48 @@ impl LiveryCssom {
         E: ScriptEngine,
         Fetch: ResourceFetcher + 'static,
     {
-        let document_url = document_url.into();
         let fetcher: Rc<dyn ResourceFetcher> = Rc::new(fetcher);
+        let cssom = Self::install_live_host_with_optional_sink(
+            runtime.host(),
+            fetcher.clone(),
+            document_url,
+            limits,
+            device,
+            resource_sink,
+        );
+        Self::install_child_providers(runtime, fetcher, limits);
+        cssom
+    }
+
+    /// Bind a child realm's CSSOM directly to its live host arena.
+    pub fn install_live_for_host<Fetch: ResourceFetcher + 'static>(
+        host: &SharedHost,
+        fetcher: Fetch,
+        document_url: impl Into<String>,
+        limits: ResourceLimits,
+        device: Device,
+    ) -> Self {
+        Self::install_live_host_with_optional_sink(
+            host,
+            Rc::new(fetcher),
+            document_url,
+            limits,
+            device,
+            None,
+        )
+    }
+
+    fn install_live_host_with_optional_sink(
+        host: &SharedHost,
+        fetcher: Rc<dyn ResourceFetcher>,
+        document_url: impl Into<String>,
+        limits: ResourceLimits,
+        device: Device,
+        resource_sink: Option<Rc<RefCell<dyn LiveResourceSink>>>,
+    ) -> Self {
+        let document_url = document_url.into();
         let (resources, mutation_cursor) = {
-            let host = runtime.host().borrow();
+            let host = host.borrow();
             let resources = ResolvedDocumentResources::resolve_with_limits(
                 &host.dom,
                 Some(&document_url),
@@ -399,27 +437,74 @@ impl LiveryCssom {
         };
         replace_resource_ledger(&mut initial_state, &resources);
         let state = Rc::new(RefCell::new(initial_state));
-        Self::install_state(runtime, state)
+        Self::install_state_for_host(host, state)
     }
 
     fn install_state<E: ScriptEngine>(
         runtime: &mut Runtime<E>,
         state: Rc<RefCell<LiveryState>>,
     ) -> Self {
-        let host = Rc::downgrade(runtime.host());
-        runtime.set_computed_style_handler(Box::new(LiveryComputedStyle {
+        let cssom = Self::install_state_for_host(runtime.host(), state);
+        Self::install_child_providers(runtime, Rc::new(NoResourceFetch), ResourceLimits::default());
+        cssom
+    }
+
+    /// A child is a separate document arena. Bind its own live stylesheet
+    /// source before authored child script, including hosts using this CSSOM
+    /// adapter directly rather than LiveryScriptedDocument's paint registry.
+    fn install_child_providers<E: ScriptEngine>(
+        runtime: &mut Runtime<E>,
+        fetcher: Rc<dyn ResourceFetcher>,
+        limits: ResourceLimits,
+    ) {
+        let initialize = Rc::new(move |_: script_engine_api::RealmId, host: &SharedHost| {
+            let (url, viewport) = {
+                let h = host.borrow();
+                (
+                    h.base_url.clone().unwrap_or_else(|| "about:blank".into()),
+                    h.viewport_size,
+                )
+            };
+            Self::install_live_host_with_optional_sink(
+                host,
+                fetcher.clone(),
+                url,
+                limits,
+                Device::screen(viewport.0.max(1.0), viewport.1.max(1.0)),
+                None,
+            );
+        });
+        let future = initialize.clone();
+        runtime.set_child_host_initializer(move |realm, host| future(realm, host));
+        // A host can install CSSOM after parsing a document which already has
+        // children. Bind those arenas as well as future inserted frames.
+        let mut parents = vec![script_engine_api::MAIN_REALM];
+        while let Some(parent) = parents.pop() {
+            for (_, realm) in runtime.frame_realms(parent) {
+                if let Ok(host) = runtime.host_in_realm(realm) {
+                    initialize(realm, &host);
+                }
+                parents.push(realm);
+            }
+        }
+    }
+
+    fn install_state_for_host(shared: &SharedHost, state: Rc<RefCell<LiveryState>>) -> Self {
+        let host = Rc::downgrade(shared);
+        let mut target = shared.borrow_mut();
+        target.computed_style = Some(Rc::new(LiveryComputedStyle {
             host: host.clone(),
             state: state.clone(),
         }));
-        runtime.set_media_query_handler(Box::new(LiveryMediaQueries {
+        target.media_query = Some(Rc::new(LiveryMediaQueries {
             state: state.clone(),
         }));
-        runtime.set_inline_style_handler(Box::new(LiveryInlineStyle));
-        runtime.set_selection_handler(Box::new(LiverySelection {
+        target.inline_style = Some(Rc::new(LiveryInlineStyle));
+        target.selection = Some(Rc::new(LiverySelection {
             host: host.clone(),
             state: state.clone(),
         }));
-        runtime.set_stylesheet_handler(Box::new(LiveryStyleSheets {
+        target.stylesheets = Some(Rc::new(LiveryStyleSheets {
             state: state.clone(),
             host,
         }));
@@ -489,8 +574,18 @@ impl LiveryCssom {
         width: u32,
         height: u32,
     ) -> Result<LiveryPaintList, LayoutError> {
+        self.frame_host(runtime.host(), width, height)
+    }
+
+    /// Paint the same arena served by the realm's DOM and CSSOM callbacks.
+    pub fn frame_host(
+        &self,
+        shared: &SharedHost,
+        width: u32,
+        height: u32,
+    ) -> Result<LiveryPaintList, LayoutError> {
         let viewport = (width.max(1), height.max(1));
-        let mut host = runtime.host().borrow_mut();
+        let mut host = shared.borrow_mut();
         let (base, pending) = host.dom.pending_mutations();
         let end = base.saturating_add(pending.len() as u64);
         let mut state = self.state.borrow_mut();
@@ -2002,11 +2097,11 @@ mod tests {
         runtime
             .eval(
                 "var card = document.getElementById('card');\
-                 var parent = document.styleSheets[0];\
-                 var rule = parent.cssRules.item(0);\
+                 var parentSheet = document.styleSheets[0];\
+                 var rule = parentSheet.cssRules.item(0);\
                  var child = rule.styleSheet;\
-                 console.log(document.styleSheets.length + '|' + parent.ownerNode.id + '|' + parent.cssRules.length + '|' + String(child.ownerNode === null));\
-                 console.log(rule.href + '|' + rule.media.mediaText + '|' + String(rule.parentStyleSheet === parent) + '|' + String(child.ownerRule === rule) + '|' + String(rule instanceof CSSImportRule) + '|' + child.cssRules.length + '|' + getComputedStyle(card).color);\
+                 console.log(document.styleSheets.length + '|' + parentSheet.ownerNode.id + '|' + parentSheet.cssRules.length + '|' + String(child.ownerNode === null));\
+                 console.log(rule.href + '|' + rule.media.mediaText + '|' + String(rule.parentStyleSheet === parentSheet) + '|' + String(child.ownerRule === rule) + '|' + String(rule instanceof CSSImportRule) + '|' + child.cssRules.length + '|' + getComputedStyle(card).color);\
                  console.log(child.insertRule('.card { color: green; }', child.cssRules.length) + '|' + getComputedStyle(card).color);",
             )
             .expect("import ownership CSSOM script");

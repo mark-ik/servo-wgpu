@@ -197,6 +197,18 @@ impl<E: ScriptEngine> NativeFn<E> for FetchStart {
             Some(handler) => handler.start(id, request),
             None => Some(FetchOutcome::network_error()),
         };
+        if outcome.is_none() {
+            if let Some(data) = cx.host_data() {
+                if let Some(host) = data.downcast_ref::<RefCell<HostState>>() {
+                    if let Some(agent) = host.borrow().agent.upgrade() {
+                        agent
+                            .borrow_mut()
+                            .fetch_realms
+                            .insert(id, cx.current_realm());
+                    }
+                }
+            }
+        }
         match outcome {
             Some(o) => cx.make_string(&encode_outcome(&o)), // inline (sync) answer
             None => cx.make_string(""),                     // deferred: settle later
@@ -231,6 +243,13 @@ impl<E: ScriptEngine> NativeFn<E> for FetchAbort {
         let id = cx.value_to_string(&a0)?.parse::<u64>().unwrap_or(0);
         if let Some(handler) = host_handler::<E>(cx) {
             handler.cancel(id);
+        }
+        if let Some(data) = cx.host_data() {
+            if let Some(host) = data.downcast_ref::<RefCell<HostState>>() {
+                if let Some(agent) = host.borrow().agent.upgrade() {
+                    agent.borrow_mut().fetch_realms.remove(&id);
+                }
+            }
         }
         Ok(cx.undefined())
     }
@@ -475,7 +494,9 @@ fn push_json_str(out: &mut String, s: &str) {
 /// Install the deferred fetch sinks (`__fetch_start` / `__fetch_sync` /
 /// `__fetch_abort`) and the `fetch()` / `Request` / `Response` / `Headers` /
 /// `XMLHttpRequest` bootstrap.
-pub(crate) fn install_fetch_surface<E: ScriptEngine>(engine: &mut E) -> Result<(), E::Error> {
+pub(crate) fn install_fetch_surface<E: ScriptEngine>(
+    engine: &mut crate::Surface<'_, '_, E>,
+) -> Result<(), crate::SurfaceError<E::Error>> {
     engine.set_function::<FetchStart>("__fetch_start", 12)?;
     engine.set_function::<FetchSync>("__fetch_sync", 11)?;
     engine.set_function::<FetchAbort>("__fetch_abort", 1)?;
@@ -1658,7 +1679,8 @@ const FETCH_BOOTSTRAP: &str = r#"
   // Single authority, delete-once: every terminal removes the entry exactly once.
   var __pending = Object.create(null);
   globalThis.__pending = __pending;          // Object.keys count drives the host's quiescence probe
-  var __nextFetchId = 1;
+  var fetchIds = globalThis.__agentTimers;
+  if (!fetchIds.nextFetchId) fetchIds.nextFetchId = 1;
 
   function settleEntry(e, o) {
     if (o.networkError) e.reject(new TypeError('Failed to fetch'));
@@ -1681,7 +1703,7 @@ const FETCH_BOOTSTRAP: &str = r#"
       req.bodyUsed = true; // the body is consumed by the (aborted) attempt
       return Promise.reject(pre);
     }
-    var id = __nextFetchId++;
+    var id = fetchIds.nextFetchId++;
     return new Promise(function(resolve, reject) {
       var entry = { resolve: resolve, reject: reject, controller: null, settled: false, awaiting: false, method: req.method };
       __pending[id] = entry;

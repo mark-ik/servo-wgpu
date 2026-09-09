@@ -65,7 +65,8 @@ older `docs/` corpus without changing their location or governance.
 | [Shadow DOM](2026-09-07_shadow_dom_plan.md) | A parentless shadow root in both DOMs, a per-host slot assignment table maintained at the mutation, `flat_children` under Livery's rendering traversals, per-rule tree-scope matching with `:host` / `:host()` / `::slotted()` / `::part()`, event retargeting and `composedPath()`, and the declarative post-parse pass with `<template>.content` in one shared inert document. Landed 2026-09-07/08: `shadow-dom` 6 to 45 all-pass and 24 to 1,512 subtests, +1,761 subtest passes over four directories, one explained pass-to-fail. Residuals: `:host-context()`, `adoptedStyleSheets`, focus delegation, and declarative attachment consulting the custom-element registry (which needs parser/script interleaving — Mark's call). |
 | [Parser/script interleaving](2026-09-08_parser_script_interleaving_plan.md) | HTML's parsing model with scripts run at the point the tree builder pops them: an html5ever `TreeSink` over the live arena, `document.write` at the tokenizer's insertion point, `currentScript`, the `readyState` transitions with `DOMContentLoaded` and `load`, parse-time custom-element upgrade, and declarative shadow roots consulting the registry. Landed 2026-09-08 in the engine (part one: +68 subtest passes over eight directories, 30 files `fail -> pass`, zero pass-to-fail, no repins). **Part two, 2026-09-08**, routed the WPT runner and `LiveryScriptedDocument` through the same parse and closed the named residuals: `testharness.js` as a prelude and one `load` dispatch, a two-phase `LiveryCssom` that resolves author sheets from the arena as the parser fills it, `document.write` tokenized inside the call so its markup is visible to the writing script and a written `<script>` runs, the open stream appending through one live tokenizer, upgrades at element creation, foreign-namespace scripts, and scripts in template contents left inert. +181 subtest passes over ten directories and +439 across the 79-directory disk census (excluding two identified timing artifacts), 19 census `pass -> fail` all attributed, six baselines repinned forward-only, all fourteen at `unexpected=0`, Ortet digest unchanged. **Both Shadow DOM declarative regressions now recover in WPT** — the open gate is closed. |
 
-| [iframes and nested browsing contexts](2026-09-08_iframes_plan.md) | HTML's browsing-context tree in `genet-documents` (parent, children, top, each context's active document, origin, sandbox flags and its own session history), loading through the parent's own resource route (`src`, `srcdoc`, `about:blank`, the initial-`about:blank` rules, `sandbox` / `allow` / `loading`), and the child's scene composited into the parent's replaced box as a **paint-list splice** rather than a producer texture, clipped to the content box, with hit testing descending into it. Landed 2026-09-08: +23 subtest passes over eight directories, two files `fail -> pass`, zero pass-to-fail, three baselines repinned forward with six named entries, all fourteen at `unexpected=0` and both reftest guards at `unexpected=0`. Ortet composites child frames through the script-free Livery route with no Ortet code change; the article digest is unchanged at `0x6377ba8a6bf4dbc9` and the new `frames.html` receipt is `0x2e7dd44b19907205`. **The per-context `Runtime` and the cross-origin `WindowProxy` are a decision for Mark**: two `Runtime`s are two engine instances and this stack's cross-instance boundary marshals strings, which cannot carry the same-origin object identity `contentWindow` requires. |
+| [iframes and nested browsing contexts](2026-09-08_iframes_plan.md) | HTML's browsing-context tree in `genet-documents` (parent, children, top, each context's active document, origin, sandbox flags and its own session history), loading through the parent's own resource route (`src`, `srcdoc`, `about:blank`, the initial-`about:blank` rules, `sandbox` / `allow` / `loading`), and the child's scene composited into the parent's replaced box as a **paint-list splice** rather than a producer texture, clipped to the content box, with hit testing descending into it. Landed 2026-09-08: +23 subtest passes over eight directories, two files `fail -> pass`, zero pass-to-fail, three baselines repinned forward with six named entries, all fourteen at `unexpected=0` and both reftest guards at `unexpected=0`. Ortet composites child frames through the script-free Livery route with no Ortet code change; the article digest is unchanged at `0x6377ba8a6bf4dbc9` and the new `frames.html` receipt is `0x97bdd4bd9e03ec02`. **The per-context `Runtime` and the cross-origin `WindowProxy` are a decision for Mark**: two `Runtime`s are two engine instances and this stack's cross-instance boundary marshals strings, which cannot carry the same-origin object identity `contentWindow` requires. |
+| [Realms](2026-09-08_realms_plan.md) | Mark's revised ruling on the iframes lane's open decision: **one `Runtime` per agent, one realm per browsing context**, through a realm API on the engine-neutral contract. Phase 1 landed 2026-09-08: `RealmId` / `MAIN_REALM` / `RealmError` and eight trait methods plus `CallCx::current_realm`, all defaulted to a stated refusal so piccolo compiles unchanged and reports `supports_realms() == false`; implemented on Boa (`Context::create_realm`, per-realm reflector class, per-realm `HostData`) and Nova (`GcAgent::create_default_realm`, realm id in the host slot). Cross-realm **object identity** is proven on both backends in both directions — the assertion a marshalled `WindowProxy` could never satisfy. Seven twinned regressions per backend; Boa 14/14, Nova 29/29. Zero WPT movement over nine directories against a runner-controlled baseline whose `pre`/`post` lockfile digests are identical, both baseline guards at `unexpected=0`, both Ortet digests unchanged. Recorded refusals: Nova's `run_in_realm` cannot nest (so the per-realm surface installs from the engine level, never from a sink) and caps at 256 realms; Boa's `Realm::global_object` is crate-private. **Next proof:** the per-realm host surface (sized — 16 signatures, 243 call sites, two engine methods), then `contentWindow` / `contentDocument` / cross-realm `postMessage` with the `WindowProxy` whitelist, then sandbox and origin policy. `document.domain` stays a residual. |
 The [Buckram master](../docs/2026-07-26_buckram_css_layout_engine_plan.md)
 defines ownership and the [lane program](../docs/2026-08-21_buckram_livery_lane_program_plan.md)
 assigns residuals. The linked execution plans carry their current gate; a
@@ -733,6 +734,32 @@ same session; links out of it are rewritten for its new depth.
   child's own script sees. When a surface's contract is identity rather than
   transport, a marshalled proxy is not a partial implementation of it — it is a
   different thing that scores well. See the iframes plan §4.
+- **A cross-instance boundary cannot carry identity, but a cross-*realm* one
+  is not a boundary at all.** The Worker lane's JSON wire and the iframes lane's
+  refusal to fake `contentWindow` are the same fact from two sides: two engine
+  instances are two agents. One engine instance with two realms is one agent, so
+  a value obtained in one realm is an ordinary reference in the other — no
+  marshalling API is needed, and none was written. Before designing a proxy,
+  check whether the two sides can simply share a heap. See the realms plan §1.
+- **Put the key where the party that cannot get it wrong already holds it.**
+  Per-realm host state looked like a job for the host: rekey `HostState` by
+  realm and teach ~123 native sinks to ask which realm they are in. But the
+  *engine* already knows the realm — it is the execution context — so putting
+  `HostData` in the realm's own slot left every sink unchanged and made the
+  wrong answer unrepresentable. When a fan-out of call sites all need the same
+  contextual fact, look for the layer that already has it.
+- **An engine's realm switch may or may not nest, and that decides where
+  installation happens.** Boa's `enter_realm` is a call-frame field swap and
+  nests freely; Nova's `GcAgent::run_in_realm` asserts an empty
+  execution-context stack and cannot. A per-realm surface installed lazily from
+  inside a native sink would have worked on Boa and asserted on Nova. This is
+  the cross-target lesson in a new place: a green build on one backend proves
+  nothing about the other's execution model.
+- **A null census is only readable with a lockfile control.** A purely additive
+  trait change should move nothing, and the realms lane's nine directories moved
+  nothing — but "zero" is only evidence when the `pre` and `post` runners
+  resolved identical dependencies. Record the `Cargo.lock` digest of both
+  builds; without it, a null result and two cancelling effects look the same.
 - **Parallel work needs commit fences as well as file fences.** Pin one base,
   give each worker a disposable detached worktree and disjoint write paths,
   inspect staged paths before committing, and remove the worktree immediately
@@ -748,3 +775,14 @@ was stale before 2026-09-07 and is now stated by the sections themselves.
 All three former component area roots now live in Mere. The older `docs/`
 corpus has selected execution entry points above; its full migration and
 governance remain deferred under the policy's local addendum.
+
+### Realms continuation (2026-09-09, in progress)
+
+The [realms continuation](2026-09-08_realms_plan.md#continuation-2026-09-09--in-progress)
+resumes the inherited uncommitted phase-one patch at `640477b6138`. The revised
+one-Runtime-per-agent ruling is active; the earlier iframes decision entries
+are historical. Engine corrections, per-realm surfaces and child integration
+are undergoing fresh gates, with a newly frozen pre runner and all nine pre
+census maps. The older iframes row's `frames.html` digest `0x97bdd4bd9e03ec02`
+is stale: its lane ledger and phase-one realms receipts record
+`0x97bdd4bd9e03ec02`. Continuation Ortet verification is still pending.

@@ -309,7 +309,9 @@ impl<E: ScriptEngine> NativeFn<E> for GetHtmlWithShadow {
     }
 }
 
-pub(crate) fn install<E: ScriptEngine>(engine: &mut E) -> Result<(), E::Error> {
+pub(crate) fn install<E: ScriptEngine>(
+    engine: &mut crate::Surface<'_, '_, E>,
+) -> Result<(), crate::SurfaceError<E::Error>> {
     engine.set_function::<MayHostShadow>("__mayHostShadow", 1)?;
     engine.set_function::<AttachShadow>("__attachShadow", 6)?;
     engine.set_function::<ShadowRootOf>("__shadowRoot", 1)?;

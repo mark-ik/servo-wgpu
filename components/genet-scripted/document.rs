@@ -572,6 +572,9 @@ pub struct LiveryScriptedDocument<E: ScriptEngine> {
     rt: Box<Runtime<E>>,
     bridge: ScriptResourceBridge,
     cssom: Box<LiveryCssom>,
+    child_cssoms: std::rc::Rc<
+        std::cell::RefCell<std::collections::BTreeMap<script_engine_api::RealmId, LiveryCssom>>,
+    >,
     pending_fragment: Option<NavigationFragment>,
     capture: Option<DomCaptureRecorder>,
     hidden: bool,
@@ -708,6 +711,29 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
             ResourceLimits::default(),
             Device::screen(800.0, 600.0),
         );
+        let child_cssoms =
+            std::rc::Rc::new(std::cell::RefCell::new(std::collections::BTreeMap::new()));
+        let child_cssom_registry = child_cssoms.clone();
+        let child_fetcher = fetcher.clone();
+        rt.set_child_host_initializer(move |realm, host| {
+            let (url, viewport) = {
+                let host = host.borrow();
+                (
+                    host.base_url
+                        .clone()
+                        .unwrap_or_else(|| "about:blank".into()),
+                    host.viewport_size,
+                )
+            };
+            let cssom = LiveryCssom::install_live_for_host(
+                host,
+                child_fetcher.clone(),
+                url,
+                ResourceLimits::default(),
+                Device::screen(viewport.0.max(1.0), viewport.1.max(1.0)),
+            );
+            child_cssom_registry.borrow_mut().insert(realm, cssom);
+        });
         // HTML's parsing model: the tree is built and its scripts run
         // interleaved, so each script sees the document as far as its own
         // position — including the stylesheets parsed so far, through the live
@@ -744,6 +770,7 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
             rt: Box::new(rt),
             bridge: fetcher,
             cssom: Box::new(cssom),
+            child_cssoms,
             pending_fragment: None,
             capture,
             hidden: false,
@@ -796,7 +823,100 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
         if self.cssom.take_device_changed() {
             let _ = self.rt.notify_media_features_changed();
         }
+        let mut reachable = std::collections::HashSet::new();
+        let mut pending = vec![script_engine_api::MAIN_REALM];
+        while let Some(parent) = pending.pop() {
+            for (_, realm) in self.rt.frame_realms(parent) {
+                if reachable.insert(realm) {
+                    pending.push(realm);
+                }
+            }
+        }
+        self.child_cssoms
+            .borrow_mut()
+            .retain(|realm, _| reachable.contains(realm));
+        self.composite_child_realms(script_engine_api::MAIN_REALM, &mut list);
         paint_list_render::translate_paint_list(&list)
+    }
+
+    /// Child paint is inserted at the parent's replaced-content slot, inheriting
+    /// its transform, clip and stacking order. The child retains its own cascade.
+    fn composite_child_realms(
+        &mut self,
+        parent: script_engine_api::RealmId,
+        list: &mut genet_livery::LiveryPaintList,
+    ) {
+        let frames = self.rt.frame_realms(parent);
+        let slots = list.frame_slots().to_vec();
+        let mut rendered = Vec::new();
+        for slot in slots {
+            let Some(&(_, realm)) = frames.iter().find(|(owner, _)| *owner == slot.owner_node)
+            else {
+                continue;
+            };
+            let width = slot.content_rect.width().max(0.0).round() as u32;
+            let height = slot.content_rect.height().max(0.0).round() as u32;
+            if width == 0 || height == 0 {
+                continue;
+            }
+            let Ok(host) = self.rt.host_in_realm(realm) else {
+                continue;
+            };
+            if !self.child_cssoms.borrow().contains_key(&realm) {
+                let url = host
+                    .borrow()
+                    .base_url
+                    .clone()
+                    .unwrap_or_else(|| "about:blank".into());
+                let cssom = LiveryCssom::install_live_for_host(
+                    &host,
+                    self.bridge.clone(),
+                    url,
+                    ResourceLimits::default(),
+                    Device::screen(width as f32, height as f32),
+                );
+                self.child_cssoms.borrow_mut().insert(realm, cssom);
+            }
+            let cssom = self
+                .child_cssoms
+                .borrow()
+                .get(&realm)
+                .cloned()
+                .expect("installed child CSSOM");
+            let (requested_scroll, into_view) = {
+                let mut host = host.borrow_mut();
+                host.viewport_size = (width as f32, height as f32);
+                (host.viewport_scroll, host.scroll_into_view.take())
+            };
+            if let Some(node) = into_view {
+                let _ = cssom.scroll_to_id(node);
+            } else {
+                cssom.scroll_to(requested_scroll.0, requested_scroll.1);
+            }
+            let mut child_list = match cssom.frame_host(&host, width, height) {
+                Ok(list) => list,
+                Err(error) => {
+                    eprintln!("[pelt-livery-scripted] child realm {realm} layout error: {error}");
+                    continue;
+                },
+            };
+            host.borrow_mut().viewport_scroll = cssom.scroll();
+            if cssom.take_device_changed() {
+                let _ = self.rt.eval_in_realm(
+                    realm,
+                    "globalThis.__reevaluateMediaQueries && globalThis.__reevaluateMediaQueries()",
+                );
+                self.rt.run_microtasks();
+            }
+            self.composite_child_realms(realm, &mut child_list);
+            rendered.push((slot.owner_node, list.absorb_frame_commands(&child_list)));
+        }
+        list.splice_frame_slots(|owner| {
+            rendered
+                .iter()
+                .find(|(node, _)| *node == owner)
+                .map(|(_, commands)| commands.clone())
+        });
     }
 
     pub fn scroll_by(&mut self, dx: f32, dy: f32) -> bool {
@@ -2296,6 +2416,80 @@ mod tests {
     mod livery_render_tests {
         use super::*;
         use script_engine_boa::BoaEngine;
+
+        fn child_realm_mutations_render<E: ScriptEngine>() {
+            let mut doc = LiveryScriptedDocument::<E>::parse(
+                r#"<body><iframe id="f" style="width:180px;height:90px" srcdoc='<body><p id="target" style="margin:0;width:20px;height:10px;background:red">child</p><script>globalThis.initialWidth=getComputedStyle(document.getElementById("target")).width;</script></body>'></iframe></body>"#,
+            ).expect("hosted document");
+            // The child's load is an agent task. Pump it before inspecting the
+            // first child script, while retaining the before-first-paint gate.
+            doc.pump(0.0);
+            let value = doc
+                .rt
+                .eval("document.getElementById('f').contentWindow.initialWidth")
+                .expect("initial child script");
+            assert_eq!(
+                doc.rt.value_to_string(&value).unwrap(),
+                "20px",
+                "child CSSOM is bound before its first inline script and before paint"
+            );
+            let first = doc.frame(400, 300);
+            assert!(
+                first
+                    .ops
+                    .iter()
+                    .any(|op| matches!(op, netrender::SceneOp::GlyphRun(_))),
+                "child text enters parent paint slot"
+            );
+            let realm = doc.rt.frame_realms(script_engine_api::MAIN_REALM)[0].1;
+            let host = doc.rt.host_in_realm(realm).expect("child host");
+            let node = {
+                let h = host.borrow();
+                find_id(&h.dom, h.dom.document(), "target").expect("same child arena")
+            };
+            let before = doc.child_cssoms.borrow()[&realm]
+                .fragment_rect(node)
+                .expect("initial child layout");
+            doc.evaluate("var p=document.getElementById('f').contentWindow.document.getElementById('target'); p.textContent=''; p.style.width='75px'; p.style.height='30px'; p.style.backgroundColor='blue';").expect("mutate child from parent");
+            let second = doc.frame(400, 300);
+            assert!(
+                !second
+                    .ops
+                    .iter()
+                    .any(|op| matches!(op, netrender::SceneOp::GlyphRun(_))),
+                "removing child text removes its glyph commands"
+            );
+            let after = doc.child_cssoms.borrow()[&realm]
+                .fragment_rect(node)
+                .expect("mutated child layout");
+            assert!(
+                (before[2] - before[0] - 20.0).abs() < 0.5,
+                "initial child width: {before:?}"
+            );
+            assert!(
+                (after[2] - after[0] - 75.0).abs() < 0.5
+                    && (after[3] - after[1] - 30.0).abs() < 0.5,
+                "child inline-style mutations change retained geometry: {after:?}"
+            );
+            let value = doc
+                .rt
+                .eval_in_realm(
+                    realm,
+                    "getComputedStyle(document.getElementById('target')).width",
+                )
+                .unwrap();
+            assert_eq!(doc.rt.value_to_string(&value).unwrap(), "75px");
+        }
+
+        #[test]
+        fn child_realm_mutations_render_on_boa() {
+            child_realm_mutations_render::<BoaEngine>();
+        }
+        #[test]
+        #[cfg(all(target_pointer_width = "64", feature = "scripted-nova"))]
+        fn child_realm_mutations_render_on_nova() {
+            child_realm_mutations_render::<script_engine_nova::NovaEngine>();
+        }
 
         /// A page whose inline script injects a `<p>` with text: the rendered scene gains
         /// glyph runs that an empty body would not have — the load → run-script → mutate →

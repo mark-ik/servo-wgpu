@@ -37,11 +37,15 @@ use std::rc::Rc;
 
 use genet_scripted_dom::{NodeId, ScriptedDom};
 use layout_dom_api::LayoutDom;
-use script_engine_api::{CallCx, NativeFn, ReflectorData, ScriptEngine, ScriptEngineSnapshot};
+use script_engine_api::{
+    CallCx, MAIN_REALM, NativeFn, RealmError, RealmId, ReflectorData, ScriptEngine,
+    ScriptEngineSnapshot,
+};
 
 mod crypto;
 mod dom;
 mod fetch;
+mod frames;
 mod harness;
 mod messaging;
 pub mod parse;
@@ -68,12 +72,63 @@ pub use webgl::{WebGlFactory, WebGlHandler};
 pub use websocket::{WebSocketHandler, WebSocketRequest};
 pub use worker::ScriptResourceLoader;
 
+/// Installation errors preserve the existing main-realm engine error.
+#[derive(Debug)]
+pub(crate) enum SurfaceError<T> {
+    Engine(T),
+    Realm(RealmError),
+}
+impl<T> SurfaceError<T> {
+    fn main(self) -> T {
+        match self {
+            Self::Engine(e) => e,
+            Self::Realm(_) => unreachable!("main surface never enters a child realm"),
+        }
+    }
+}
+/// The installer only needs evaluation and native-function registration.
+pub(crate) enum Surface<'a, 'cx, E: ScriptEngine + 'cx> {
+    Engine { engine: &'a mut E, realm: RealmId },
+    Callback(&'a mut E::CallCx<'cx>),
+}
+impl<'cx, E: ScriptEngine + 'cx> Surface<'_, 'cx, E> {
+    fn eval(&mut self, source: &str) -> Result<E::Value, SurfaceError<E::Error>> {
+        match self {
+            Self::Engine { engine, realm } if *realm == MAIN_REALM => {
+                engine.eval(source).map_err(SurfaceError::Engine)
+            },
+            Self::Engine { engine, realm } => engine
+                .eval_in_realm(*realm, source)
+                .map_err(SurfaceError::Realm),
+            Self::Callback(cx) => E::eval_from_call(cx, source).map_err(SurfaceError::Realm),
+        }
+    }
+    fn set_function<F: NativeFn<E>>(
+        &mut self,
+        name: &str,
+        length: usize,
+    ) -> Result<(), SurfaceError<E::Error>> {
+        match self {
+            Self::Engine { engine, realm } if *realm == MAIN_REALM => engine
+                .set_function::<F>(name, length)
+                .map_err(SurfaceError::Engine),
+            Self::Engine { engine, realm } => engine
+                .set_function_in_realm::<F>(*realm, name, length)
+                .map_err(SurfaceError::Realm),
+            Self::Callback(cx) => {
+                E::set_function_from_call::<F>(cx, name, length).map_err(SurfaceError::Realm)
+            },
+        }
+    }
+}
+
 /// State the runtime's native callbacks share, stored as the engine's single
 /// host-data slot (`Rc<dyn Any>`). One aggregate so every host object reaches the
 /// same place; grows as host objects are added (the event-loop task queue and
 /// `EventTarget` listeners land here as they graduate from JS bootstraps).
 #[derive(Default)]
 pub struct HostState {
+    pub(crate) agent: std::rc::Weak<RefCell<AgentState>>,
     /// `console.log` / `console.error` output, in call order.
     pub console: Vec<String>,
     /// The document (viewport) scroll offset in CSS px, the script side of
@@ -282,11 +337,33 @@ pub type SharedHost = Rc<RefCell<HostState>>;
 pub struct Runtime<E: ScriptEngine> {
     engine: E,
     host: SharedHost,
+    pub(crate) agent: Rc<RefCell<AgentState>>,
     scheduler_trace: Vec<SchedulerTraceEvent>,
     next_trace_seq: u64,
     /// The opaque-root policy's memory of the last GC tick's classification, so a
     /// tick only tells the engine and the bootstrap what *changed*.
     opaque_roots: OpaqueRootState,
+}
+
+/// Realm-owned state shared with native frame creation. Hosts point back weakly.
+#[derive(Default)]
+pub(crate) struct AgentState {
+    pub(crate) frames: crate::frames::FrameState,
+    pub(crate) child_host_initializer: Option<Rc<dyn Fn(RealmId, &SharedHost)>>,
+    /// Engine value retained outside script reach; queued cross-origin callbacks
+    /// must not expose their realm's Function constructor through a global.
+    pub(crate) timer_state: Option<Rc<dyn std::any::Any>>,
+    pub(crate) hosts: std::collections::BTreeMap<RealmId, SharedHost>,
+    pub(crate) fetch_realms: std::collections::HashMap<u64, RealmId>,
+    pending_trace: Vec<PendingTraceEvent>,
+    pub(crate) opaque_roots: std::collections::BTreeMap<RealmId, OpaqueRootState>,
+}
+
+impl AgentState {
+    pub(crate) fn register(&mut self, realm: RealmId, host: SharedHost) {
+        self.hosts.insert(realm, host);
+        self.opaque_roots.entry(realm).or_default();
+    }
 }
 
 /// The reflector-identity policy's per-tick bookkeeping.
@@ -305,7 +382,7 @@ pub struct Runtime<E: ScriptEngine> {
 /// answer permanently yes - so it is delegated to the collector through the
 /// bootstrap's ephemeron groups (`__gcPolicy`).
 #[derive(Default)]
-struct OpaqueRootState {
+pub(crate) struct OpaqueRootState {
     /// Reflectors currently held by a strong engine root (connected last tick).
     rooted: std::collections::HashSet<ReflectorData>,
     /// Detached reflectors and the tree root they were grouped under last tick.
@@ -375,16 +452,147 @@ impl<E: ScriptEngine> Runtime<E> {
         // already assumes, so a host that never calls `set_viewport_size` still
         // has `innerWidth`/`innerHeight` agree with `matchMedia`.
         host.borrow_mut().viewport_size = (800.0, 600.0);
+        let agent = Rc::new(RefCell::new(AgentState::default()));
+        host.borrow_mut().agent = Rc::downgrade(&agent);
+        agent.borrow_mut().register(MAIN_REALM, host.clone());
         engine.set_host_data(host.clone());
-        install_host_surface(&mut engine, scope)?;
+        install_host_surface(
+            &mut Surface::Engine {
+                engine: &mut engine,
+                realm: MAIN_REALM,
+            },
+            scope,
+        )
+        .map_err(SurfaceError::main)?;
+        let timer_state = engine.eval("globalThis.__agentTimers")?;
+        engine.eval("delete globalThis.__agentTimers")?;
+        agent.borrow_mut().timer_state = Some(Rc::new(timer_state));
         host.borrow_mut().worker_spawn = Some(worker::worker_main::<E> as fn(_));
         Ok(Self {
             engine,
             host,
+            agent,
             scheduler_trace: Vec::new(),
             next_trace_seq: 0,
             opaque_roots: OpaqueRootState::default(),
         })
+    }
+
+    /// Install a window realm over the supplied document state in this agent.
+    pub fn create_child_realm(&mut self, mut host: HostState) -> Result<RealmId, RealmError> {
+        let realm = self.engine.create_realm()?;
+        host.worker_spawn = Some(worker::worker_main::<E> as fn(_));
+        {
+            let parent = self.host.borrow();
+            if host.fetch.is_none() {
+                host.fetch = parent.fetch.clone();
+            }
+            if host.websocket.is_none() {
+                host.websocket = parent.websocket.clone();
+            }
+            if host.script_loader.is_none() {
+                host.script_loader = parent.script_loader.clone();
+            }
+            if host.worker_wake.is_none() {
+                host.worker_wake = parent.worker_wake.clone();
+            }
+            if host.worker_resource_wake.is_none() {
+                host.worker_resource_wake = parent.worker_resource_wake.clone();
+            }
+        }
+        host.agent = Rc::downgrade(&self.agent);
+        let shared = Rc::new(RefCell::new(host));
+        let result = (|| {
+            self.engine.set_host_data_in_realm(realm, shared.clone())?;
+            let timer_value = self
+                .agent
+                .borrow()
+                .timer_state
+                .clone()
+                .ok_or(RealmError::Refused("agent timer state is unavailable"))?;
+            let timers = timer_value
+                .downcast_ref::<E::Value>()
+                .ok_or(RealmError::Refused(
+                    "agent timer state belongs to another engine",
+                ))?;
+            self.engine
+                .set_global_in_realm(realm, "__agentTimers", timers)?;
+            let realm_value = self
+                .engine
+                .eval(&realm.to_string())
+                .map_err(|e| RealmError::Engine(self.engine.describe_error(&e)))?;
+            self.engine
+                .set_global_in_realm(realm, "__realmId", &realm_value)?;
+            install_host_surface(
+                &mut Surface::Engine {
+                    engine: &mut self.engine,
+                    realm,
+                },
+                GlobalScopeKind::Window,
+            )
+            .map_err(|e| match e {
+                SurfaceError::Realm(e) => e,
+                SurfaceError::Engine(e) => RealmError::Engine(self.engine.describe_error(&e)),
+            })?;
+            self.engine.eval_in_realm(
+                realm,
+                "delete globalThis.__agentTimers; delete globalThis.__realmId",
+            )?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            let _ = self.engine.discard_realm(realm);
+            return Err(error);
+        }
+        self.agent.borrow_mut().register(realm, shared);
+        Ok(realm)
+    }
+
+    fn child_hosts(&self) -> std::collections::BTreeMap<RealmId, SharedHost> {
+        self.agent
+            .borrow()
+            .hosts
+            .iter()
+            .filter(|(id, _)| **id != MAIN_REALM)
+            .map(|(&id, host)| (id, host.clone()))
+            .collect()
+    }
+
+    pub fn host_in_realm(&self, realm: RealmId) -> Result<SharedHost, RealmError> {
+        if realm == MAIN_REALM {
+            return Ok(self.host.clone());
+        }
+        self.agent
+            .borrow()
+            .hosts
+            .get(&realm)
+            .cloned()
+            .ok_or(RealmError::NoSuchRealm(realm))
+    }
+
+    pub fn eval_in_realm(&mut self, realm: RealmId, source: &str) -> Result<E::Value, RealmError> {
+        self.host_in_realm(realm)?;
+        let result = self.engine.eval_in_realm(realm, source);
+        self.flush_host_trace_events();
+        result
+    }
+
+    pub fn load_dom_in_realm<D: LayoutDom>(
+        &mut self,
+        realm: RealmId,
+        src: &D,
+    ) -> Result<(), RealmError> {
+        let host = self.host_in_realm(realm)?;
+        {
+            let mut host = host.borrow_mut();
+            let root = host.dom.document();
+            dom::clone_into(src, src.document(), &mut host.dom, root);
+        }
+        self.eval_in_realm(
+            realm,
+            "globalThis.__rebindDocument(); globalThis.__refreshNamedProperties()",
+        )?;
+        Ok(())
     }
 
     /// Evaluate `source` in the runtime's global scope.
@@ -460,6 +668,11 @@ impl<E: ScriptEngine> Runtime<E> {
         // microtask of *this* checkpoint. Costs nothing until something observes.
         if self.host.borrow().dom.is_observing() {
             let _ = self.engine.eval("__moPump()");
+        }
+        for (&realm, host) in &self.child_hosts() {
+            if host.borrow().dom.is_observing() {
+                let _ = self.engine.eval_in_realm(realm, "__moPump()");
+            }
         }
         self.engine.pump_microtasks();
         self.flush_host_trace_events();
@@ -651,14 +864,38 @@ impl<E: ScriptEngine> Runtime<E> {
     /// steady-state cost over a document with thousands of touched nodes is one
     /// `minted_reflectors` walk plus one hash lookup per reflector.
     pub(crate) fn apply_opaque_root_policy(&mut self) {
-        let minted = self.engine.minted_reflectors();
+        self.apply_opaque_root_policy_in_realm(MAIN_REALM);
+        for realm in self.child_hosts().keys().copied().collect::<Vec<_>>() {
+            self.apply_opaque_root_policy_in_realm(realm);
+        }
+    }
+
+    fn apply_opaque_root_policy_in_realm(&mut self, realm: RealmId) {
+        let host_handle = self.host_in_realm(realm).expect("registered realm");
+        let minted = if realm == MAIN_REALM {
+            self.engine.minted_reflectors()
+        } else {
+            self.engine
+                .minted_reflectors_in_realm(realm)
+                .expect("live child realm reflector inventory")
+        };
+        let mut owned_roots = if realm == MAIN_REALM {
+            std::mem::take(&mut self.opaque_roots)
+        } else {
+            self.agent
+                .borrow_mut()
+                .opaque_roots
+                .remove(&realm)
+                .unwrap_or_default()
+        };
+        let opaque_roots = &mut owned_roots;
 
         // Classify. `None` = the node is gone from the arena; such a reflector is
         // left alone (it is about to be reported dead and unpinned).
         let mut connected: Vec<ReflectorData> = Vec::new();
         let mut detached: Vec<(ReflectorData, ReflectorData)> = Vec::new();
         {
-            let mut host = self.host.borrow_mut();
+            let mut host = host_handle.borrow_mut();
             let doc = LayoutDom::document(&host.dom);
             for &d in &minted {
                 let id = NodeId::from_raw(d as usize);
@@ -676,24 +913,36 @@ impl<E: ScriptEngine> Runtime<E> {
         let to_root: Vec<ReflectorData> = connected
             .iter()
             .copied()
-            .filter(|d| !self.opaque_roots.rooted.contains(d))
+            .filter(|d| !opaque_roots.rooted.contains(d))
             .collect();
         // Everything not connected is unrooted, not only what *this* pass rooted:
         // `dom::reflect_pinned` also roots on the mint, so a node created and
         // removed between two ticks carries a root this pass has no record of.
         let mut to_unroot: Vec<ReflectorData> = detached.iter().map(|&(d, _)| d).collect();
         to_unroot.extend(
-            self.opaque_roots
+            opaque_roots
                 .rooted
                 .iter()
                 .copied()
                 .filter(|d| !now_rooted.contains(d)),
         );
         if !to_root.is_empty() {
-            self.engine.root_reflectors(&to_root);
+            if realm == MAIN_REALM {
+                self.engine.root_reflectors(&to_root);
+            } else {
+                self.engine
+                    .root_reflectors_in_realm(realm, &to_root)
+                    .expect("live realm roots");
+            }
         }
         if !to_unroot.is_empty() {
-            self.engine.unroot_reflectors(&to_unroot);
+            if realm == MAIN_REALM {
+                self.engine.unroot_reflectors(&to_unroot);
+            } else {
+                self.engine
+                    .unroot_reflectors_in_realm(realm, &to_unroot)
+                    .expect("live realm roots");
+            }
         }
 
         // Bootstrap groups: a detached tree is re-linked only when its membership
@@ -705,16 +954,16 @@ impl<E: ScriptEngine> Runtime<E> {
         let mut dirty_roots: std::collections::HashSet<ReflectorData> =
             std::collections::HashSet::new();
         for &(d, root) in &detached {
-            if self.opaque_roots.grouped.get(&d) != Some(&root) {
+            if opaque_roots.grouped.get(&d) != Some(&root) {
                 dirty_roots.insert(root);
-                if let Some(&old) = self.opaque_roots.grouped.get(&d) {
+                if let Some(&old) = opaque_roots.grouped.get(&d) {
                     dirty_roots.insert(old);
                 }
             }
             now_grouped.insert(d, root);
         }
         let mut clear: Vec<ReflectorData> = Vec::new();
-        for (&d, &root) in &self.opaque_roots.grouped {
+        for (&d, &root) in &opaque_roots.grouped {
             if !now_grouped.contains_key(&d) {
                 dirty_roots.insert(root);
                 if now_rooted.contains(&d) {
@@ -722,8 +971,16 @@ impl<E: ScriptEngine> Runtime<E> {
                 }
             }
         }
-        self.opaque_roots.rooted = now_rooted;
-        self.opaque_roots.grouped = now_grouped;
+        opaque_roots.rooted = now_rooted;
+        opaque_roots.grouped = now_grouped;
+        if realm == MAIN_REALM {
+            self.opaque_roots = owned_roots;
+        } else {
+            self.agent
+                .borrow_mut()
+                .opaque_roots
+                .insert(realm, owned_roots);
+        }
 
         if dirty_roots.is_empty() && clear.is_empty() {
             return;
@@ -761,13 +1018,24 @@ impl<E: ScriptEngine> Runtime<E> {
             CLEAR = js_str(&clear_arg),
             SPEC = js_str(&spec)
         );
-        let _ = self.engine.eval(&expr);
+        if realm == MAIN_REALM {
+            let _ = self.engine.eval(&expr);
+        } else {
+            let _ = self.engine.eval_in_realm(realm, &expr);
+        }
     }
 
     /// How many reflectors the opaque-root policy currently holds an engine root
     /// on - the count of touched, connected nodes. The soak's bound.
     pub fn rooted_reflector_count(&mut self) -> usize {
-        self.engine.rooted_reflector_count()
+        let mut count = self.engine.rooted_reflector_count();
+        for &realm in self.child_hosts().keys() {
+            count += self
+                .engine
+                .rooted_reflector_count_in_realm(realm)
+                .expect("live realm roots");
+        }
+        count
     }
 
     /// The scripted-tier GC tick (G3): retire the reflectors the engine reports
@@ -797,7 +1065,21 @@ impl<E: ScriptEngine> Runtime<E> {
             .retire_dead(dead.into_iter().map(|d| NodeId::from_raw(d as usize)));
         let HostState { dom, pins, .. } = &mut *host;
         let collected = dom.collect(pins.iter());
-        (unpinned, collected)
+        drop(host);
+        let mut totals = (unpinned, collected);
+        for (&realm, host) in &self.child_hosts() {
+            let dead = self
+                .engine
+                .drain_dead_reflectors_in_realm(realm)
+                .expect("live realm dead reflectors");
+            let mut host = host.borrow_mut();
+            totals.0 += host
+                .pins
+                .retire_dead(dead.into_iter().map(|d| NodeId::from_raw(d as usize)));
+            let HostState { dom, pins, .. } = &mut *host;
+            totals.1 += dom.collect(pins.iter());
+        }
+        totals
     }
 
     /// Drive the event loop: fire pending timers in `(delay, insertion-order)`
@@ -1014,6 +1296,9 @@ impl<E: ScriptEngine> Runtime<E> {
     }
 
     fn run_one_timer_task(&mut self, now_ms: Option<f64>) -> Result<usize, E::Error> {
+        if now_ms.is_none() && self.pending_fetches() > 0 {
+            return Ok(0);
+        }
         let expr = match now_ms {
             Some(now_ms) => format!("String(globalThis.__runTimers(1,{now_ms}))"),
             None => "String(globalThis.__runTimers(1))".to_string(),
@@ -1160,18 +1445,40 @@ impl<E: ScriptEngine> Runtime<E> {
     /// resource requests they made, and dispatch the queued events as tasks.
     /// Returns how much work happened, which the host's drive loop counts.
     pub fn pump_workers(&mut self) -> usize {
-        worker::pump(self)
+        let mut work = worker::pump(self);
+        for realm in self.child_hosts().keys().copied().collect::<Vec<_>>() {
+            work += worker::pump_in_realm(self, realm);
+        }
+        work
     }
 
     /// Whether a worker could still produce work. The drive loop must not treat
     /// the agent as quiescent while this is true: a worker that has not reported
     /// idle can still post a message, and the page cannot see it until it pumps.
     pub fn has_worker_work(&self) -> bool {
-        worker::has_work(&self.host)
+        worker::has_work(&self.host) || self.child_hosts().values().any(worker::has_work)
     }
 
     pub fn set_webgl_factory(&mut self, factory: WebGlFactory) {
         self.host.borrow_mut().webgl_factory = Some(factory);
+    }
+
+    fn eval_fetch_completion(&mut self, id: u64, source: &str, terminal: bool) {
+        let realm = self
+            .agent
+            .borrow()
+            .fetch_realms
+            .get(&id)
+            .copied()
+            .unwrap_or(MAIN_REALM);
+        if realm == MAIN_REALM {
+            let _ = self.engine.eval(source);
+        } else {
+            let _ = self.engine.eval_in_realm(realm, source);
+        }
+        if terminal {
+            self.agent.borrow_mut().fetch_realms.remove(&id);
+        }
     }
 
     /// Resolve the pending `fetch()` Promise `id` with `outcome` (a deferred host
@@ -1182,7 +1489,7 @@ impl<E: ScriptEngine> Runtime<E> {
         let json = fetch::encode_outcome(&outcome);
         let js = format!("globalThis.__fetchSettle({},{});", id, js_str(&json));
         // Fetch task source: perform the host completion task, then checkpoint.
-        let _ = self.engine.eval(&js);
+        self.eval_fetch_completion(id, &js, true);
         self.perform_microtask_checkpoint();
     }
 
@@ -1191,7 +1498,7 @@ impl<E: ScriptEngine> Runtime<E> {
     pub fn fail_fetch(&mut self, id: u64, message: &str) {
         let js = format!("globalThis.__fetchFail({},{});", id, js_str(message));
         // Fetch task source: perform the host completion task, then checkpoint.
-        let _ = self.engine.eval(&js);
+        self.eval_fetch_completion(id, &js, true);
         self.perform_microtask_checkpoint();
     }
 
@@ -1204,7 +1511,7 @@ impl<E: ScriptEngine> Runtime<E> {
         let json = fetch::encode_outcome(&meta);
         let js = format!("globalThis.__fetchStartStream({},{});", id, js_str(&json));
         // Fetch task source: resolve the response task before body chunks arrive.
-        let _ = self.engine.eval(&js);
+        self.eval_fetch_completion(id, &js, false);
         self.perform_microtask_checkpoint();
     }
 
@@ -1222,9 +1529,11 @@ impl<E: ScriptEngine> Runtime<E> {
         }
         lit.push(']');
         // Fetch task source: deliver one body-chunk task, then checkpoint.
-        let _ = self
-            .engine
-            .eval(&format!("globalThis.__fetchPushChunk({},{});", id, lit));
+        self.eval_fetch_completion(
+            id,
+            &format!("globalThis.__fetchPushChunk({},{});", id, lit),
+            false,
+        );
         self.perform_microtask_checkpoint();
     }
 
@@ -1232,9 +1541,7 @@ impl<E: ScriptEngine> Runtime<E> {
     /// the body's `ReadableStream` ends and pending reads resolve `done`.
     pub fn close_stream(&mut self, id: u64) {
         // Fetch task source: deliver the end-of-body task, then checkpoint.
-        let _ = self
-            .engine
-            .eval(&format!("globalThis.__fetchClose({});", id));
+        self.eval_fetch_completion(id, &format!("globalThis.__fetchClose({});", id), true);
         self.perform_microtask_checkpoint();
     }
 
@@ -1244,9 +1551,7 @@ impl<E: ScriptEngine> Runtime<E> {
     /// e.g. a `Content-Encoding` decode error), so only body consumption rejects.
     pub fn error_stream(&mut self, id: u64) {
         // Fetch task source: deliver the body-error task, then checkpoint.
-        let _ = self
-            .engine
-            .eval(&format!("globalThis.__fetchError({});", id));
+        self.eval_fetch_completion(id, &format!("globalThis.__fetchError({});", id), true);
         self.perform_microtask_checkpoint();
     }
 
@@ -1260,27 +1565,78 @@ impl<E: ScriptEngine> Runtime<E> {
              if(!e.settled){{e.settled=true;e.reject(new TypeError({m}));}}}}}}}})();",
             m = js_str(message)
         );
+        self.agent.borrow_mut().fetch_realms.clear();
         // Fetch task source: reject outstanding fetches at the host deadline, then checkpoint.
         let _ = self.engine.eval(&js);
+        for &realm in self.child_hosts().keys() {
+            let _ = self.engine.eval_in_realm(realm, &js);
+        }
         self.perform_microtask_checkpoint();
     }
 
     /// How many `fetch()` Promises are still pending. The host drive loop reads this
     /// to know when script has quiesced (no in-flight fetches left to settle).
     pub fn pending_fetches(&mut self) -> usize {
-        // Count only fetches still doing work: a Promise not yet settled, or a
-        // streaming body actively awaiting a demanded chunk. A settled response
-        // whose body the script abandoned (never read) does not count, so the
-        // event loop can quiesce instead of waiting on a chunk no one wants.
-        self.engine
-            .eval(
-                "String((function(){var p=globalThis.__pending,n=0;\
-                 for(var k in p){var e=p[k];if(e&&(!e.settled||e.awaiting))n++;}return n;})())",
-            )
-            .ok()
-            .and_then(|v| self.engine.value_to_string(&v).ok())
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0)
+        let mut total = self.pending_fetches_in_realm(MAIN_REALM).unwrap_or(0);
+        for realm in self.child_hosts().keys().copied().collect::<Vec<_>>() {
+            total += self.pending_fetches_in_realm(realm).unwrap_or(0);
+        }
+        total
+    }
+
+    pub fn pending_fetches_in_realm(&mut self, realm: RealmId) -> Result<usize, RealmError> {
+        let js = "String((function(){var p=globalThis.__pending,n=0;for(var k in p){var e=p[k];if(e&&(!e.settled||e.awaiting))n++;}return n;})())";
+        let value = if realm == MAIN_REALM {
+            self.engine
+                .eval(js)
+                .map_err(|e| RealmError::Engine(self.engine.describe_error(&e)))?
+        } else {
+            self.eval_in_realm(realm, js)?
+        };
+        Ok(self
+            .engine
+            .value_to_string(&value)
+            .map_err(|e| RealmError::Engine(self.engine.describe_error(&e)))?
+            .parse()
+            .unwrap_or(0))
+    }
+
+    /// Complete a deferred resource in its requesting realm, then checkpoint the agent.
+    pub fn settle_fetch_in_realm(
+        &mut self,
+        realm: RealmId,
+        id: u64,
+        outcome: FetchOutcome,
+    ) -> Result<(), RealmError> {
+        if self.agent.borrow().fetch_realms.get(&id).is_some_and(|owner| *owner != realm) {
+            return Err(RealmError::Refused("fetch belongs to another realm"));
+        }
+        let json = fetch::encode_outcome(&outcome);
+        self.eval_in_realm(
+            realm,
+            &format!("globalThis.__fetchSettle({id},{});", js_str(&json)),
+        )?;
+        self.agent.borrow_mut().fetch_realms.remove(&id);
+        self.perform_microtask_checkpoint();
+        Ok(())
+    }
+
+    pub fn fail_fetch_in_realm(
+        &mut self,
+        realm: RealmId,
+        id: u64,
+        message: &str,
+    ) -> Result<(), RealmError> {
+        if self.agent.borrow().fetch_realms.get(&id).is_some_and(|owner| *owner != realm) {
+            return Err(RealmError::Refused("fetch belongs to another realm"));
+        }
+        self.eval_in_realm(
+            realm,
+            &format!("globalThis.__fetchFail({id},{});", js_str(message)),
+        )?;
+        self.agent.borrow_mut().fetch_realms.remove(&id);
+        self.perform_microtask_checkpoint();
+        Ok(())
     }
 
     /// Set the document base URL: relative `fetch()` / `Request` URLs resolve
@@ -1347,10 +1703,11 @@ impl<E: ScriptEngine> Runtime<E> {
     }
 
     fn flush_host_trace_events(&mut self) {
-        let pending = {
-            let mut host = self.host.borrow_mut();
-            std::mem::take(&mut host.pending_trace)
-        };
+        let mut pending = std::mem::take(&mut self.agent.borrow_mut().pending_trace);
+        pending.extend(std::mem::take(&mut self.host.borrow_mut().pending_trace));
+        for host in self.child_hosts().values() {
+            pending.extend(std::mem::take(&mut host.borrow_mut().pending_trace));
+        }
         for event in pending {
             self.trace_scheduler(&event.boundary, &event.phase, event.detail);
         }
@@ -1361,6 +1718,9 @@ impl<E: ScriptEngine> Drop for Runtime<E> {
     /// No worker thread outlives the agent that owns it.
     fn drop(&mut self) {
         worker::shutdown(&self.host);
+        for host in self.child_hosts().values() {
+            worker::shutdown(host);
+        }
     }
 }
 
@@ -1372,8 +1732,25 @@ impl<E: ScriptEngineSnapshot> Runtime<E> {
     /// is fresh, because it is owned outside the VM heap and must not leak between
     /// tests/documents.
     pub fn snapshot_clone(&mut self) -> Result<Self, E::Error> {
-        let mut engine = self.engine.snapshot_clone()?;
+        if let Some(timer_state) = self
+            .agent
+            .borrow()
+            .timer_state
+            .as_ref()
+            .and_then(|value| value.downcast_ref::<E::Value>())
+        {
+            self.engine.set_global("__agentTimers", timer_state)?;
+        }
+        let snapshot = self.engine.snapshot_clone();
+        let _ = self.engine.eval("delete globalThis.__agentTimers");
+        let mut engine = snapshot?;
+        let timer_state = engine.eval("globalThis.__agentTimers")?;
+        engine.eval("delete globalThis.__agentTimers")?;
         let host: SharedHost = Rc::new(RefCell::new(HostState::default()));
+        let agent = Rc::new(RefCell::new(AgentState::default()));
+        host.borrow_mut().agent = Rc::downgrade(&agent);
+        agent.borrow_mut().register(MAIN_REALM, host.clone());
+        agent.borrow_mut().timer_state = Some(Rc::new(timer_state));
         engine.set_host_data(host.clone());
         // The cloned heap's `document` wrapper still holds the donor host's
         // root reflector; point it at this fresh host before any script runs.
@@ -1381,6 +1758,7 @@ impl<E: ScriptEngineSnapshot> Runtime<E> {
         Ok(Self {
             engine,
             host,
+            agent,
             scheduler_trace: Vec::new(),
             next_trace_seq: 0,
             opaque_roots: OpaqueRootState::default(),
@@ -1430,10 +1808,10 @@ const SELF_WORKER_BOOTSTRAP: &str = r#"
 "#;
 
 /// Install the global host objects from VM primitives.
-fn install_host_surface<E: ScriptEngine>(
-    engine: &mut E,
+pub(crate) fn install_host_surface<E: ScriptEngine>(
+    engine: &mut crate::Surface<'_, '_, E>,
     scope: GlobalScopeKind,
-) -> Result<(), E::Error> {
+) -> Result<(), crate::SurfaceError<E::Error>> {
     // `self` and `window` alias the global; `globalThis` is provided by the engine
     // (ES2020), so both backends bootstrap them the same way. Their *shapes* are
     // the standard's, not aliases: see `SELF_WINDOW_BOOTSTRAP`. The DOM bootstrap
@@ -1519,6 +1897,10 @@ fn install_host_surface<E: ScriptEngine>(
     // `localStorage` / `history` as they land. After `dom` so `document` exists.
     platform::install_platform_surface(engine)?;
 
+    if scope == GlobalScopeKind::Window {
+        frames::install_frame_surface(engine)?;
+    }
+
     // The `__reportResult` sink for the testharness results bridge. The completion
     // callback that calls it is registered later (after testharness loads).
     harness::install_report_sink(engine)?;
@@ -1529,22 +1911,32 @@ fn install_host_surface<E: ScriptEngine>(
 /// queue, drained by `__runTimers(budget)` in `(delay, insertion)` order.
 const EVENT_LOOP_BOOTSTRAP: &str = r#"
 (function() {
+  'use strict';
+  var apply = Reflect.apply;
+  var push = Array.prototype.push;
+  var splice = Array.prototype.splice;
+  var ownerGlobal = globalThis;
   // HTML timers task source: pending timer tasks wait here until the Rust host
   // asks `__runTimers` to perform one task boundary.
-  var timers = [];
-  var nextId = 1;
-  var vnow = 0; // virtual clock (ms); advanced by __runTimers in real-time mode
+  var state = globalThis.__agentTimers;
+  if (!state) {
+    var queue = Object.create(null);
+    queue.length = 0;
+    state = globalThis.__agentTimers = { timers: queue, nextId: 1, now: 0 };
+  }
+  var timers = state.timers;
+  var realm = globalThis.__realmId || 0;
   function schedule(cb, delay, repeat) {
     var d = +delay || 0; if (d < 0) d = 0;
-    var id = nextId++;
-    timers.push({ id: id, cb: cb, delay: d, at: vnow + d, seq: timers.length, repeat: !!repeat });
+    var id = state.nextId++;
+    apply(push, timers, [{ id: id, cb: cb, global: ownerGlobal, delay: d, at: state.now + d, seq: id, realm: realm, repeat: !!repeat }]);
     return id;
   }
   globalThis.setTimeout = function(cb, delay) { return schedule(cb, delay, false); };
   globalThis.setInterval = function(cb, delay) { return schedule(cb, delay, true); };
   globalThis.clearTimeout = function(id) {
     for (var i = 0; i < timers.length; i++) {
-      if (timers[i].id === id) { timers.splice(i, 1); return; }
+      if (timers[i].id === id && timers[i].realm === realm) { apply(splice, timers, [i, 1]); return; }
     }
   };
   globalThis.clearInterval = globalThis.clearTimeout;
@@ -1615,12 +2007,12 @@ const EVENT_LOOP_BOOTSTRAP: &str = r#"
   // delay while the far-future testharness timeout stays pending.
   globalThis.__runTimers = function(budget, nowMs) {
     var realtime = (nowMs !== undefined);
-    if (realtime && nowMs > vnow) vnow = nowMs;
+    if (realtime && nowMs > state.now) state.now = nowMs;
     var fired = 0;
     while (fired < budget) {
       // Cooperative mode fires by delay order, ignoring real time, so an
       // in-flight fetch must hold the queue or the far-future harness timeout
-      // runs first. Real-time mode has the `at > vnow` gate for that, and a due
+      // runs first. Real-time mode has the `at > state.now` gate for that, and a due
       // timer must still fire while a fetch is outstanding — an XHR `timeout`
       // and `AbortSignal.timeout` exist precisely to interrupt one.
       var pending = globalThis.__pending;
@@ -1628,18 +2020,19 @@ const EVENT_LOOP_BOOTSTRAP: &str = r#"
       var idx = -1, bestKey = 0, bestSeq = 0;
       for (var i = 0; i < timers.length; i++) {
         var t = timers[i];
-        if (realtime && t.at > vnow) continue; // not due yet
+        if (realtime && t.at > state.now) continue; // not due yet
         var key = realtime ? t.at : t.delay;
         if (idx < 0 || key < bestKey || (key === bestKey && t.seq < bestSeq)) { idx = i; bestKey = key; bestSeq = t.seq; }
       }
       if (idx < 0) break; // nothing eligible
-      var due = timers.splice(idx, 1)[0];
+      var due = apply(splice, timers, [idx, 1])[0];
       // Advance the virtual clock to the fired task's due time in both modes, so
       // performance.now() reports elapsed time in cooperative (disk) runs too.
-      if (due.at > vnow) vnow = due.at;
+      if (due.at > state.now) state.now = due.at;
       fired++;
-      if (due.repeat) { due.at = vnow + due.delay; due.seq = nextId++; timers.push(due); }
-      due.cb();
+      if (due.repeat) { due.at = state.now + due.delay; due.seq = state.nextId++; apply(push, timers, [due]); }
+      if (typeof globalThis.__traceProtocol === 'function') globalThis.__traceProtocol('timer_realm', 'performed', 'realm=' + due.realm + ';sequence=' + due.seq);
+      apply(due.cb, due.global, []);
       // If a timer callback issued a deferred fetch (left a pending entry), stop so
       // the host drive loop can settle it before later timers (e.g. the harness
       // timeout) fire. No-op when nothing is pending (the disk path).
@@ -1650,7 +2043,7 @@ const EVENT_LOOP_BOOTSTRAP: &str = r#"
   };
   // The timers' monotonic clock, in ms since the runtime started. `performance`
   // reads this so a virtual-clock harness run stays deterministic.
-  globalThis.__virtualNow = function() { return vnow; };
+  globalThis.__virtualNow = function() { return state.now; };
   // queueMicrotask: the HTML entry point onto the VM's own microtask queue, so it
   // interleaves with promise reactions and drains at the existing checkpoint.
   globalThis.queueMicrotask = function(callback) {
@@ -1667,7 +2060,7 @@ const EVENT_LOOP_BOOTSTRAP: &str = r#"
   globalThis.__nextTimerDelay = function() {
     var best = -1;
     for (var i = 0; i < timers.length; i++) {
-      var d = timers[i].at - vnow; if (d < 0) d = 0;
+      var d = timers[i].at - state.now; if (d < 0) d = 0;
       if (best < 0 || d < best) best = d;
     }
     return best;
@@ -2033,7 +2426,7 @@ impl<E: ScriptEngine> NativeFn<E> for TraceProtocol {
         let detail = trace_arg::<E>(cx, 2)?;
         if let Some(data) = cx.host_data() {
             if let Some(host) = data.downcast_ref::<RefCell<HostState>>() {
-                host.borrow_mut().pending_trace.push(PendingTraceEvent {
+                let event = PendingTraceEvent {
                     boundary,
                     phase,
                     detail: if detail == "undefined" {
@@ -2041,7 +2434,13 @@ impl<E: ScriptEngine> NativeFn<E> for TraceProtocol {
                     } else {
                         Some(detail)
                     },
-                });
+                };
+                let agent = host.borrow().agent.upgrade();
+                if let Some(agent) = agent {
+                    agent.borrow_mut().pending_trace.push(event);
+                } else {
+                    host.borrow_mut().pending_trace.push(event);
+                }
             }
         }
         Ok(cx.undefined())
@@ -2289,60 +2688,80 @@ const SHELL_GLOBALS_BOOTSTRAP: &str = r#"
     get: function() { return windowControlsOverlay; }
   });
 
-  // AnimationFrameProvider (window). The window's associated document is this
-  // runtime's one document, so window-global state realizes the document's
-  // "map of animation frame callbacks" and identifier counter. The host drives
-  // passes via Runtime::run_animation_frame_callbacks (its tick owns the clock).
-  // https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#animation-frames
-  var rafCallbacks = {};   // "map of animation frame callbacks" (handle -> callback)
-  var rafId = 0;           // "animation frame callback identifier"
-  var rafPass = null;      // key snapshot of an in-progress "run the animation frame callbacks"
+  // Each document owns its callback map and handle counter; the agent owns
+  // the rendering pass. All shared records have null prototypes, and no
+  // authored Array/Object/Function prototype method sees foreign callbacks.
+  var rafCreate = Object.create;
+  var rafApply = Reflect.apply;
+  var rafTrace = globalThis.__traceProtocol;
+  var rafState = globalThis.__agentTimers;
+  if (!rafState.animationContexts) {
+    rafState.animationContexts = rafCreate(null);
+    rafState.animationContexts.length = 0;
+  }
+  var rafContext = rafCreate(null);
+  rafContext.callbacks = rafCreate(null);
+  rafContext.id = 0;
+  rafContext.realm = globalThis.__realmId || 0;
+  rafContext.global = globalThis;
+  rafState.animationContexts[rafState.animationContexts.length++] = rafContext;
+  if (rafState.animationPass === undefined) rafState.animationPass = null;
   globalThis.requestAnimationFrame = function(callback) {
     if (typeof callback !== 'function') {
       throw new TypeError('requestAnimationFrame: callback is not callable');
     }
-    // Step 3: "Increment target's animation frame callback identifier by one, and let handle be the result."
-    rafId += 1;
-    // Step 5: "Set callbacks[handle] to callback."
-    rafCallbacks[rafId] = callback;
-    // Step 6: "Return handle."
-    return rafId;
+    var handle = ++rafContext.id;
+    rafContext.callbacks[handle] = callback;
+    return handle;
   };
   globalThis.cancelAnimationFrame = function(handle) {
-    // Step 3: "Remove callbacks[handle]."
-    delete rafCallbacks[handle];
+    delete rafContext.callbacks[handle];
   };
-  // "Run the animation frame callbacks", one callback per host call, so the Rust
-  // drive loop can run a microtask checkpoint between callbacks (the JS stack is
-  // empty there, matching the checkpoint browsers exhibit between rAF callbacks;
-  // same granularity as the per-timer-task checkpoint). Returns 1 if a callback
-  // ran, 0 when the pass is exhausted (which also ends the pass).
+  // Run one callback per engine boundary, so the Rust driver checkpoints
+  // microtasks between callbacks, including callbacks in different realms.
   globalThis.__runOneAnimationFrameCallback = function(now) {
-    if (rafPass === null) {
-      // Step 2: "Let callbackHandles be the result of getting the keys of callbacks."
-      rafPass = Object.keys(rafCallbacks);
+    if (rafState.animationPass === null) {
+      var pass = rafCreate(null);
+      pass.length = rafState.animationContexts.length;
+      pass.index = 0;
+      for (var i = 0; i < pass.length; i++) {
+        var next = rafCreate(null);
+        next.context = rafState.animationContexts[i];
+        next.handles = null;
+        pass[i] = next;
+      }
+      rafState.animationPass = pass;
     }
-    while (rafPass.length > 0) {
-      var handle = rafPass.shift();
-      // Step 3: "For each handle in callbackHandles, if handle exists in callbacks:"
-      if (!(handle in rafCallbacks)) { continue; }
-      var callback = rafCallbacks[handle];
-      // Step 3: "Remove callbacks[handle]." Before invoking, so a
-      // requestAnimationFrame from inside the callback lands in the next pass.
-      delete rafCallbacks[handle];
-      // Step 3: "Invoke callback with « now » and "report"."
-      // Note: an exception propagates to the host (matching the timer path in
-      // __runTimers) instead of the spec's report-and-continue.
-      callback(now);
-      return 1;
+    var pass = rafState.animationPass;
+    while (pass.index < pass.length) {
+      var entry = pass[pass.index];
+      var context = entry.context;
+      // Snapshot each document when its rendering step begins. A callback
+      // registered from its own callback waits for the following frame.
+      if (entry.handles === null) {
+        entry.handles = rafCreate(null);
+        entry.handles.length = 0;
+        entry.handles.index = 0;
+        for (var key in context.callbacks) entry.handles[entry.handles.length++] = key;
+      }
+      while (entry.handles.index < entry.handles.length) {
+        var handle = entry.handles[entry.handles.index++];
+        if (!(handle in context.callbacks)) continue;
+        var callback = context.callbacks[handle];
+        delete context.callbacks[handle];
+        rafTrace('animation_frame_realm', 'performed', 'realm=' + context.realm + ';handle=' + handle);
+        rafApply(callback, context.global, [now]);
+        return 1;
+      }
+      pass.index++;
     }
-    rafPass = null;
+    rafState.animationPass = null;
     return 0;
   };
-  // Whether any frame callbacks are registered; the host keeps requesting
-  // frames only while script is animating.
   globalThis.__hasAnimationFrameCallbacks = function() {
-    for (var k in rafCallbacks) { return true; }
+    for (var i = 0; i < rafState.animationContexts.length; i++) {
+      for (var handle in rafState.animationContexts[i].callbacks) return true;
+    }
     return false;
   };
 

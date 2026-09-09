@@ -20,11 +20,11 @@ mod native {
     use nova_vm::{
         ecmascript::{
             AbstractModule, Agent, AgentOptions, ArgumentsList, Behaviour, BuiltinFunctionArgs,
-            EmbedderObject, ExceptionType, GcAgent, GraphLoadingStateRecord, HostDefined,
-            HostHooks, InternalMethods, Job, ModuleRequest, PromiseCapability, PropertyDescriptor,
-            PropertyKey, RealmRoot, Referrer, SourceTextModule, String as JsString, Value,
-            clear_weak_ref_kept_objects, create_builtin_function, finish_loading_imported_module,
-            parse_module, parse_script, script_evaluation,
+            EmbedderObject, ExceptionType, Function, GcAgent, GraphLoadingStateRecord, HostDefined,
+            HostHooks, InternalMethods, Job, ModuleRequest, Object, PromiseCapability,
+            PropertyDescriptor, PropertyKey, Realm, RealmRoot, Referrer, SourceTextModule,
+            String as JsString, Value, clear_weak_ref_kept_objects, create_builtin_function,
+            finish_loading_imported_module, parse_module, parse_script, script_evaluation,
         },
         engine::{Bindable, GcScope, Global, NoGcScope},
     };
@@ -173,8 +173,8 @@ mod native {
     }
 
     use script_engine_api::{
-        Budget, CallCx, HostData, NativeFn, PromiseToken, PumpOutcome, ReflectorData, ScriptEngine,
-        ScriptEngineLive, ScriptEngineSnapshot,
+        Budget, CallCx, HostData, MAIN_REALM, NativeFn, PromiseToken, PumpOutcome, RealmError,
+        RealmId, ReflectorData, ScriptEngine, ScriptEngineLive, ScriptEngineSnapshot,
     };
 
     /// A queue of `Global`s awaiting release. Nova's `Global` has no `Drop` (freeing
@@ -237,7 +237,24 @@ mod native {
     /// The cached `Global`s (reflectors, and the promise values awaiting settlement)
     /// are permanent roots in `agent.heap.globals`, so they survive collection without
     /// the slot itself being traced. All engine-side, off the neutral wall.
+    #[derive(Default)]
+    struct RealmRegistry {
+        realms: RefCell<HashMap<RealmId, Global<Realm<'static>>>>,
+        next_realm: Cell<RealmId>,
+    }
+
+    #[derive(Default)]
+    struct AgentPromises {
+        pending: RefCell<HashMap<u64, Global<Value<'static>>>>,
+        next_token: Cell<u64>,
+    }
+
     struct NovaHostSlot {
+        registry: Rc<RealmRegistry>,
+        /// Which realm this slot belongs to. Nova's `[[HostDefined]]` is already
+        /// per-realm, so the slot is where a native sink learns its own realm —
+        /// the host arena owns its reflector IDs and native state.
+        id: RealmId,
         neutral: RefCell<Option<HostData>>,
         reflectors: RefCell<HashMap<u64, Global<Value<'static>>>>,
         /// Strong roots on reflectors the opaque-root policy holds: a `Global` of
@@ -250,8 +267,7 @@ mod native {
         /// from the promise via `from_promise`, so settling rebuilds the capability and
         /// drives it. `must_be_unresolved` is always `true` (every promise here is
         /// minted by `PromiseCapability::new`).
-        promises: RefCell<HashMap<u64, Global<Value<'static>>>>,
-        next_token: Cell<u64>,
+        promises: Rc<AgentPromises>,
         /// Engine-wide release queue (shared with [`NovaEngine`]). The trampoline
         /// reaches it here — it has only the `Agent`, not the engine — to hand each
         /// [`NovaCallCx`] a handle and to drain the call's dropped temporaries.
@@ -259,13 +275,19 @@ mod native {
     }
 
     impl NovaHostSlot {
-        fn new(release: ReleaseQueue) -> Self {
+        fn new(
+            id: RealmId,
+            release: ReleaseQueue,
+            promises: Rc<AgentPromises>,
+            registry: Rc<RealmRegistry>,
+        ) -> Self {
             Self {
+                registry,
+                id,
                 neutral: RefCell::new(None),
                 reflectors: RefCell::new(HashMap::new()),
                 roots: RefCell::new(HashMap::new()),
-                promises: RefCell::new(HashMap::new()),
-                next_token: Cell::new(0),
+                promises,
                 release,
             }
         }
@@ -290,9 +312,9 @@ mod native {
         let slot = hd
             .downcast_ref::<NovaHostSlot>()
             .ok_or_else(|| "host slot wrong type".to_string())?;
-        let token = slot.next_token.get();
-        slot.next_token.set(token + 1);
-        slot.promises.borrow_mut().insert(token, stored);
+        let token = slot.promises.next_token.get();
+        slot.promises.next_token.set(token + 1);
+        slot.promises.pending.borrow_mut().insert(token, stored);
         Ok((returned, token))
     }
 
@@ -302,6 +324,7 @@ mod native {
     /// the two onto one (`GcScope<'a, 'a>`) and this context carries a single
     /// lifetime, satisfying the engine-neutral one-lifetime [`CallCx`] GAT.
     pub struct NovaCallCx<'a> {
+        this: NovaValue,
         agent: &'a mut Agent,
         gc: GcScope<'a, 'a>,
         args: Vec<Global<Value<'static>>>,
@@ -313,6 +336,10 @@ mod native {
     impl CallCx for NovaCallCx<'_> {
         type Value = NovaValue;
         type Error = String;
+
+        fn error(&mut self, message: &str) -> Self::Error {
+            message.to_string()
+        }
 
         fn arg(&mut self, i: usize) -> Self::Value {
             match self.args.get(i) {
@@ -330,6 +357,28 @@ mod native {
             let slot = hd.downcast_ref::<NovaHostSlot>()?;
             let neutral = slot.neutral.borrow().clone();
             neutral
+        }
+
+        fn this_value(&mut self) -> Self::Value {
+            let value = self.this.get(self.agent, self.gc.nogc()).unbind();
+            NovaValue::new(Global::new(self.agent, value), &self.release)
+        }
+
+        fn caller_realm(&mut self) -> RealmId {
+            self.agent
+                .native_caller_realm(self.gc.nogc())
+                .and_then(|realm| realm.host_defined(self.agent))
+                .and_then(|hd| hd.downcast_ref::<NovaHostSlot>().map(|slot| slot.id))
+                .unwrap_or_else(|| self.current_realm())
+        }
+
+        fn current_realm(&mut self) -> RealmId {
+            let agent: &Agent = self.agent;
+            agent
+                .current_realm(self.gc.nogc())
+                .host_defined(agent)
+                .and_then(|hd| hd.downcast_ref::<NovaHostSlot>().map(|slot| slot.id))
+                .unwrap_or(MAIN_REALM)
         }
 
         fn value_to_string(&mut self, value: &Self::Value) -> Result<String, Self::Error> {
@@ -484,7 +533,7 @@ mod native {
     /// arguments, runs `F` against a [`NovaCallCx`], then maps the result back.
     fn nova_trampoline<'gc, F: NativeFn<NovaEngine>>(
         agent: &mut Agent,
-        _this: Value,
+        this: Value,
         args: ArgumentsList,
         mut gc: GcScope<'gc, '_>,
     ) -> nova_vm::ecmascript::JsResult<'gc, Value<'gc>> {
@@ -504,8 +553,10 @@ mod native {
                 })
                 .expect("host slot present")
         };
+        let this = NovaValue::new(Global::new(agent, this.unbind()), &release);
         let (result, args_to_release) = {
             let mut cx = NovaCallCx {
+                this,
                 agent: &mut *agent,
                 gc: gc.reborrow(),
                 args: rooted,
@@ -546,6 +597,11 @@ mod native {
     pub struct NovaEngine {
         agent: GcAgent,
         realm: RealmRoot,
+        /// Live realms of this engine, [`MAIN_REALM`] included. One `GcAgent` is
+        /// one **agent**: every realm here shares the heap, the job queue and the
+        /// host hooks, so a `Global` obtained in one is an ordinary reference in
+        /// another. Nova caps an agent at 256 simultaneous realms.
+        registry: Rc<RealmRegistry>,
         jobs: Rc<RefCell<VecDeque<Job>>>,
         /// The leaked (`'static`) host hooks installed on `agent`; `eval_module` sets
         /// their module resolver per call.
@@ -562,6 +618,9 @@ mod native {
         /// Host-owned DOM state is intentionally not copied; callers install it with
         /// `set_host_data` before running script in the clone.
         pub fn snapshot_clone(&mut self) -> Result<Self, String> {
+            if self.registry.next_realm.get() != MAIN_REALM + 1 {
+                return Err("cannot snapshot clone NovaEngine with multiple realms".to_string());
+            }
             if !self.jobs.borrow().is_empty() {
                 return Err("cannot snapshot clone NovaEngine with pending jobs".to_string());
             }
@@ -575,9 +634,25 @@ mod native {
             let hooks = leak_host_hooks(jobs.clone());
             let release: ReleaseQueue = Rc::new(RefCell::new(Vec::new()));
             let mut agent = self.agent.snapshot_clone(hooks);
+            let registry = Rc::new(RealmRegistry {
+                realms: RefCell::new(HashMap::new()),
+                next_realm: Cell::new(MAIN_REALM + 1),
+            });
+            agent.run_in_realm(&self.realm, |a, gc| {
+                let main = a.current_realm(gc.nogc()).unbind();
+                registry
+                    .realms
+                    .borrow_mut()
+                    .insert(MAIN_REALM, Global::new(a, main));
+            });
             let previous = self.realm.replace_host_defined(
                 &mut agent,
-                Some(Rc::new(NovaHostSlot::new(release.clone()))),
+                Some(Rc::new(NovaHostSlot::new(
+                    MAIN_REALM,
+                    release.clone(),
+                    Rc::new(AgentPromises::default()),
+                    registry.clone(),
+                ))),
             );
             debug_assert!(
                 previous.is_none(),
@@ -587,6 +662,7 @@ mod native {
             Ok(Self {
                 agent,
                 realm: self.realm,
+                registry,
                 jobs,
                 hooks,
                 release,
@@ -614,10 +690,31 @@ mod native {
             let release: ReleaseQueue = Rc::new(RefCell::new(Vec::new()));
             // The realm owns the host slot (neutral DOM + reflector cache) for its
             // whole life; `set_host_data` later fills the neutral half.
-            realm.initialize_host_defined(&mut agent, Rc::new(NovaHostSlot::new(release.clone())));
+            let registry = Rc::new(RealmRegistry {
+                realms: RefCell::new(HashMap::new()),
+                next_realm: Cell::new(MAIN_REALM + 1),
+            });
+            agent.run_in_realm(&realm, |a, gc| {
+                let main = a.current_realm(gc.nogc()).unbind();
+                registry
+                    .realms
+                    .borrow_mut()
+                    .insert(MAIN_REALM, Global::new(a, main));
+            });
+            realm.initialize_host_defined(
+                &mut agent,
+                Rc::new(NovaHostSlot::new(
+                    MAIN_REALM,
+                    release.clone(),
+                    Rc::new(AgentPromises::default()),
+                    registry.clone(),
+                )),
+            );
+
             Ok(Self {
                 agent,
                 realm,
+                registry,
                 jobs,
                 hooks,
                 release,
@@ -740,6 +837,9 @@ mod native {
                 let v = value.get(agent, gc.nogc()).unbind();
                 let desc = PropertyDescriptor {
                     value: Some(v),
+                    writable: Some(true),
+                    enumerable: Some(true),
+                    configurable: Some(true),
                     ..Default::default()
                 };
                 match global.internal_define_own_property(agent, key, desc, gc.reborrow()) {
@@ -858,7 +958,7 @@ mod native {
                     let Some(slot) = hd.downcast_ref::<NovaHostSlot>() else {
                         return;
                     };
-                    let removed = slot.promises.borrow_mut().remove(&token);
+                    let removed = slot.promises.pending.borrow_mut().remove(&token);
                     removed
                 };
                 let Some(stored) = stored else { return };
@@ -898,164 +998,754 @@ mod native {
         }
 
         fn minted_reflectors(&mut self) -> Vec<ReflectorData> {
-            let mut out = Vec::new();
-            self.agent.run_in_realm(&self.realm, |agent, gc| {
-                if let Some(hd) = agent.current_realm(gc.nogc()).host_defined(agent) {
-                    if let Some(slot) = hd.downcast_ref::<NovaHostSlot>() {
-                        out = slot.reflectors.borrow().keys().copied().collect();
+            self.minted_reflectors_in_realm(MAIN_REALM)
+                .expect("main realm exists")
+        }
+
+        fn minted_reflectors_in_realm(
+            &mut self,
+            realm: RealmId,
+        ) -> Result<Vec<ReflectorData>, RealmError> {
+            if !self.registry.realms.borrow().contains_key(&realm) {
+                return Err(RealmError::NoSuchRealm(realm));
+            }
+            let registry = self.registry.clone();
+            let out = (|| {
+                let mut out = Vec::new();
+                self.agent.run_in_realm(&self.realm, |agent, gc| {
+                    let target = registry
+                        .realms
+                        .borrow()
+                        .get(&realm)
+                        .expect("checked realm")
+                        .get(agent, gc.nogc())
+                        .unbind();
+                    if let Some(hd) = target.bind(gc.nogc()).host_defined(agent) {
+                        if let Some(slot) = hd.downcast_ref::<NovaHostSlot>() {
+                            out = slot.reflectors.borrow().keys().copied().collect();
+                        }
                     }
+                });
+                out
+            })();
+            Ok(out)
+        }
+
+        fn root_reflectors(&mut self, data: &[ReflectorData]) -> () {
+            self.root_reflectors_in_realm(MAIN_REALM, data)
+                .expect("main realm exists")
+        }
+
+        fn root_reflectors_in_realm(
+            &mut self,
+            realm: RealmId,
+            data: &[ReflectorData],
+        ) -> Result<(), RealmError> {
+            if !self.registry.realms.borrow().contains_key(&realm) {
+                return Err(RealmError::NoSuchRealm(realm));
+            }
+            let registry = self.registry.clone();
+            let out = (|| {
+                let release = self.release.clone();
+                self.agent.run_in_realm(&self.realm, |agent, mut gc| {
+                    let target = registry
+                        .realms
+                        .borrow()
+                        .get(&realm)
+                        .expect("checked realm")
+                        .get(agent, gc.nogc())
+                        .unbind();
+                    for &d in data {
+                        // Resolve through the canonical cache so a root and a
+                        // `reflector_for` hit are the same object; a dead or missing
+                        // entry is re-minted, which is the right outcome (the node is
+                        // reachable again).
+                        let cached: Option<Value> = {
+                            let a: &Agent = agent;
+                            target.bind(gc.nogc()).host_defined(a).and_then(|hd| {
+                                hd.downcast_ref::<NovaHostSlot>().and_then(|slot| {
+                                    slot.reflectors
+                                        .borrow()
+                                        .get(&d)
+                                        .map(|g| g.get(agent, gc.nogc()).unbind())
+                                })
+                            })
+                        };
+                        let eo = match cached {
+                            Some(Value::WeakRef(weak_ref)) => {
+                                EmbedderObject::from_weak_ref(agent, weak_ref)
+                            },
+                            _ => None,
+                        };
+                        let eo = match eo {
+                            Some(eo) => eo,
+                            None => {
+                                let eo = EmbedderObject::create_with_data(agent, d);
+                                let weak_ref = eo.into_weak_ref(agent);
+                                let cached = Global::new(agent, Value::WeakRef(weak_ref).unbind());
+                                let mut old = None;
+                                {
+                                    let a: &Agent = agent;
+                                    if let Some(hd) = target.bind(gc.nogc()).host_defined(a) {
+                                        if let Some(slot) = hd.downcast_ref::<NovaHostSlot>() {
+                                            old = slot.reflectors.borrow_mut().insert(d, cached);
+                                        }
+                                    }
+                                }
+                                if let Some(old) = old {
+                                    old.take(agent);
+                                }
+                                eo
+                            },
+                        };
+                        let rooted = Global::new(agent, Value::EmbedderObject(eo).unbind());
+                        let mut old = None;
+                        {
+                            let a: &Agent = agent;
+                            if let Some(hd) = target.bind(gc.nogc()).host_defined(a) {
+                                if let Some(slot) = hd.downcast_ref::<NovaHostSlot>() {
+                                    old = slot.roots.borrow_mut().insert(d, rooted);
+                                }
+                            }
+                        }
+                        if let Some(old) = old {
+                            old.take(agent);
+                        }
+                        let _ = &mut gc;
+                    }
+                    drain_release(agent, &release);
+                });
+            })();
+            Ok(out)
+        }
+
+        fn unroot_reflectors(&mut self, data: &[ReflectorData]) -> () {
+            self.unroot_reflectors_in_realm(MAIN_REALM, data)
+                .expect("main realm exists")
+        }
+
+        fn unroot_reflectors_in_realm(
+            &mut self,
+            realm: RealmId,
+            data: &[ReflectorData],
+        ) -> Result<(), RealmError> {
+            if !self.registry.realms.borrow().contains_key(&realm) {
+                return Err(RealmError::NoSuchRealm(realm));
+            }
+            let registry = self.registry.clone();
+            let out = (|| {
+                self.agent.run_in_realm(&self.realm, |agent, gc| {
+                    let target = registry
+                        .realms
+                        .borrow()
+                        .get(&realm)
+                        .expect("checked realm")
+                        .get(agent, gc.nogc())
+                        .unbind();
+                    let mut removed = Vec::new();
+                    {
+                        let a: &Agent = agent;
+                        if let Some(hd) = target.bind(gc.nogc()).host_defined(a) {
+                            if let Some(slot) = hd.downcast_ref::<NovaHostSlot>() {
+                                let mut roots = slot.roots.borrow_mut();
+                                for d in data {
+                                    if let Some(g) = roots.remove(d) {
+                                        removed.push(g);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    for g in removed {
+                        g.take(agent);
+                    }
+                });
+            })();
+            Ok(out)
+        }
+
+        fn rooted_reflector_count(&mut self) -> usize {
+            self.rooted_reflector_count_in_realm(MAIN_REALM)
+                .expect("main realm exists")
+        }
+
+        fn rooted_reflector_count_in_realm(&mut self, realm: RealmId) -> Result<usize, RealmError> {
+            if !self.registry.realms.borrow().contains_key(&realm) {
+                return Err(RealmError::NoSuchRealm(realm));
+            }
+            let registry = self.registry.clone();
+            let out = (|| {
+                let mut n = 0;
+                self.agent.run_in_realm(&self.realm, |agent, gc| {
+                    let target = registry
+                        .realms
+                        .borrow()
+                        .get(&realm)
+                        .expect("checked realm")
+                        .get(agent, gc.nogc())
+                        .unbind();
+                    if let Some(hd) = target.bind(gc.nogc()).host_defined(agent) {
+                        if let Some(slot) = hd.downcast_ref::<NovaHostSlot>() {
+                            n = slot.roots.borrow().len();
+                        }
+                    }
+                });
+                n
+            })();
+            Ok(out)
+        }
+
+        fn drain_dead_reflectors(&mut self) -> Vec<ReflectorData> {
+            self.drain_dead_reflectors_in_realm(MAIN_REALM)
+                .expect("main realm exists")
+        }
+
+        fn drain_dead_reflectors_in_realm(
+            &mut self,
+            realm: RealmId,
+        ) -> Result<Vec<ReflectorData>, RealmError> {
+            if !self.registry.realms.borrow().contains_key(&realm) {
+                return Err(RealmError::NoSuchRealm(realm));
+            }
+            let registry = self.registry.clone();
+            let out = (|| {
+                // Real death-reporting: deref each cached `WeakRef`; a target that
+                // has been collected (deref → `None`) is a dead reflector. Backed by
+                // the vendored `EmbedderObject::into_weak_ref`/`from_weak_ref` patch.
+                // The host unpins each returned id, freeing the detached node (G3).
+                let mut dead = Vec::new();
+                self.agent.run_in_realm(&self.realm, |agent, gc| {
+                    let target = registry
+                        .realms
+                        .borrow()
+                        .get(&realm)
+                        .expect("checked realm")
+                        .get(agent, gc.nogc())
+                        .unbind();
+                    // Snapshot the cached (id, WeakRef value) pairs, ending the
+                    // host-slot borrow before derefing through `&mut Agent`.
+                    let entries: Vec<(u64, Value)> = {
+                        let Some(hd) = target.bind(gc.nogc()).host_defined(agent) else {
+                            return;
+                        };
+                        let Some(slot) = hd.downcast_ref::<NovaHostSlot>() else {
+                            return;
+                        };
+                        let collected: Vec<(u64, Value)> = slot
+                            .reflectors
+                            .borrow()
+                            .iter()
+                            .map(|(&d, g)| (d, g.get(agent, gc.nogc()).unbind()))
+                            .collect();
+                        collected
+                    };
+                    for (d, value) in entries {
+                        let alive = matches!(value, Value::WeakRef(weak_ref)
+                        if EmbedderObject::from_weak_ref(agent, weak_ref).is_some());
+                        if !alive {
+                            dead.push(d);
+                        }
+                    }
+                    if !dead.is_empty() {
+                        let Some(hd) = target.bind(gc.nogc()).host_defined(agent) else {
+                            return;
+                        };
+                        let Some(slot) = hd.downcast_ref::<NovaHostSlot>() else {
+                            return;
+                        };
+                        let mut map = slot.reflectors.borrow_mut();
+                        for d in &dead {
+                            if let Some(g) = map.remove(d) {
+                                // Release the `WeakRef`'s root now that it is dead.
+                                g.take(agent);
+                            }
+                        }
+                    }
+                });
+                dead
+            })();
+            Ok(out)
+        }
+
+        // ---- Realms --------------------------------------------------------
+        //
+        // Nova gives an embedder the whole shape: `GcAgent::create_default_realm`
+        // adds a realm to the *same* agent (heap, job queue, host hooks shared),
+        // `run_in_realm` runs a closure inside a chosen one, and
+        // `[[HostDefined]]` is already per-realm — which is why per-realm host
+        // state costs nothing here.
+        //
+        // One refusal is real and recorded rather than approximated:
+        // `GcAgent::run_in_realm` asserts the execution-context stack is empty,
+        // so it **cannot nest**. A native callback running in realm A therefore
+        // cannot ask the host to enter realm B mid-call. It does not need to:
+        // values are agent-wide, so reading and calling another realm's objects
+        // from inside a call goes through the ordinary object protocol, which
+        // pushes the callee's realm itself. Only a *host-driven* realm switch is
+        // refused, and only while a call is on the stack.
+
+        fn create_realm_from_call(
+            cx: &mut Self::CallCx<'_>,
+            data: HostData,
+            initialize: impl for<'a> FnOnce(&mut Self::CallCx<'a>) -> Result<(), RealmError>,
+        ) -> Result<RealmId, RealmError> {
+            let hd = cx
+                .agent
+                .current_realm(cx.gc.nogc())
+                .host_defined(cx.agent)
+                .ok_or(RealmError::Refused("realm carries no host slot"))?;
+            let slot = hd
+                .downcast_ref::<NovaHostSlot>()
+                .ok_or(RealmError::Refused("realm carries no host slot"))?;
+            let registry = slot.registry.clone();
+            let promises = slot.promises.clone();
+            let release = cx.release.clone();
+            let id = registry.next_realm.get();
+            registry.next_realm.set(
+                id.checked_add(1)
+                    .ok_or(RealmError::Refused("realm ids exhausted"))?,
+            );
+            let mut result = Ok(());
+            let create_global: Option<for<'a> fn(&mut Agent, GcScope<'a, '_>) -> Object<'a>> = None;
+            let create_this: Option<for<'a> fn(&mut Agent, GcScope<'a, '_>) -> Object<'a>> = None;
+            cx.agent.create_realm(
+                create_global,
+                create_this,
+                Some(|agent: &mut Agent, _global: Object, gc: GcScope| {
+                    let realm = agent.current_realm(gc.nogc()).unbind();
+                    let slot = NovaHostSlot::new(id, release.clone(), promises, registry.clone());
+                    *slot.neutral.borrow_mut() = Some(data);
+                    realm.initialize_host_defined(agent, Rc::new(slot));
+                    registry
+                        .realms
+                        .borrow_mut()
+                        .insert(id, Global::new(agent, realm));
+                    let this = NovaValue::new(Global::new(agent, Value::Undefined), &release);
+                    let mut child = NovaCallCx {
+                        this,
+                        agent,
+                        gc,
+                        args: Vec::new(),
+                        release,
+                    };
+                    result = initialize(&mut child);
+                }),
+                cx.gc.reborrow(),
+            );
+            if result.is_err() {
+                if let Some(root) = registry.realms.borrow_mut().remove(&id) {
+                    root.take(cx.agent);
+                }
+            }
+            result.map(|()| id)
+        }
+
+        fn eval_from_call(
+            cx: &mut Self::CallCx<'_>,
+            source: &str,
+        ) -> Result<Self::Value, RealmError> {
+            let source = JsString::from_str(cx.agent, source, cx.gc.nogc()).unbind();
+            let result = cx.agent.run_script(source, cx.gc.reborrow());
+            match result {
+                Ok(value) => Ok(NovaValue::new(
+                    Global::new(cx.agent, value.unbind()),
+                    &cx.release,
+                )),
+                Err(error) => Err(RealmError::Engine(format!(
+                    "evaluation threw: {:?}",
+                    error.value()
+                ))),
+            }
+        }
+
+        fn set_function_from_call<F: NativeFn<Self>>(
+            cx: &mut Self::CallCx<'_>,
+            name: &str,
+            length: usize,
+        ) -> Result<(), RealmError> {
+            let name: &'static str = Box::leak(name.to_string().into_boxed_str());
+            let func = create_builtin_function(
+                cx.agent,
+                Behaviour::Regular(nova_trampoline::<F>),
+                BuiltinFunctionArgs::new(length as u32, name),
+                cx.gc.nogc(),
+            );
+            let global = cx
+                .agent
+                .current_realm(cx.gc.nogc())
+                .global_object(cx.agent)
+                .unbind();
+            let key = PropertyKey::from_str(cx.agent, name, cx.gc.nogc()).unbind();
+            let desc = PropertyDescriptor {
+                value: Some(func.unbind().into()),
+                ..Default::default()
+            };
+            match global.internal_define_own_property(cx.agent, key, desc, cx.gc.reborrow()) {
+                Ok(true) => Ok(()),
+                _ => Err(RealmError::Engine(
+                    "native function installation refused".into(),
+                )),
+            }
+        }
+
+        fn eval_in_realm_from_call(
+            cx: &mut Self::CallCx<'_>,
+            realm: RealmId,
+            source: &str,
+        ) -> Result<Self::Value, RealmError> {
+            let hd = cx
+                .agent
+                .current_realm(cx.gc.nogc())
+                .host_defined(cx.agent)
+                .ok_or(RealmError::Refused("realm carries no host slot"))?;
+            let slot = hd
+                .downcast_ref::<NovaHostSlot>()
+                .ok_or(RealmError::Refused("realm carries no host slot"))?;
+            let target = slot
+                .registry
+                .realms
+                .borrow()
+                .get(&realm)
+                .ok_or(RealmError::NoSuchRealm(realm))?
+                .get(cx.agent, cx.gc.nogc())
+                .unbind();
+            let source = JsString::from_str(cx.agent, source, cx.gc.nogc());
+            let script = parse_script(
+                cx.agent,
+                source,
+                target.bind(cx.gc.nogc()),
+                false,
+                None,
+                cx.gc.nogc(),
+            )
+            .map_err(|_| RealmError::Engine("parse error".into()))?;
+            match script_evaluation(cx.agent, script.unbind(), cx.gc.reborrow()) {
+                Ok(value) => Ok(NovaValue::new(
+                    Global::new(cx.agent, value.unbind()),
+                    &cx.release,
+                )),
+                Err(error) => Err(RealmError::Engine(format!(
+                    "evaluation threw: {:?}",
+                    error.value()
+                ))),
+            }
+        }
+
+        fn call_from_call(
+            cx: &mut Self::CallCx<'_>,
+            function: &Self::Value,
+            this: &Self::Value,
+            args: &[Self::Value],
+        ) -> Result<Self::Value, RealmError> {
+            let function = Function::try_from(function.get(cx.agent, cx.gc.nogc()).unbind())
+                .map_err(|_| RealmError::Refused("value is not a callable function"))?;
+            let this = this.get(cx.agent, cx.gc.nogc()).unbind();
+            let mut args: Vec<Value> = args
+                .iter()
+                .map(|v| v.get(cx.agent, cx.gc.nogc()).unbind())
+                .collect();
+            match function.call(cx.agent, this, &mut args, cx.gc.reborrow()) {
+                Ok(value) => Ok(NovaValue::new(
+                    Global::new(cx.agent, value.unbind()),
+                    &cx.release,
+                )),
+                Err(error) => Err(RealmError::Engine(format!(
+                    "call threw: {:?}",
+                    error.value()
+                ))),
+            }
+        }
+
+        fn realm_global_from_call(
+            cx: &mut Self::CallCx<'_>,
+            realm: RealmId,
+        ) -> Result<Self::Value, RealmError> {
+            let hd = cx
+                .agent
+                .current_realm(cx.gc.nogc())
+                .host_defined(cx.agent)
+                .ok_or(RealmError::Refused("realm carries no host slot"))?;
+            let slot = hd
+                .downcast_ref::<NovaHostSlot>()
+                .ok_or(RealmError::Refused("realm carries no host slot"))?;
+            let target = slot
+                .registry
+                .realms
+                .borrow()
+                .get(&realm)
+                .ok_or(RealmError::NoSuchRealm(realm))?
+                .get(cx.agent, cx.gc.nogc())
+                .unbind();
+            let global = target.global_object(cx.agent).unbind();
+            Ok(NovaValue::new(
+                Global::new(cx.agent, Value::from(global)),
+                &cx.release,
+            ))
+        }
+
+        fn set_global_from_call(
+            cx: &mut Self::CallCx<'_>,
+            name: &str,
+            value: &Self::Value,
+        ) -> Result<(), RealmError> {
+            let global = cx
+                .agent
+                .current_realm(cx.gc.nogc())
+                .global_object(cx.agent)
+                .unbind();
+            let key = PropertyKey::from_str(cx.agent, name, cx.gc.nogc()).unbind();
+            let value = value.get(cx.agent, cx.gc.nogc()).unbind();
+            let desc = PropertyDescriptor {
+                value: Some(value),
+                writable: Some(true),
+                enumerable: Some(true),
+                configurable: Some(true),
+                ..Default::default()
+            };
+            match global.internal_define_own_property(cx.agent, key, desc, cx.gc.reborrow()) {
+                Ok(true) => Ok(()),
+                _ => Err(RealmError::Engine("global installation refused".into())),
+            }
+        }
+
+        fn supports_realms(&self) -> bool {
+            true
+        }
+
+        fn create_realm(&mut self) -> Result<RealmId, RealmError> {
+            let release = self.release.clone();
+            let mut out = Err(RealmError::Engine("create realm did not run".into()));
+            self.agent.run_in_realm(&self.realm, |agent, gc| {
+                let this = NovaValue::new(Global::new(agent, Value::Undefined), &release);
+                let mut cx = NovaCallCx {
+                    this,
+                    agent,
+                    gc,
+                    args: Vec::new(),
+                    release,
+                };
+                out = Self::create_realm_from_call(&mut cx, Rc::new(()), |child| {
+                    if let Some(hd) = child
+                        .agent
+                        .current_realm(child.gc.nogc())
+                        .host_defined(child.agent)
+                    {
+                        if let Some(slot) = hd.downcast_ref::<NovaHostSlot>() {
+                            *slot.neutral.borrow_mut() = None;
+                        }
+                    }
+                    Ok(())
+                });
+            });
+            out
+        }
+
+        fn discard_realm(&mut self, realm: RealmId) -> Result<(), RealmError> {
+            if realm == MAIN_REALM {
+                return Err(RealmError::Refused("the main realm cannot be discarded"));
+            }
+            let root = self
+                .registry
+                .realms
+                .borrow_mut()
+                .remove(&realm)
+                .ok_or(RealmError::NoSuchRealm(realm))?;
+            self.agent.run_in_realm(&self.realm, |agent, _gc| {
+                root.take(agent);
+            });
+            Ok(())
+        }
+
+        fn eval_in_realm(
+            &mut self,
+            realm: RealmId,
+            source: &str,
+        ) -> Result<Self::Value, RealmError> {
+            if !self.registry.realms.borrow().contains_key(&realm) {
+                return Err(RealmError::NoSuchRealm(realm));
+            }
+            let registry = self.registry.clone();
+            let src = source.to_string();
+            let release = self.release.clone();
+            let mut out: Result<NovaValue, RealmError> =
+                Err(RealmError::Engine("eval_in_realm did not run".to_string()));
+            self.agent.run_in_realm(&self.realm, |agent, mut gc| {
+                let target = registry
+                    .realms
+                    .borrow()
+                    .get(&realm)
+                    .expect("checked realm")
+                    .get(agent, gc.nogc())
+                    .unbind();
+                let current = target.bind(gc.nogc());
+                let source_text = JsString::from_string(agent, src, gc.nogc());
+                let script = match parse_script(agent, source_text, current, false, None, gc.nogc())
+                {
+                    Ok(script) => script,
+                    Err(_) => {
+                        out = Err(RealmError::Engine("parse error".to_string()));
+                        return;
+                    },
+                };
+                // Same two-step as `eval`: the thrown value borrows the match's
+                // `gc`, so unbind it out of the match and stringify with a fresh
+                // reborrow rather than reporting an opaque "evaluation threw".
+                let thrown = match script_evaluation(agent, script.unbind(), gc.reborrow()) {
+                    Ok(value) => {
+                        let g = Global::new(agent, value.unbind());
+                        out = Ok(NovaValue::new(g, &release));
+                        None
+                    },
+                    Err(err) => Some(err.value().unbind()),
+                };
+                if let Some(v) = thrown {
+                    let msg = v
+                        .to_string(agent, gc.reborrow())
+                        .map(|s| s.to_string_lossy(agent).into_owned())
+                        .unwrap_or_else(|_| "<unprintable>".to_string());
+                    out = Err(RealmError::Engine(format!("evaluation threw: {msg}")));
                 }
             });
             out
         }
 
-        fn root_reflectors(&mut self, data: &[ReflectorData]) {
+        fn realm_global(&mut self, realm: RealmId) -> Result<Self::Value, RealmError> {
+            if !self.registry.realms.borrow().contains_key(&realm) {
+                return Err(RealmError::NoSuchRealm(realm));
+            }
+            let registry = self.registry.clone();
             let release = self.release.clone();
+            let mut out: Result<NovaValue, RealmError> =
+                Err(RealmError::Engine("realm_global did not run".to_string()));
+            self.agent.run_in_realm(&self.realm, |agent, gc| {
+                let target = registry
+                    .realms
+                    .borrow()
+                    .get(&realm)
+                    .expect("checked realm")
+                    .get(agent, gc.nogc())
+                    .unbind();
+                let global = target.bind(gc.nogc()).global_object(agent).unbind();
+                let g = Global::new(agent, Value::from(global).unbind());
+                out = Ok(NovaValue::new(g, &release));
+            });
+            out
+        }
+
+        fn set_global_in_realm(
+            &mut self,
+            realm: RealmId,
+            name: &str,
+            value: &Self::Value,
+        ) -> Result<(), RealmError> {
+            if !self.registry.realms.borrow().contains_key(&realm) {
+                return Err(RealmError::NoSuchRealm(realm));
+            }
+            let registry = self.registry.clone();
+            let name = name.to_string();
+            let mut out = Err(RealmError::Engine(
+                "set_global_in_realm did not run".to_string(),
+            ));
             self.agent.run_in_realm(&self.realm, |agent, mut gc| {
-                for &d in data {
-                    // Resolve through the canonical cache so a root and a
-                    // `reflector_for` hit are the same object; a dead or missing
-                    // entry is re-minted, which is the right outcome (the node is
-                    // reachable again).
-                    let cached: Option<Value> = {
-                        let a: &Agent = agent;
-                        a.current_realm(gc.nogc()).host_defined(a).and_then(|hd| {
-                            hd.downcast_ref::<NovaHostSlot>().and_then(|slot| {
-                                slot.reflectors
-                                    .borrow()
-                                    .get(&d)
-                                    .map(|g| g.get(agent, gc.nogc()).unbind())
-                            })
-                        })
-                    };
-                    let eo = match cached {
-                        Some(Value::WeakRef(weak_ref)) => {
-                            EmbedderObject::from_weak_ref(agent, weak_ref)
-                        },
-                        _ => None,
-                    };
-                    let eo = match eo {
-                        Some(eo) => eo,
-                        None => {
-                            let eo = EmbedderObject::create_with_data(agent, d);
-                            let weak_ref = eo.into_weak_ref(agent);
-                            let cached = Global::new(agent, Value::WeakRef(weak_ref).unbind());
-                            let mut old = None;
-                            {
-                                let a: &Agent = agent;
-                                if let Some(hd) = a.current_realm(gc.nogc()).host_defined(a) {
-                                    if let Some(slot) = hd.downcast_ref::<NovaHostSlot>() {
-                                        old = slot.reflectors.borrow_mut().insert(d, cached);
-                                    }
-                                }
-                            }
-                            if let Some(old) = old {
-                                old.take(agent);
-                            }
-                            eo
-                        },
-                    };
-                    let rooted = Global::new(agent, Value::EmbedderObject(eo).unbind());
-                    let mut old = None;
-                    {
-                        let a: &Agent = agent;
-                        if let Some(hd) = a.current_realm(gc.nogc()).host_defined(a) {
-                            if let Some(slot) = hd.downcast_ref::<NovaHostSlot>() {
-                                old = slot.roots.borrow_mut().insert(d, rooted);
-                            }
-                        }
-                    }
-                    if let Some(old) = old {
-                        old.take(agent);
-                    }
-                    let _ = &mut gc;
-                }
-                drain_release(agent, &release);
-            });
-        }
-
-        fn unroot_reflectors(&mut self, data: &[ReflectorData]) {
-            self.agent.run_in_realm(&self.realm, |agent, gc| {
-                let mut removed = Vec::new();
-                {
-                    let a: &Agent = agent;
-                    if let Some(hd) = a.current_realm(gc.nogc()).host_defined(a) {
-                        if let Some(slot) = hd.downcast_ref::<NovaHostSlot>() {
-                            let mut roots = slot.roots.borrow_mut();
-                            for d in data {
-                                if let Some(g) = roots.remove(d) {
-                                    removed.push(g);
-                                }
-                            }
-                        }
-                    }
-                }
-                for g in removed {
-                    g.take(agent);
-                }
-            });
-        }
-
-        fn rooted_reflector_count(&mut self) -> usize {
-            let mut n = 0;
-            self.agent.run_in_realm(&self.realm, |agent, gc| {
-                if let Some(hd) = agent.current_realm(gc.nogc()).host_defined(agent) {
-                    if let Some(slot) = hd.downcast_ref::<NovaHostSlot>() {
-                        n = slot.roots.borrow().len();
-                    }
-                }
-            });
-            n
-        }
-
-        fn drain_dead_reflectors(&mut self) -> Vec<ReflectorData> {
-            // Real death-reporting: deref each cached `WeakRef`; a target that
-            // has been collected (deref → `None`) is a dead reflector. Backed by
-            // the vendored `EmbedderObject::into_weak_ref`/`from_weak_ref` patch.
-            // The host unpins each returned id, freeing the detached node (G3).
-            let mut dead = Vec::new();
-            self.agent.run_in_realm(&self.realm, |agent, gc| {
-                // Snapshot the cached (id, WeakRef value) pairs, ending the
-                // host-slot borrow before derefing through `&mut Agent`.
-                let entries: Vec<(u64, Value)> = {
-                    let Some(hd) = agent.current_realm(gc.nogc()).host_defined(agent) else {
-                        return;
-                    };
-                    let Some(slot) = hd.downcast_ref::<NovaHostSlot>() else {
-                        return;
-                    };
-                    let collected: Vec<(u64, Value)> = slot
-                        .reflectors
-                        .borrow()
-                        .iter()
-                        .map(|(&d, g)| (d, g.get(agent, gc.nogc()).unbind()))
-                        .collect();
-                    collected
+                let target = registry
+                    .realms
+                    .borrow()
+                    .get(&realm)
+                    .expect("checked realm")
+                    .get(agent, gc.nogc())
+                    .unbind();
+                let global = target.bind(gc.nogc()).global_object(agent).unbind();
+                let key = PropertyKey::from_str(agent, &name, gc.nogc()).unbind();
+                let v = value.get(agent, gc.nogc()).unbind();
+                let desc = PropertyDescriptor {
+                    value: Some(v),
+                    writable: Some(true),
+                    enumerable: Some(true),
+                    configurable: Some(true),
+                    ..Default::default()
                 };
-                for (d, value) in entries {
-                    let alive = matches!(value, Value::WeakRef(weak_ref)
-                        if EmbedderObject::from_weak_ref(agent, weak_ref).is_some());
-                    if !alive {
-                        dead.push(d);
-                    }
-                }
-                if !dead.is_empty() {
-                    let Some(hd) = agent.current_realm(gc.nogc()).host_defined(agent) else {
-                        return;
-                    };
-                    let Some(slot) = hd.downcast_ref::<NovaHostSlot>() else {
-                        return;
-                    };
-                    let mut map = slot.reflectors.borrow_mut();
-                    for d in &dead {
-                        if let Some(g) = map.remove(d) {
-                            // Release the `WeakRef`'s root now that it is dead.
-                            g.take(agent);
-                        }
+                out = match global.internal_define_own_property(agent, key, desc, gc.reborrow()) {
+                    Ok(_) => Ok(()),
+                    Err(_) => Err(RealmError::Engine("define_own_property threw".to_string())),
+                };
+            });
+            out
+        }
+
+        fn set_function_in_realm<F: NativeFn<Self>>(
+            &mut self,
+            realm: RealmId,
+            name: &str,
+            length: usize,
+        ) -> Result<(), RealmError> {
+            if !self.registry.realms.borrow().contains_key(&realm) {
+                return Err(RealmError::NoSuchRealm(realm));
+            }
+            let registry = self.registry.clone();
+            // Nova wants a `&'static str` name; the same bounded-setup leak the
+            // single-realm `set_function` takes.
+            let name: &'static str = Box::leak(name.to_string().into_boxed_str());
+            let mut out = Err(RealmError::Engine(
+                "set_function_in_realm did not run".to_string(),
+            ));
+            self.agent.run_in_realm(&self.realm, |agent, mut gc| {
+                let target = registry
+                    .realms
+                    .borrow()
+                    .get(&realm)
+                    .expect("checked realm")
+                    .get(agent, gc.nogc())
+                    .unbind();
+                let func = create_builtin_function(
+                    agent,
+                    Behaviour::Regular(nova_trampoline::<F>),
+                    BuiltinFunctionArgs::new_with_realm(
+                        length as u32,
+                        name,
+                        target.bind(gc.nogc()),
+                    ),
+                    gc.nogc(),
+                );
+                let global = target.bind(gc.nogc()).global_object(agent).unbind();
+                let key = PropertyKey::from_str(agent, name, gc.nogc()).unbind();
+                let desc = PropertyDescriptor {
+                    value: Some(func.unbind().into()),
+                    ..Default::default()
+                };
+                out = match global.internal_define_own_property(agent, key, desc, gc.reborrow()) {
+                    Ok(_) => Ok(()),
+                    Err(_) => Err(RealmError::Engine("define_own_property threw".to_string())),
+                };
+            });
+            out
+        }
+
+        fn set_host_data_in_realm(
+            &mut self,
+            realm: RealmId,
+            data: HostData,
+        ) -> Result<(), RealmError> {
+            if !self.registry.realms.borrow().contains_key(&realm) {
+                return Err(RealmError::NoSuchRealm(realm));
+            }
+            let registry = self.registry.clone();
+            let mut out = Err(RealmError::Refused("realm carries no host slot"));
+            self.agent.run_in_realm(&self.realm, |agent, gc| {
+                let target = registry
+                    .realms
+                    .borrow()
+                    .get(&realm)
+                    .expect("checked realm")
+                    .get(agent, gc.nogc())
+                    .unbind();
+                if let Some(hd) = target.bind(gc.nogc()).host_defined(agent) {
+                    if let Some(slot) = hd.downcast_ref::<NovaHostSlot>() {
+                        *slot.neutral.borrow_mut() = Some(data);
+                        out = Ok(());
                     }
                 }
             });
-            dead
+            out
         }
     }
 
@@ -1373,4 +2063,4 @@ mod native {
 }
 
 #[cfg(target_pointer_width = "64")]
-pub use native::NovaEngine;
+pub use native::{NovaCallCx, NovaEngine, NovaValue};

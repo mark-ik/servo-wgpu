@@ -237,7 +237,9 @@ fn binary_string(bytes: &[u8]) -> String {
 
 /// Install `__webgl_*` sinks and the `WebGLRenderingContext` JS bootstrap.
 /// Every sink's arg count includes the leading context-id argument.
-pub(crate) fn install_webgl_surface<E: ScriptEngine>(engine: &mut E) -> Result<(), E::Error> {
+pub(crate) fn install_webgl_surface<E: ScriptEngine>(
+    engine: &mut crate::Surface<'_, '_, E>,
+) -> Result<(), crate::SurfaceError<E::Error>> {
     engine.set_function::<CreateContext>("__webgl_create_context", 2)?;
     engine.set_function::<ExternalTextureKey>("__webgl_external_texture_key", 1)?;
     engine.set_function::<ClearColor>("__webgl_clear_color", 5)?;

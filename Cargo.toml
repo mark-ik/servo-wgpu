@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "components/shared/browsing-context",
     "components/media/examples",
     "components/shared/engine-observables-api",
     "components/shared/document-session-api",

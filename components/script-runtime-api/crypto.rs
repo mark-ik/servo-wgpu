@@ -73,7 +73,9 @@ impl<E: ScriptEngine> NativeFn<E> for CryptoRandom {
     }
 }
 
-pub(crate) fn install_crypto_surface<E: ScriptEngine>(engine: &mut E) -> Result<(), E::Error> {
+pub(crate) fn install_crypto_surface<E: ScriptEngine>(
+    engine: &mut crate::Surface<'_, '_, E>,
+) -> Result<(), crate::SurfaceError<E::Error>> {
     engine.set_function::<CryptoRandom>("__crypto_random", 1)?;
     engine.eval(CRYPTO_BOOTSTRAP)?;
     Ok(())
