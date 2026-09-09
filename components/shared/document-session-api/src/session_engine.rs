@@ -909,14 +909,15 @@ pub trait DocumentSession<F>: Any {
     /// Report the work that should wake this session after the current turn.
     ///
     /// Static sessions remain idle. Scripted sessions report their earliest
-    /// timer; future fetch and Worker adapters can set `external` when those
-    /// sources become production session capabilities.
+    /// timer and set `external` while host-owned fetch or Worker work remains.
     fn pending_work(&mut self) -> SessionPendingWork {
         SessionPendingWork::idle()
     }
 
-    /// The quiescence contract (native automation plan): no pending script
-    /// work, layout clean. Static lanes are always settled.
+    /// Whether script-visible completion has settled: no pending microtasks
+    /// or host-owned external work. Future timers do not block completion.
+    /// This handshake does not track layout dirtiness or establish rendered
+    /// quiescence. Static lanes are always settled by default.
     fn settled(&mut self) -> bool {
         self.pending_work().is_settled()
     }

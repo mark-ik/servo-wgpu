@@ -1,10 +1,12 @@
 # Realms: one agent, one realm per browsing context
 
-**Status:** in progress, 2026-09-09. The inherited phase-one changes were
-still uncommitted on continuation at `640477b6138`. Engine corrections,
-per-realm surfaces, synchronous frame creation, messaging, and live child
-rendering are being integrated. Historical phase-one receipts below are
-preserved; they do not validate the continuation.
+**Status:** partially committed; continuation acceptance open, 2026-09-09.
+`aa12e16eb7c` contains phase one and in-progress engine corrections, per-realm
+surfaces, synchronous frame creation, messaging, and live child rendering.
+Further corrections remain in the working tree. Historical phase-one automated
+and native Ortet receipts below apply to their recorded source, not the
+continuation. Fresh continuation gates, including native Ortet receipts, remain
+open as detailed under Current gates; no browser-hosted realm receipt is recorded.
 
 **Parent:** [iframes and nested browsing contexts](2026-09-08_iframes_plan.md),
 whose §4 named the realm decision as Mark's and left `contentWindow` a stub
@@ -436,4 +438,4 @@ patch snapshots are under `Code/testing/genet/wpt-ledger/2026-09-09_realms-conti
 
 Compilation and new engine/runtime/frame acceptance tests are in progress.
 The post census, baseline guards, workspace check, fork tests, clippy, formatter
-checks and Ortet receipts remain pending. Nothing has been committed.
+checks and Ortet receipts remain pending.

@@ -313,6 +313,11 @@ policy families independently.
 Census: `workers` 1 / 222 / 22 / 2 / 0, subtests 17 of 574; `webmessaging`
 20 / 101 / 10 / 4 / 0, subtests 49 of 209.
 
+**Status (refreshed 2026-09-09).** The dedicated-worker implementation is
+committed in `6155c8ab4ff`, an ancestor of `aa12e16eb7c`; its broader
+conformance acceptance remains open. The Worker plan records the distinct
+committed-code, automated, native-headed, and browser-hosted evidence states.
+
 **What exists (source refreshed 2026-09-08).** `genet-scripted-worker` is the
 wasm-bindgen entry that runs a whole `ScriptedDocument` inside a browser Web
 Worker. That deployment route remains distinct from a page-created `Worker`.
@@ -353,7 +358,7 @@ baseline evidence, not the acceptance standard for the new cross-agent route.
 - Which production scheduler seam the worker uses. The harness drive loop
   can exercise it; a per-test harness process is not a page Worker runtime.
 
-**Done-conditions.** Select exact constructor, worker messaging and
+**Acceptance done-conditions.** Select exact constructor, worker messaging and
 message-channel tests from the vendored manifest. Prove asynchronous ordering,
 cycle/alias preservation, rejection of uncloneable values, actual sender
 buffer detachment (including existing views), port transfer ownership,
@@ -377,7 +382,10 @@ Ortet O5 later installed the retained host route through the generic
 `genet-documents` spawn adapter and accepted delayed Worker resource/message
 delivery, idle wake, and replacement teardown on native Boa and Nova at
 `f3dc1bcf909`. That discharges the hosted-page integration item only; the
-transfer and full Worker conformance gates above remain open.
+automated and native-headed receipts do not close transfer or full Worker
+conformance. In particular, real sender storage/view detachment, module
+workers, `SharedWorker`, nested-relay ordering, cooperative termination, and a
+browser-hosted scripted Worker receipt remain open.
 
 ## WebSocket
 

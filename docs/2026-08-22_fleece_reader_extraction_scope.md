@@ -24,8 +24,11 @@ open.
   boundaries: not import (stored browser data), not crawl (the frontier), not
   illume (source spans); fleece "works a live document."
 - `components/genet-extract` (`lib.rs`, 712 lines) is the lane fleece
-  succeeds. One dependency, `layout_dom_api`, so the dep graph witnesses that
-  extraction pulls no render stack. It exposes `extract`, `extract_links`,
+  succeeded. Its historical single dependency was `layout_dom_api`. Fleece 0.5
+  now requires that API, SHA-256, and Unicode segmentation and bidi support;
+  optional Serde/JSON remains isolated behind `wire`. Feature-aware default and
+  `wire` cones witness that extraction pulls no render, network, or storage
+  stack. The original lane exposed `extract`, `extract_links`,
   `extract_title`, `extract_headings`, `extract_metadata`, `extract_text`,
   `extract_main_text`, and `PageExtract { title, metadata, headings, text,
   main_text, links }`. The readability heuristic is real but small: a semantic

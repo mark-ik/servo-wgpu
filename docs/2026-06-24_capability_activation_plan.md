@@ -36,7 +36,7 @@
 ### C-CI — genet CI + dependency-cone witness guard
 
 - Rides on: the profile-ladder thesis depends on witnessed dependency cones (genet-extract's render-free cone; genet-layout's wasm-green cone). There is no CI in the genet repo, so a witness-boundary violation (e.g. a render dep creeping into the extract lane) goes uncaught.
-- Work: a CI job that builds + tests the workspace and asserts the dependency-cone witnesses (extract lane = `layout_dom_api` only; layout lane wasm32-buildable). Pairs with the WPT-harness plan's H3 expectations guard so conformance regressions also fail CI.
+- Work: a CI job that builds + tests the workspace and asserts the dependency-cone witnesses (the Fleece 0.5 extract lane has four required dependencies, optional Serde/JSON only under `wire`, and no render/network/storage cone; layout lane wasm32-buildable). Pairs with the WPT-harness plan's H3 expectations guard so conformance regressions also fail CI.
 - **Done when** CI runs build+test+cone-assertions on push, and a deliberately-introduced witness violation fails it.
 
 ## Why grouped, not five micro-plans

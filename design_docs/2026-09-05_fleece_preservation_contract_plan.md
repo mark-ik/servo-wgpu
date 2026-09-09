@@ -3,8 +3,9 @@
 **Date:** 2026-09-05
 **Status:** active; Fleece 0.5 canonical-text preservation, selector projection,
 language/direction evidence, and lossless embedded JSON-LD records are implemented
-and green; the complete cross-crate Web Annotation profile and the remaining
-standards lanes are still in progress
+and have automated receipts; the complete cross-crate Web Annotation profile and
+the remaining standards lanes are still in progress. These are library contracts:
+they do not yet carry a native-headed or browser-hosted receipt.
 
 Fleece 0.5 is complete against its current local render-free extraction profile
 over a caller-supplied `LayoutDom`. It already owns canonical DOM text,
@@ -161,6 +162,8 @@ Implemented in Fleece 0.5:
 `cargo test -p fleece --all-features -j 1` passed 68 tests,
 `cargo clippy -p fleece --all-targets --all-features -- -D warnings` passed,
 and the all-feature crate checks for `wasm32-unknown-unknown`.
+These are automated receipts; this Fleece slice has no
+native-headed or browser-hosted receipt.
 Mere's opt-in `mere-document-lanes/eidetic-bridge` now supplies the Annotation
 JSON-LD envelope and a green Eidetic/Fjall close/reopen proof over Mere's current
 pinned Fleece 0.4 surface. An independent `oxjsonld`/`oxrdf` oracle expands that
@@ -169,3 +172,10 @@ the resulting dataset for blank-node isomorphism with a hand-built expected
 graph. Releasing and adopting Fleece 0.5 will remove the temporary cross-repository
 version gap. The official JSON-LD suites, scripted-DOM equivalence, NativeDrop
 transfer, capture-state preservation, and the broader standards lanes remain open.
+
+**2026-09-09 dependency-witness refresh:** the manifest check now recognizes
+the four required dependencies and optional Serde/JSON under `wire`. Resolved
+normal dependency cones pass with 29 packages by default and 40 with `wire`;
+Serde/JSON is absent by default. Controls reject required Serde, unexpected
+wire dependencies, and render/network/storage dependencies. This is an automated
+dependency-boundary receipt; it does not rerun or extend the runtime receipts above.

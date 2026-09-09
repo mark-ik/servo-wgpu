@@ -35,6 +35,77 @@ def dependency_names(table: dict) -> set[str]:
     return set(table.keys())
 
 
+FLEECE_REQUIRED_DEPENDENCIES = {
+    "layout_dom_api",
+    "sha2",
+    "unicode-bidi",
+    "unicode-segmentation",
+}
+FLEECE_REQUIRED_CONE_NAMES = {
+    "layout-dom-api",
+    "sha2",
+    "unicode-bidi",
+    "unicode-segmentation",
+}
+FLEECE_WIRE_DEPENDENCIES = {"serde", "serde_json"}
+FLEECE_FORBIDDEN_CONE = {
+    "accesskit",
+    "fjall",
+    "genet-layout",
+    "genet-render",
+    "netfetcher",
+    "netrender",
+    "paint",
+    "paint_list_render",
+    "redb",
+    "reqwest",
+    "rusqlite",
+    "sled",
+    "wgpu",
+}
+
+
+def fleece_dependency_shape_issues(dependency_table: dict, features: dict) -> list[str]:
+    deps = dependency_names(dependency_table)
+    expected = FLEECE_REQUIRED_DEPENDENCIES | FLEECE_WIRE_DEPENDENCIES
+    issues = []
+    if deps != expected:
+        issues.append(
+            f"dependencies are {sorted(deps)}, expected required "
+            f"{sorted(FLEECE_REQUIRED_DEPENDENCIES)} plus optional "
+            f"{sorted(FLEECE_WIRE_DEPENDENCIES)}"
+        )
+
+    wrongly_optional = {
+        name
+        for name in FLEECE_REQUIRED_DEPENDENCIES & deps
+        if not isinstance(dependency_table[name], dict)
+        or dependency_table[name].get("optional", False)
+    }
+    wrongly_required = {
+        name
+        for name in FLEECE_WIRE_DEPENDENCIES & deps
+        if not isinstance(dependency_table[name], dict)
+        or not dependency_table[name].get("optional", False)
+    }
+    if wrongly_optional or wrongly_required:
+        issues.append(
+            "dependency optionality is wrong: "
+            f"required marked optional {sorted(wrongly_optional)}, "
+            f"wire dependencies marked required {sorted(wrongly_required)}"
+        )
+
+    feature_names = set(features)
+    wire_members = set(features.get("wire", []))
+    expected_wire = {"dep:serde", "dep:serde_json"}
+    if feature_names != {"wire"} or wire_members != expected_wire:
+        issues.append(
+            f"features are {features}, expected only wire with "
+            f"{sorted(expected_wire)}"
+        )
+    return issues
+
+
 def is_beneath(path: pathlib.Path, parent: pathlib.Path) -> bool:
     try:
         path.resolve().relative_to(parent.resolve())
@@ -45,10 +116,13 @@ def is_beneath(path: pathlib.Path, parent: pathlib.Path) -> bool:
 
 def assert_fleece_cone() -> None:
     manifest = load_toml(ROOT / "components" / "fleece" / "Cargo.toml")
-    deps = dependency_names(manifest.get("dependencies", {}))
-    expected = {"layout_dom_api", "unicode-segmentation"}
-    if deps != expected:
-        fail(f"fleece dependencies are {sorted(deps)}, expected {sorted(expected)}")
+    dependency_table = manifest.get("dependencies", {})
+    deps = dependency_names(dependency_table)
+    issues = fleece_dependency_shape_issues(
+        dependency_table, manifest.get("features", {})
+    )
+    if issues:
+        fail("fleece manifest: " + "; ".join(issues))
     build_deps = dependency_names(manifest.get("build-dependencies", {}))
     if build_deps:
         fail(f"fleece build-dependencies must stay empty, found {sorted(build_deps)}")
@@ -60,16 +134,88 @@ def assert_fleece_cone() -> None:
             f"{sorted(dev_deps - allowed_dev_deps)}"
         )
 
-    forbidden = {
-        "genet-layout",
-        "genet-render",
-        "paint",
-        "paint_list_render",
-        "netrender",
-        "wgpu",
+    if deps & FLEECE_FORBIDDEN_CONE:
+        fail(
+            "fleece pulled render, network, or storage dependencies directly: "
+            f"{sorted(deps & FLEECE_FORBIDDEN_CONE)}"
+        )
+
+
+def self_test_fleece_dependency_shape() -> None:
+    required = {name: {"workspace": True} for name in FLEECE_REQUIRED_DEPENDENCIES}
+    optional = {
+        name: {"workspace": True, "optional": True}
+        for name in FLEECE_WIRE_DEPENDENCIES
     }
-    if deps & forbidden:
-        fail(f"fleece pulled render deps directly: {sorted(deps & forbidden)}")
+    clean = required | optional
+    features = {"wire": ["dep:serde_json", "dep:serde"]}
+    if fleece_dependency_shape_issues(clean, features):
+        fail("fleece manifest control rejected the valid feature shape")
+
+    required_serde = {name: dict(value) for name, value in clean.items()}
+    required_serde["serde"].pop("optional")
+    if not fleece_dependency_shape_issues(required_serde, features):
+        fail("fleece manifest control did not reject required serde")
+
+    leaked_wire = {"wire": ["dep:serde", "dep:serde_json", "dep:reqwest"]}
+    if not fleece_dependency_shape_issues(clean, leaked_wire):
+        fail("fleece manifest control did not reject a wire dependency leak")
+
+    safe_cone = FLEECE_REQUIRED_DEPENDENCIES | FLEECE_WIRE_DEPENDENCIES | {"digest"}
+    if safe_cone & FLEECE_FORBIDDEN_CONE:
+        fail("fleece cone negative control reported a safe dependency")
+    poison = safe_cone | {"wgpu", "reqwest", "fjall"}
+    if sorted(poison & FLEECE_FORBIDDEN_CONE) != ["fjall", "reqwest", "wgpu"]:
+        fail("fleece cone positive control did not detect render/network/storage")
+    print(
+        "fleece dependency controls: feature order ignored; required serde and "
+        "wire leak rejected; render/network/storage poison detected"
+    )
+
+
+def fleece_cargo_tree(features: str | None = None) -> set[str]:
+    command = [
+        "cargo", "tree", "-p", "fleece", "--no-default-features",
+        "--edges", "normal", "--prefix", "none",
+    ]
+    if features is not None:
+        command.extend(["--features", features])
+    result = subprocess.run(
+        command, cwd=ROOT, text=True, encoding="utf-8",
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    label = features or "default"
+    if result.returncode != 0:
+        fail(f"cargo tree for fleece ({label}) failed:\n{result.stderr}")
+    cone = {line.split()[0] for line in result.stdout.splitlines() if line.strip()}
+    if "fleece" not in cone:
+        fail(f"cargo tree for fleece ({label}) did not list fleece")
+    return cone
+
+
+def assert_fleece_resolved_cones() -> None:
+    default = fleece_cargo_tree()
+    wire = fleece_cargo_tree("wire")
+    missing = sorted(FLEECE_REQUIRED_CONE_NAMES - default)
+    if missing:
+        fail(f"fleece default cone misses required dependencies: {missing}")
+    unexpected_wire = sorted(FLEECE_WIRE_DEPENDENCIES & default)
+    if unexpected_wire:
+        fail(f"fleece default cone enables wire dependencies: {unexpected_wire}")
+    missing_wire = sorted(FLEECE_WIRE_DEPENDENCIES - wire)
+    if missing_wire:
+        fail(f"fleece wire cone misses optional dependencies: {missing_wire}")
+    for label, cone in (("default", default), ("wire", wire)):
+        breached = sorted(cone & FLEECE_FORBIDDEN_CONE)
+        if breached:
+            fail(
+                f"fleece {label} resolved cone reaches render, network, or "
+                f"storage dependencies: {breached}"
+            )
+    print(
+        f"fleece cones: default {len(default)} packages, wire {len(wire)}; "
+        "optional Serde/JSON isolated; no render/network/storage dependencies"
+    )
 
 
 def cargo_metadata() -> dict:
@@ -607,6 +753,8 @@ def self_test_ortet_wasm_cone() -> None:
 
 def main() -> None:
     assert_fleece_cone()
+    self_test_fleece_dependency_shape()
+    assert_fleece_resolved_cones()
     self_test_resolved_cone()
     metadata = cargo_metadata()
     assert_cargo_metadata_sees_fleece(metadata)

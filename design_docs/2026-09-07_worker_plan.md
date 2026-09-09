@@ -1,6 +1,7 @@
 # Dedicated Worker: a second agent of the same engine on its own thread
 
-**Status:** landed 2026-09-07.
+**Status:** implementation landed 2026-09-07 in `6155c8ab4ff`; Worker
+conformance acceptance remains open as of 2026-09-09.
 
 The dedicated-worker section of
 [`2026-09-07_deferred_web_platform_lanes_scoping.md`](2026-09-07_deferred_web_platform_lanes_scoping.md#dedicated-worker),
@@ -15,12 +16,30 @@ doc-only commits (`61b40915dea`, `4538a93ba09`) landed alongside this lane and
 change no code, so both runners below share `1a5d5dbdb1c`'s tree.
 Receipts: `Code/testing/genet/wpt-ledger/2026-09-07_worker/`.
 
+## Current status and evidence
+
+The four evidence states are deliberately separate here. A committed surface or
+an automated receipt does not stand in for a headed host or browser-hosted
+receipt.
+
+| State | Current evidence | Boundary still open |
+|---|---|---|
+| Committed code | `6155c8ab4ff` added the dedicated-worker runtime, transport record, cross-agent ports, and WPT hosting. It is an ancestor of `aa12e16eb7c`. | Full Worker conformance remains an acceptance gate. |
+| Automated receipt | The runtime regression suite covers the transport record, dedicated workers, cycles and aliases, `MessagePort`, transfers, fetch, errors, and ordinary termination on both Boa and Nova. The recorded disk-mode WPT census is below. | Sender `ArrayBuffer` storage and existing views are only emulated; module workers, `SharedWorker`, nested-relay ordering, and interruption of a running script remain open. |
+| Native headed receipt | Ortet O5 recorded delayed Worker resource/message delivery, idle wake, and replacement teardown on native Boa and Nova at `f3dc1bcf909`. | That receipt qualifies the native host route, not the remaining conformance cases. |
+| Browser-hosted receipt | None. Ortet's web route still constructs `LiverySessionEngine`, so it does not host a scripted page-created Worker. | A browser-hosted scripted route and its dedicated Worker receipt. |
+
+The S5/S6 scripted-document receipts are additional automated, headless
+evidence. They prove worker-service forwarding, acknowledgement of idle, and
+missing-route error/quiescence on Boa; they do not expand the native or
+browser-hosted state above.
+
 **Not this lane.** `genet-scripted-worker` is the wasm-bindgen entry that runs a
 whole `ScriptedDocument` inside a *browser* Web Worker for the wasm target. It
 says nothing about the `Worker` a page script constructs, and it is untouched
 here. The scoping document's correction on that point stands.
 
-## What the lane added
+## What the landed implementation added
 
 | Surface | Home | Shape |
 |---|---|---|
@@ -142,7 +161,12 @@ untouched, and still a shortcut. What is new is that a port leaving the agent
 really is detached: the codec marks it `_crossAgent`, which suppresses the
 one-task re-enable the in-agent path schedules.
 
-## Phases and done-conditions
+## Landed implementation phases
+
+The phases below record the delivered dedicated-worker slice. They do not close
+the broader acceptance scope recorded in
+[Residuals and acceptance boundary](#residuals-and-acceptance-boundary) and the
+status table above.
 
 ### Phase 1 — the transportable record (landed)
 
@@ -161,10 +185,11 @@ cross in both directions as tasks in order. Met:
 `worker_import_scripts_works`, `worker_timers_and_ordering_work`,
 `worker_fetch_uses_the_page_route`, on Boa and Nova.
 
-### Phase 3 — `Worker` on the page (landed)
+### Phase 3 — `Worker` on the page (landed implementation)
 
-Done when the constructor enforces the script-URL and `type` rules, `terminate`
-stops delivery, and an unhandled worker exception reaches the page. Met:
+Done for this slice when the constructor enforces the script-URL and `type`
+rules, `terminate` stops queued delivery, and an unhandled worker exception
+reaches the page. Met:
 `module_worker_is_a_named_residual` (a `type: "module"` worker throws
 `NotSupportedError`, a zero-argument construction throws `TypeError`),
 `worker_terminate_and_close_work`, and `worker_error_reaches_the_page` — which
@@ -181,7 +206,7 @@ work. Met: `message_port_crosses_the_thread_boundary` does a full round trip
 `SharedWorker` and cross-agent `BroadcastChannel` did **not** fall out cheaply
 and are named residuals below.
 
-### Phase 5 — the harness (landed)
+### Phase 5 — the harness (landed implementation)
 
 Done when manifest worker variants stop being skipped and report real results,
 with shared and service workers keeping their skip reasons. Met: see the tables
@@ -277,7 +302,7 @@ fails on `filename` regardless (disk mode has no document URL), so nothing is
 lost by it. The underlying fragility belongs to whoever owns the reflector cache,
 not to this lane, and it is **Mark's call** whether it earns one.
 
-## Residuals
+## Residuals and acceptance boundary
 
 Named, not faked:
 
@@ -298,11 +323,13 @@ Named, not faked:
   emulation (an own `byteLength: 0` shadowing the prototype getter) rather than
   releasing storage. That still needs the VM primitive, and this lane did not
   change it.
-- **A hosted headed receipt.** The scoping document asks for a scripted hosted
-  page exchanging messages with a live worker on each engine. Ortet selects
-  `LiverySessionEngine` and has no scripted route, so that receipt is not
-  available in this repository and is not claimed. The proof here is the
-  runtime contract on both engines plus the WPT maps.
+- **Cooperative termination.** `terminate()` prevents queued delivery and the
+  host bounds its join so an infinite worker does not hang the page, but it
+  cannot interrupt a script already executing without a VM interrupt seam.
+- **Browser-hosted scripting.** Ortet has a native scripted route, but its web
+  route selects `LiverySessionEngine`; a browser-hosted scripted page and live
+  Worker receipt are therefore absent. The native headed O5 receipt is not a
+  browser-hosted receipt.
 - **`workers/semantics/messaging`** is named in this lane's brief but does not
   exist in the vendored checkout; the equivalent populations are
   `workers/semantics/structured-clone` and `webmessaging`.
@@ -415,3 +442,10 @@ There are 30, and none is a regression in behavior.
   `ports/genet-wpt/src/{render.rs,testdriver/input_events.rs}` are untouched —
   they are not this lane's files. Residuals and the one unexplained interaction
   are above.
+- **2026-09-09** — Status language refreshed against `aa12e16eb7c`.
+  `6155c8ab4ff` is committed code and the automated Boa/Nova and native headed
+  receipts remain valid evidence for their stated scopes. Full Worker
+  conformance remains open: actual `ArrayBuffer` storage/view detachment is
+  emulated; module workers, `SharedWorker`, nested-relay ordering, cooperative
+  termination, and browser-hosted scripting still need their respective work
+  and receipts.

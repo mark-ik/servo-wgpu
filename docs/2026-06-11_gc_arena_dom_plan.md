@@ -1,9 +1,13 @@
 # gc-arena DOM Plan (the piccolo fork's dividends)
 
 **Date**: 2026-06-11
-**Current continuation, agreed 2026-09-07:** G5 below scopes the arena's
-identity, mutation and lifetime contract and its scripted Ortet proof. It is
-planned; the historical G0-G4 receipts do not establish G5 acceptance.
+**Current continuation, updated 2026-09-09:** G5 below scopes the arena's
+identity, mutation and lifetime contract and its scripted Ortet proof. S1
+replacement retention and S2 store-level root closure are committed, with
+focused automated receipts. S3 remains research, and the complete headed
+retain -> detach -> collect -> adopt -> mutate -> render -> release acceptance
+sequence remains open. The historical G0-G4 receipts do not establish G5
+acceptance.
 
 **Status**: G0–G2 + G4 done (see Progress). G3 design locked 2026-06-12 to a
 **custom mark-sweep**, not gc-arena (the title is now historical — kept for
@@ -453,7 +457,8 @@ reflector's `u64`, so `downcast_static` tells them apart). Test
 `p:await()` *method* form and `Budget::Steps` honoring are the only deferred
 niceties (deviations documented at the crate).
 
-### G5. Arena semantic contract (agreed, planned 2026-09-07)
+<a id="g5-arena-semantic-contract-agreed-planned-2026-09-07"></a>
+### G5. Arena semantic contract (partially implemented 2026-09-08)
 
 Keep the engine-owned node store and the script-engine-neutral handle seam.
 Strengthen the semantic contract across Rust storage, JS bindings, layout and
@@ -544,20 +549,24 @@ is `components/genet-scripted-dom/tests/replacement_retention.rs`: observers
 off/on, empty/nonempty replacements, a pin on a descendant, exact mutation
 records, semantic readback, reattachment, unpin/reclamation and replacement
 churn. Existing crate tests must remain green. S2 covers root closure; S3/S4
-select and implement the all-target handle contract. **S1 implemented and
-validated 2026-09-08:** 6 production regressions, 37 existing crate source tests
-and 7 original probe assertions pass in the exact isolated overlay documented
-in [the S1 receipt](../design_docs/receipts/2026-09-08_g5_s1/receipt.md).
+select and implement the all-target handle contract. **S1 implemented,
+committed and validated 2026-09-08:** commit `ec5421b7591` lands replacement
+retention. Six production regressions, 37 existing crate source tests and seven
+original probe assertions pass in the exact isolated overlay documented in
+[the S1 receipt](../design_docs/receipts/2026-09-08_g5_s1/receipt.md). This is
+automated native store evidence, not a native headed or browser-hosted receipt.
 Concurrent parser/runtime WIP was excluded; the larger G5/backend/Ortet proof
 sequence remains open.
 
-**S2 store correction, 2026-09-08:** five reproduced template-root failures
-are repaired by tracing contents to their inert owner and pruning stale
-metadata. Seven root-closure tests, 38 crate-source tests, six S1 tests and
-seven original assertions pass. [The S2 receipt](../design_docs/receipts/2026-09-08_g5_s2/receipt.md)
+**S2 store correction, committed 2026-09-08:** commit `c52ee06f53a` repairs
+five reproduced template-root failures by tracing contents to their inert owner
+and pruning stale metadata. Seven root-closure tests, 38 crate-source tests,
+six S1 tests and seven original assertions pass.
+[The S2 receipt](../design_docs/receipts/2026-09-08_g5_s2/receipt.md)
 names positive and negative cases, exact source overlays and the failing
-baseline. This preserves the existing one-inert-owner-per-arena representation;
-per-owning-document/adoption semantics and backend-root closure remain open.
+baseline. This is automated native store evidence. It preserves the existing
+one-inert-owner-per-arena representation; per-owning-document/adoption
+semantics and backend-root closure remain open.
 
 **S2 backend probe, 2026-09-08:** the
 [exact Boa runtime receipt](../design_docs/receipts/2026-09-08_s2_s5_backend/receipt.md)
@@ -633,10 +642,18 @@ front-loads visible wins.
 
 ## Progress
 
+- 2026-09-09: G5 is partially implemented. S1 replacement retention landed in
+  `ec5421b7591`, and S2 store-level root closure landed in `c52ee06f53a`; their
+  focused automated native receipts pass. S3 is still a model/research receipt,
+  not a production handle contract. Both-engine closure and the full scripted
+  Ortet headed retain -> detach -> collect -> adopt -> mutate -> render ->
+  release receipt remain open; there is no browser-hosted G5 receipt.
+
 - 2026-09-07: Mark agreed to retain the arena and strengthen identity,
   coordinated mutation and reachability/lifetime guarantees. Added G5 and
-  the longitudinal scripted Ortet sequence. Documentation only; implementation
-  and new validation receipts remain open.
+  the longitudinal scripted Ortet sequence. That update was documentation only;
+  the 2026-09-08 S1 and S2 commits supersede its wholly-open implementation
+  label.
 
 - **2026-06-11** — Plan created. Grounded against the fork
   (`Code/crates/piccolo`, 0.3.3, gc-arena `5a7534b` via git), the slab and

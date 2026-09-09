@@ -8,10 +8,11 @@
 //! turns a parsed document into the structured content a crawler or the eidetic
 //! browsing corpus wants — links, title, headings, main text, metadata, reader
 //! blocks, and page-carried structured data —
-//! with **no cascade, layout, or paint**. Its single dependency is the
-//! profile-neutral [`layout_dom_api`], so the dep graph itself is the witness that
-//! extraction pulls none of the render stack (the render ladder's witness
-//! discipline, applied to the orthogonal extraction axis).
+//! with **no cascade, layout, or paint**. Its required dependencies are the
+//! profile-neutral [`layout_dom_api`], hashing, and Unicode segmentation and
+//! bidirectional-text support. The optional `wire` feature adds Serde and JSON.
+//! The dependency-cone witness keeps fetching, networking, storage, and the
+//! render stack outside this extraction layer.
 //!
 //! Extraction is **not a lower render rung**: it is a different *output* (data, not
 //! pixels) that can draw from any rung's DOM. The cheap path runs over a no-JS

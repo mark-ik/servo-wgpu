@@ -6,7 +6,9 @@ completion, bounded failure, idle-woken fetch and Worker delivery, correlated
 semantic/pixel output, and stale-session rejection. Browser http(s) resource
 provisioning landed structurally in `35efc1985bc` and its headed HTTP runtime
 gate is accepted in `247a52e612a`. AccessKit session-generation custody is
-landed, while its native bridge-action receipt remains open.
+landed, and the Windows native bridge-action gate is accepted by the O2
+UIAutomation receipt at source `28fee141665`. Browser-hosted scripting remains
+open: the wasm host still constructs only `LiverySessionEngine`.
 Crates.io publication is a later packaging precondition: this workspace
 inherits `publish = false`. The `fleece` carve-out is reconciled with the
 boundary plan's §9.1 (see Findings); the witness still names fleece on every
@@ -343,8 +345,9 @@ replacement with a rejected late fetch for both Boa and Nova. Each positive
 case records the engine id, backend, final address, exact semantic heading,
 PNG, SHA-256 and completion-color pixel; live cases also retain ordered server
 events. The receipt directory is
-`Code/testing/genet/ortet-o5-20260908-r5/`. Browser-hosted scripting, G5 arena
-acceptance, and AccessKit's native bridge action keep their own later gates.
+`Code/testing/genet/ortet-o5-20260908-r5/`. Browser-hosted scripting and G5 arena
+acceptance keep their own later gates. The Windows AccessKit bridge-action gate
+is already accepted by O2's UIAutomation receipt below.
 
 ## Findings
 
@@ -868,6 +871,9 @@ acceptance, and AccessKit's native bridge action keep their own later gates.
   two imports, the image, authored Ahem TTF, the 403 resource, and a budget
   overflow request.
 
-  This accepts the browser-runtime boundary. AccessKit's session-generation
-  custody is already implemented; its native bridge-action receipt remains a
-  separate gate. Publication remains a later packaging decision.
+  This accepts the browser resource-runtime boundary for the script-free wasm
+  host. It does not accept browser-hosted scripting: `ports/ortet/src/web.rs`
+  still constructs `LiverySessionEngine`, with no Boa or Nova selection.
+  AccessKit session-generation custody is implemented, and its Windows native
+  bridge-action gate was accepted by the O2 UIAutomation receipt at
+  `28fee141665`. Publication remains a later packaging decision.
