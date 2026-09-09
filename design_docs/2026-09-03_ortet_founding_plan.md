@@ -5,6 +5,13 @@ the same day too, except for the crates.io claim, which stays pending. O2 and
 O3 open. The `fleece` carve-out is reconciled with the boundary plan's §9.1
 (see Findings); the witness still names fleece on every run.
 
+**Dependency adoption, 2026-09-09:** Genet takes the unified Netrender family
+at `c77b0be84fb6fc28a3c1602a2b1637f7d913acc0`: `netrender`,
+`netrender_device`, `paint_list_api`, and `paint_list_render` share one Git
+source identity in the workspace and the standalone smoke host. This follows
+the renderer's typed image-executor extraction; Genet continues to own the
+paint-list producer and host seams rather than executor scheduling.
+
 Ortet is the raw genet host: the one headed port that proves the engine runs
 without Mere. The platform boundary plan
 (`mere/design_docs/mere_docs/implementation_strategy/2026-09-02_platform_boundary_and_repository_topology_plan.md`,
