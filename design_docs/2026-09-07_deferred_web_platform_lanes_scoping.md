@@ -53,19 +53,19 @@ script-runtime contracts should exercise both Boa and Nova where supported;
 the historical Boa census is not a Nova receipt. Pixel gates identify the
 backend and the test's prescribed comparison tolerance.
 
-[Ortet O5](2026-09-03_ortet_founding_plan.md#o5-scripted-platform-host-planned-2026-09-07)
-is the planned Genet-owned route for JS-driven headed receipts below. Mark's
+[Ortet O5](2026-09-03_ortet_founding_plan.md#o5-scripted-platform-host-native-route-accepted-2026-09-08)
+is the accepted native Genet-owned route for JS-driven headed receipts below. Mark's
 [testing-role ruling](2026-09-03_ortet_founding_plan.md#platform-testing-roles-marks-ruling-2026-09-07)
 keeps `genet-wpt` responsible for automated conformance/scoring, Ortet for
 headed engine/session proof, and Pelt for downstream Mere/Genet composition.
 Pelt is not a prerequisite for accepting Genet's own hosted behavior.
 
-Ortet currently selects `LiverySessionEngine` on native and wasm. O5 adds
-selectable script-free/Boa/Nova modes and production scheduling/resource
-integration. Until its gates pass, harness-hosted results remain partial
-evidence and the headed gate stays open. Storage restart receipts also name
-an explicit test provider and directory; O0-O4 imply neither scripting nor
-persistent storage. Later API lanes supply their own fixtures through Ortet.
+Ortet now selects script-free, Boa and Nova modes and has accepted native
+production scheduling/resource integration at exact source `f3dc1bcf909`.
+That qualifies Ortet as the native headed route; it does not qualify a later
+API merely by hosting its fixture. Storage restart receipts still name an
+explicit test provider and directory, and browser-hosted scripting retains a
+separate gate. Later API lanes supply their own fixtures through Ortet.
 
 Genet owns web-observable semantics and raw provider contracts. Mere's hosts
 own profile selection, persistence provisioning and product policy. A test

@@ -103,6 +103,19 @@ cargo run -p ortet -- --url ports/ortet/examples/article.html \
     --frames 3 --artifact /tmp/ortet_scrolled.png --actions 'scroll:0,240'
 ```
 
+The O5 scripted acceptance runner builds one exact-source Boa/Nova binary and
+runs the static input/timer/microtask, bounded timeout, delayed fetch, Worker,
+and stale-session cases through the native host:
+
+```powershell
+./support/ci/run_ortet_scripted_native_receipt.ps1 `
+    -ArtifactDir C:\path\to\ortet-o5-receipt
+```
+
+Each positive case writes its log, PNG, SHA-256, completion pixel and, for live
+resources, ordered server events. The timeout case must exit unsuccessfully
+with its configured deadline in the log.
+
 The digest is FNV-1a over the frame's RGBA bytes (`RgbaFrame::digest`), so two
 runs of the same address on the same machine agree, and a run whose content
 moved does not. Every run also prints `settled at <address>`, which is the

@@ -459,7 +459,7 @@ Keep the engine-owned node store and the script-engine-neutral handle seam.
 Strengthen the semantic contract across Rust storage, JS bindings, layout and
 collection. This is a continuation of the existing arena, not a replacement
 collector or a shared store for Mere's durable graph. G5 owns these invariants;
-the [Ortet O5 plan](../design_docs/2026-09-03_ortet_founding_plan.md#o5-scripted-platform-host-planned-2026-09-07)
+the [Ortet O5 plan](../design_docs/2026-09-03_ortet_founding_plan.md#o5-scripted-platform-host-native-route-accepted-2026-09-08)
 owns the headed host through which they are exercised.
 
 **Identity.** Treat arena membership, node identity, owning document, tree

@@ -1,11 +1,12 @@
 # Ortet founding plan
 
-**Status:** O0 through O4 and O5a engine selection are landed. O5b has an
-unaccepted integration lane for session wake scheduling and bounded semantic
-completion; O5c's per-engine headed receipts remain open. Browser http(s)
-resource provisioning landed structurally in `35efc1985bc` and its headed HTTP
-runtime gate is accepted in `247a52e612a`. AccessKit session-generation
-custody is landed, while its native bridge-action receipt remains open.
+**Status:** O0 through O5 are landed for the native host. O5's exact-source
+Boa/Nova receipts at `f3dc1bcf909` accept native input, timer/microtask
+completion, bounded failure, idle-woken fetch and Worker delivery, correlated
+semantic/pixel output, and stale-session rejection. Browser http(s) resource
+provisioning landed structurally in `35efc1985bc` and its headed HTTP runtime
+gate is accepted in `247a52e612a`. AccessKit session-generation custody is
+landed, while its native bridge-action receipt remains open.
 Crates.io publication is a later packaging precondition: this workspace
 inherits `publish = false`. The `fleece` carve-out is reconciled with the
 boundary plan's §9.1 (see Findings); the witness still names fleece on every
@@ -92,8 +93,9 @@ O0-O4 prove the raw `LiverySessionEngine` route. They do not establish page
 JavaScript execution or a persistent storage provider. The
 [deferred web-platform scoping](2026-09-07_deferred_web_platform_lanes_scoping.md#shared-acceptance-and-host-prerequisites)
 uses scripted Ortet as the target for Genet's JS-driven headed receipts.
-Until O5 is accepted, runtime/harness results and the open Ortet gate remain
-separate. Restart/storage tests additionally need an explicit provider.
+Native O5 receipts now qualify that host route; browser-hosted scripting keeps
+its own later gate. Restart/storage tests additionally need an explicit
+provider.
 
 ### O0. Found the crate
 
@@ -233,7 +235,7 @@ edges are excluded and retains an allowed graph control. Predicate assertions
 remain a separate guard on the name list; they are not presented as a live
 graph control.
 
-### O5. Scripted platform host (O5a landed; O5b-O5c in progress 2026-09-08)
+### O5. Scripted platform host (native route accepted 2026-09-08)
 
 Extend the existing host with selectable script-free, Boa and Nova execution
 modes, using the same window, session input, rendering and capture path.
@@ -257,21 +259,20 @@ both script engines out of its dependency cone; `scripted` adds Boa and
 `scripted-nova` adds Nova on supported 64-bit native targets. Successful runs
 report the stable engine id, concrete backend, target, enabled features and an
 optional `GENET_SOURCE_REVISION`. A receipt without that revision remains
-unqualified. O5a closes selection and dependency-cone ownership. O5c owns the
-per-engine headed acceptance receipts; they are still open.
+unqualified. O5a closes selection and dependency-cone ownership. O5c's native
+per-engine headed receipts are accepted below.
 
-**O5b: production session integration.** Resource and scheduling adapters must
-serve the real document session, not a harness-only copy of the runtime.
+**O5b: production session integration — landed 2026-09-08.** Resource and
+scheduling adapters must serve the real document session, not a harness-only
+copy of the runtime.
 
-**Current implementation lane, unaccepted:** integration commits
-`a58a7965854` and `167c9e679c5` add a session pending-work report, winit
-deadline scheduling, bounded artifact completion, engine-owned heading
-readback, and a Boa/Nova native-fixture runner. This is implementation under
-review, not a headed receipt: its wake and settlement policy must agree with
-the shared observability contract, receipt timeouts must wake independently of
-the work source, and the runner must prove an idle `WaitUntil` wake rather
-than only forced redraws. It does not establish live-server completion, Worker
-delivery, cancellation, or stale-result exclusion.
+`5a5a5cd2049` lands the host-provided resource bridge, session generations,
+completion-driven winit wake scheduling, bounded semantic completion, and
+asynchronous Worker resource handoff. Page fetch completion is staged before
+external work can report idle. A failed replacement re-wakes the restored live
+generation, while a successful replacement rejects the former generation's
+late completion. `8d6439de4ac` reserves the Windows UI stack required by the
+debug Boa/Nova host without moving winit off its platform thread.
 
 - Provision document/external-script loads and script fetch/worker resource
   requests through the existing host contracts with consistent base URL,
@@ -290,8 +291,9 @@ delivery, cancellation, or stale-result exclusion.
   Expose a verifiable completion condition and DOM/semantic readback through
   an engine-owned inspection seam, then correlate it with the captured frame.
 
-**O5c: acceptance.** Freeze the named fixtures and regression manifest before
-implementation. Native acceptance exercises both Boa and Nova where supported:
+**O5c: acceptance — accepted for native Boa and Nova 2026-09-08.** Freeze the
+named fixtures and regression manifest before implementation. Native
+acceptance exercises both Boa and Nova where supported:
 
 1. A loaded page executes inline and external JS, changes DOM after a
    timer/microtask and handles native input; semantic readback and pixels
@@ -334,6 +336,16 @@ Each receipt must fail for an unmet condition or timeout. Runtime-only tests,
 a runner that has not passed its acceptance cases, and WPT-only results remain
 partial evidence.
 
+The native done condition is met at exact source `f3dc1bcf909`. The runner
+passed the static input/timer/microtask fixture, a deliberate 25ms unmet-heading
+failure, delayed live fetch, delayed Worker resource/message delivery, and
+replacement with a rejected late fetch for both Boa and Nova. Each positive
+case records the engine id, backend, final address, exact semantic heading,
+PNG, SHA-256 and completion-color pixel; live cases also retain ordered server
+events. The receipt directory is
+`Code/testing/genet/ortet-o5-20260908-r5/`. Browser-hosted scripting, G5 arena
+acceptance, and AccessKit's native bridge action keep their own later gates.
+
 ## Findings
 
 - 2026-09-07: `ports/ortet/src/{shell,web}.rs` select `LiverySessionEngine`;
@@ -342,8 +354,8 @@ partial evidence.
   `LiveryScriptedDocument`. At review commit `61b40915dea`, the document's
   pump drives timers/microtasks and its pending-work check inspects timers
   (`genet-scripted/document.rs`). Worker pump/resource changes are concurrent
-  WIP in the runtime/harness, not a production-session receipt. Re-read that
-  seam before implementing O5b.
+  WIP in the runtime/harness, not a production-session receipt. O5b later
+  resolved that seam through the shared runtime and session contracts.
 
 - 2026-09-03: `genet-winit-host` and `genet-render-host` already split the
   window-specific from the target-neutral present mechanics, and both
@@ -540,6 +552,18 @@ partial evidence.
   rather than a self-test that reimplements the old rule.
 
 ## Progress
+
+- 2026-09-08: **O5 native scripted hosting accepted** at exact source
+  `f3dc1bcf909`. Boa and Nova each passed static native input followed by
+  timer/microtask completion, a deliberate bounded timeout failure, an
+  idle-woken live fetch, an idle-woken Worker resource/message result, and a
+  navigation replacement that logged and excluded the prior generation's
+  late fetch. Semantic headings and final-frame color pixels agree across both
+  backends; PNGs, SHA-256 files, logs and ordered server events are retained at
+  `Code/testing/genet/ortet-o5-20260908-r5/`. Focused runtime/session/Ortet
+  suites, native all-feature and default/wasm checks, and both Ortet dependency
+  cones passed. The aggregate dependency-cone script remains red on its
+  independent stale Fleece dependency allowlist.
 
 - 2026-09-07: **O5a structural engine selection landed** at `07b4e7a40b4`.
   The real Ortet shell now selects feature-gated Livery, Boa or Nova engines
