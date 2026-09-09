@@ -54,7 +54,7 @@ function delayed(response, name, requested, released, body) {
   setTimeout(() => {
     record(name, released);
     text(response, 200, body, "text/plain; charset=utf-8");
-  }, 250);
+  }, 1000);
 }
 
 const server = createServer((request, response) => {
