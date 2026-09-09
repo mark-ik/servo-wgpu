@@ -116,13 +116,31 @@ remains blocked by five diagnostics in unchanged `fragmentation.rs` and
 drift. The changed test file passes its direct formatting check, and the
 patch passes `git diff --check`.
 
-The next reproduction belongs at Livery's root/body style lowering and
-layout consumption: use CSS `html { direction: rtl }`, record the selected
-algorithms, solved child inline size, returned child size, and physical
-fragments. Compare those against an LTR control before changing Buckram.
-The passing simple case does not rule out more complex block shapes.
-The accepted marker branch and broader held RTL branch remain separate;
-this probe does not integrate either or validate their text changes.
+The Livery follow-up reproduces the shift through CSS resolution and physical
+fragments: the default body is at x=-8 with width=800 under an RTL HTML parent.
+The cause is `CAMBIUM_UA_DEFAULTS` forcing `body { inline-size: 100%; margin:
+8px; }`, not Buckram's RTL conversion. Removing that forced size lets the
+ordinary auto-size algorithm return x=8 and width=784. The LTR control also
+fits its margins, while an authored `inline-size: 100%` retains its specified
+overflow. Border/padding and nonempty nested-block fixtures exercise the same
+path. A vertical-rl fixture also checks y=8 and height=584 in a definite
+600-pixel inline axis. Direction is supplied through CSS so HTML direction
+hints retain their separate gate.
+
+Source `0bb1479fa8ad23c69cd71cd1f5ede871fc63d9c0` passes the five focused
+cases and the final locked/offline Genet-Livery library and integration suite:
+486 passed, zero failed, six ignored across 31 result groups. The existing
+flex automatic-minimum fixture now expects 304 pixels inside its 320-pixel
+viewport and default body margins; its intrinsic-height assertions remain
+unchanged. Scoped strict Clippy is blocked by an existing `too_many_arguments`
+diagnostic in unchanged `layout.rs`. The touched tests pass direct rustfmt
+checks, and the patch passes `git diff --check`.
+
+Follow-up validation artifacts live at
+`testing/genet/wpt-ledger/2026-09-08_body-auto-inline-size/`. The default-size
+change affects page geometry broadly; its frozen CSS/WPT comparison remains
+an integration gate. The accepted marker branch and broader held RTL branch
+remain separate, and Row 17 stays open.
 
 ## Stop rules
 
