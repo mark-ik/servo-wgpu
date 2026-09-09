@@ -81,6 +81,15 @@ struct PolicyState {
     /// scripts, so these never reach the driver as a `Script` pause; it drains
     /// this list at the end of the parse and runs them.
     foreign_scripts: Vec<NodeId>,
+    /// `<script>` elements this parser created and has not yet prepared — the
+    /// spec's **parser document** being non-null, expressed as a set.
+    ///
+    /// It decides one thing: whether a DOM mutation re-prepares the element.
+    /// HTML's re-preparation triggers apply only to a script that is *not*
+    /// parser-inserted, and `execution-timing/026.html` turns on exactly that —
+    /// it writes an empty `<script>`, sets its `src`, and expects the **parser**
+    /// to fetch and run it when it pops it, not the `src` assignment to.
+    parser_created_scripts: HashSet<NodeId>,
     /// The quirks mode the tree builder inferred from the doctype.
     quirks_mode: QuirksModeRecord,
     /// Whether the registry holds any custom element definition at all. While
@@ -143,6 +152,19 @@ impl ParserPolicy {
         std::mem::take(&mut self.inner.borrow_mut().foreign_scripts)
     }
 
+    /// Whether this parser created `id` and has not prepared it yet — HTML's
+    /// "parser document is non-null". See [`PolicyState::parser_created_scripts`].
+    pub fn is_parser_created_script(&self, id: NodeId) -> bool {
+        self.inner.borrow().parser_created_scripts.contains(&id)
+    }
+
+    /// Prepare's step 3, "set el's parser document to null": the driver calls
+    /// this as it prepares each script it pauses at, after which a DOM mutation
+    /// may re-prepare the element like any other.
+    pub fn clear_parser_created_script(&self, id: NodeId) {
+        self.inner.borrow_mut().parser_created_scripts.remove(&id);
+    }
+
     fn shadow_is_disabled(&self, local: &str) -> bool {
         self.inner.borrow().shadow_disabled.contains(local)
     }
@@ -153,6 +175,10 @@ impl ParserPolicy {
 
     fn note_foreign_script(&self, id: NodeId) {
         self.inner.borrow_mut().foreign_scripts.push(id);
+    }
+
+    fn note_parser_created_script(&self, id: NodeId) {
+        self.inner.borrow_mut().parser_created_scripts.insert(id);
     }
 
     fn set_quirks_mode(&self, mode: QuirksModeRecord) {
@@ -265,6 +291,7 @@ impl<A: DomAccess> TreeSink for ScriptedTreeSink<A> {
     }
 
     fn create_element(&self, name: QualName, attrs: Vec<Attribute>, flags: ElementFlags) -> NodeId {
+        let name_local = name.local.clone();
         let is_foreign_script = name.ns != ns!(html) && &*name.local == "script";
         let is_custom_candidate = name.ns == ns!(html)
             && (name.local.contains('-') || attrs.iter().any(|a| *a.name.local == *"is"));
@@ -287,6 +314,9 @@ impl<A: DomAccess> TreeSink for ScriptedTreeSink<A> {
         }
         if is_foreign_script {
             self.policy.note_foreign_script(id);
+        }
+        if &*name_local == "script" {
+            self.policy.note_parser_created_script(id);
         }
         id
     }

@@ -19,6 +19,10 @@ use livery::{
 };
 use selectors::matching::MatchingContext;
 
+thread_local! {
+    static NAME_MATCHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 #[derive(Debug)]
 struct Node {
     name: &'static str,
@@ -110,6 +114,7 @@ impl Element for ElementRef {
     }
 
     fn has_local_name(&self, local_name: &Atom) -> bool {
+        NAME_MATCHES.set(NAME_MATCHES.get() + 1);
         self.node().name.eq_ignore_ascii_case(local_name.as_str())
     }
 
@@ -242,6 +247,81 @@ fn fixture() -> (ElementRef, ElementRef) {
         },
         ElementRef { dom, id: 3 },
     )
+}
+
+#[test]
+fn empty_declaration_family_skips_matching_and_mixed_families_stay_separate() {
+    let (primary, _) = fixture();
+    let empty = StyleRule::parse(
+        "button",
+        "",
+        None,
+        Origin::Author,
+        CascadeLayer::Unlayered,
+        0,
+    )
+    .unwrap();
+    let device = Device::screen(800.0, 600.0);
+    NAME_MATCHES.set(0);
+    assert!(empty.matched_declarations(&primary, &device).is_empty());
+    assert!(
+        empty
+            .matched_custom_declarations(&primary, &device)
+            .is_empty()
+    );
+    assert_eq!(
+        NAME_MATCHES.get(),
+        0,
+        "empty families do not match selectors"
+    );
+
+    for (css, custom) in [("color: red", false), ("--accent: red", true)] {
+        let rule = StyleRule::parse(
+            "button",
+            css,
+            None,
+            Origin::Author,
+            CascadeLayer::Unlayered,
+            0,
+        )
+        .unwrap();
+        NAME_MATCHES.set(0);
+        if custom {
+            assert!(rule.matched_declarations(&primary, &device).is_empty());
+        } else {
+            assert!(
+                rule.matched_custom_declarations(&primary, &device)
+                    .is_empty()
+            );
+        }
+        assert_eq!(NAME_MATCHES.get(), 0, "the absent family skips matching");
+        if custom {
+            assert_eq!(rule.matched_custom_declarations(&primary, &device).len(), 1);
+        } else {
+            assert_eq!(rule.matched_declarations(&primary, &device).len(), 1);
+        }
+        assert!(NAME_MATCHES.get() > 0, "the present family still matches");
+    }
+
+    NAME_MATCHES.set(0);
+    let mixed = StyleRule::parse(
+        "button",
+        "color: #123456; --accent: #abcdef;",
+        None,
+        Origin::Author,
+        CascadeLayer::Unlayered,
+        1,
+    )
+    .unwrap();
+    assert_eq!(mixed.matched_declarations(&primary, &device).len(), 1);
+    assert_eq!(
+        mixed.matched_custom_declarations(&primary, &device).len(),
+        1
+    );
+    assert!(
+        NAME_MATCHES.get() > 0,
+        "populated families still match selectors"
+    );
 }
 
 #[test]

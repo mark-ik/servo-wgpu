@@ -887,6 +887,9 @@ impl StyleRule {
     where
         E: Element<Impl = crate::selector::LiverySelectorImpl>,
     {
+        if self.declarations.declarations.is_empty() {
+            return Vec::new();
+        }
         if self
             .media
             .as_ref()
@@ -963,6 +966,9 @@ impl StyleRule {
     where
         E: Element<Impl = crate::selector::LiverySelectorImpl>,
     {
+        if self.declarations.custom.is_empty() {
+            return Vec::new();
+        }
         if self
             .media
             .as_ref()

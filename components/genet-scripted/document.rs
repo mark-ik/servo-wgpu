@@ -740,6 +740,13 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
             };
         }
         self.rt.host().borrow_mut().viewport_scroll = self.cssom.scroll();
+        // A viewport change moves the device every live `MediaQueryList` was
+        // evaluated against, so re-evaluate them and fire `change` where the
+        // match state flipped. Only the owner of the `Runtime` can: the
+        // handler itself runs inside a native and cannot re-enter the engine.
+        if self.cssom.take_device_changed() {
+            let _ = self.rt.notify_media_features_changed();
+        }
         paint_list_render::translate_paint_list(&list)
     }
 
@@ -1664,18 +1671,13 @@ mod tests {
     /// `async` does not block the parser: an async script positioned before a later
     /// inline script runs after it (the async script is deferred past the blocking pass).
     ///
-    /// FINDING (not a Livery/render split issue — this is `ScriptedDocument`,
-    /// headless, unchanged by this port): this assertion contradicts
-    /// `script-runtime-api`'s own documented `ScriptTiming::Async` semantics
-    /// ("with a synchronous resource route it *is* available at the pause, so
-    /// this runs there" — i.e. with a synchronous fetcher, `async` behaves
-    /// like `Blocking`, not `Deferred`). The observed order is `["async",
-    /// "inline"]`, matching the documented behavior; this test's expectation
-    /// of `["inline", "async"]` was never correct. It never ran before (dead
-    /// under `#[cfg(feature = "render")]`), so nothing caught it. See the
-    /// `_on_boa` wrapper below, kept `#[ignore]`d rather than silently
-    /// corrected, since fixing an assertion during a test-hygiene pass is out
-    /// of this task's scope.
+    /// This was `#[ignore]`d until 2026-09-08, when the assertion was read as
+    /// wrong because `ScriptTiming::Async` documented running at the pause. The
+    /// spec is the authority and it says otherwise: an async classic script is
+    /// executed by a *queued task*, so it never blocks the parser and a later
+    /// parser-blocking inline script runs first. The driver now collects async
+    /// scripts and runs them when the token stream stops, so the order this
+    /// test always asserted is the order genet produces.
     fn async_runs_after_parser_blocking<E: ScriptEngine>() {
         let files = map_fetcher(&[
             (
@@ -1805,20 +1807,10 @@ mod tests {
     /// a relative dependency (resolved against the entry's URL and fetched through the
     /// host loader) and uses it.
     ///
-    /// FINDING (not a Livery/render split issue — headless `ScriptedDocument`
-    /// script loading, unchanged by this port): fails as authored.
-    /// `DocumentScriptLoader::resolve` (this file) resolves every specifier —
-    /// including a module's relative `import`s — through `crate::resolve_href`,
-    /// which does plain-string prefix concatenation and never collapses a
-    /// leading `./`: `resolve_href("http://x/main.js", "./dep.js")` yields
-    /// `"http://x/./dep.js"`, which does not string-match the fixture's
-    /// `"http://x/dep.js"` key, so the fetch is reported and the import
-    /// rejects. `lib.rs`'s own doc comment on `resolve_href` says "Module
-    /// resolution uses `url::Url::join` separately where normalization is
-    /// required" — that normalizing path is not actually wired up here. This
-    /// test never ran before (dead under `#[cfg(feature = "render")]`), so
-    /// nothing caught it. Left `#[ignore]`d rather than silently fixed, since
-    /// patching resolution logic is out of this test-hygiene pass's scope.
+    /// This was `#[ignore]`d until 2026-09-08: `crate::resolve_href` was plain
+    /// prefix concatenation, so `./dep.js` resolved to `http://x/./dep.js` and
+    /// never matched the route's key. `resolve_href` now runs the URL
+    /// standard's relative resolution and the test passes as authored.
     fn module_imports_dependency<E: ScriptEngine>() {
         let files = map_fetcher(&[
             (
@@ -1845,8 +1837,8 @@ mod tests {
     /// A diamond import (`main` → `b`, `c` → `shared`) loads `shared` exactly
     /// once: its top-level side effect fires a single time (the loader caches by URL).
     ///
-    /// FINDING: the same `resolve_href` "./" bug as `module_imports_dependency`
-    /// above (`b.js`/`c.js` importing `./shared.js` fails to resolve).
+    /// Also `#[ignore]`d until 2026-09-08 for the same `resolve_href` reason
+    /// (`b.js`/`c.js` importing `./shared.js` failed to resolve).
     fn module_import_diamond_loads_shared_once<E: ScriptEngine>() {
         let files = map_fetcher(&[
             (
@@ -2068,7 +2060,6 @@ mod tests {
         defer_scripts_run_in_document_order::<BoaEngine>();
     }
     #[test]
-    #[ignore = "script-runtime-api's own ScriptTiming::Async doc: with a synchronous fetcher, async runs at the parser pause (like Blocking), not after it; this test's expected order was never correct — see the fn doc above"]
     fn async_runs_after_parser_blocking_on_boa() {
         async_runs_after_parser_blocking::<BoaEngine>();
     }
@@ -2097,12 +2088,10 @@ mod tests {
         external_module_runs::<BoaEngine>();
     }
     #[test]
-    #[ignore = "DocumentScriptLoader::resolve resolves a module's relative import through resolve_href, which does not collapse a leading './' (see the fn doc above); the fetch never string-matches the fixture key"]
     fn module_imports_dependency_on_boa() {
         module_imports_dependency::<BoaEngine>();
     }
     #[test]
-    #[ignore = "same resolve_href './' bug as module_imports_dependency_on_boa"]
     fn module_import_diamond_loads_shared_once_on_boa() {
         module_import_diamond_loads_shared_once::<BoaEngine>();
     }
@@ -2169,7 +2158,6 @@ mod tests {
             defer_scripts_run_in_document_order::<NovaEngine>();
         }
         #[test]
-        #[ignore = "same ScriptTiming::Async finding as async_runs_after_parser_blocking_on_boa"]
         fn async_runs_after_parser_blocking_on_nova() {
             async_runs_after_parser_blocking::<NovaEngine>();
         }
@@ -2198,12 +2186,10 @@ mod tests {
             external_module_runs::<NovaEngine>();
         }
         #[test]
-        #[ignore = "same resolve_href './' finding as module_imports_dependency_on_boa"]
         fn module_imports_dependency_on_nova() {
             module_imports_dependency::<NovaEngine>();
         }
         #[test]
-        #[ignore = "same resolve_href './' finding as module_imports_dependency_on_boa"]
         fn module_import_diamond_loads_shared_once_on_nova() {
             module_import_diamond_loads_shared_once::<NovaEngine>();
         }
@@ -2466,15 +2452,14 @@ mod tests {
             );
         }
 
-        /// A finding, not a port: Livery installs a `ComputedStyleHandler`
-        /// (`LiveryComputedStyle`, wired in `LiveryCssom::install_live_with_optional_sink`)
-        /// but never a `MediaQueryHandler`. Until Livery wires one, `window.matchMedia`
-        /// cannot reflect the rendered frame's device the way the retired
-        /// `MediaQueryBridge` did over `genet_layout::IncrementalLayout`. Kept as a
-        /// compiling, `#[ignore]`d receipt of the gap rather than deleted, since the
-        /// behavior itself (device-aware `matchMedia`) is still wanted on this route.
+        /// `matchMedia` evaluates against the device the frame was laid out
+        /// with. `LiveryCssom` now installs a `MediaQueryHandler`
+        /// (`LiveryMediaQueries`) beside its `ComputedStyleHandler`, over
+        /// `livery::media::MediaQueryList` and the same retained `Device`; a
+        /// viewport change reports through `take_device_changed`, so
+        /// `LiveryScriptedDocument::frame` fires the `change` events too. This
+        /// was `#[ignore]`d until 2026-09-08 for want of exactly that handler.
         #[test]
-        #[ignore = "Livery installs no MediaQueryHandler yet (see LiveryCssom::install_live_with_optional_sink); window.matchMedia() never reflects the frame's device on this route"]
         fn match_media_evaluates_against_the_frame_on_boa() {
             let mut doc = LiveryScriptedDocument::<BoaEngine>::parse(
                 "<html><body><script>setTimeout(function(){\

@@ -75,14 +75,18 @@ fn script_order_is_document_order<E: ScriptEngine>() {
          </body>",
         &loader,
     );
-    // Parser-blocking and async ran during the parse; `defer` and the module
-    // ran after it. The data block never ran at all.
+    // Parser-blocking scripts ran during the parse; `defer` and the module ran
+    // after it. The data block never ran at all.
     assert_eq!(report.scripts_run, 4, "blocking + async");
     assert_eq!(report.deferred_run, 2, "defer + module");
     let log = read(&mut rt, "log.join(',')");
+    // `async` does not block the parser, so the later inline script runs first
+    // even though this route's fetch had already completed. This assertion read
+    // `inline-1,ext,async-ext,inline-2` until 2026-09-08, when the async script
+    // stopped running at the pause — see `ScriptTiming::Async`.
     assert!(
-        log.starts_with("inline-1,ext,async-ext,inline-2"),
-        "parser-blocking scripts run in document order, got {log}"
+        log.starts_with("inline-1,ext,inline-2,async-ext"),
+        "parser-blocking scripts run in document order and async does not block them, got {log}"
     );
     assert!(log.contains("defer-ext"), "defer must run, got {log}");
     assert!(
@@ -442,6 +446,104 @@ fn a_script_in_template_contents_does_not_run<E: ScriptEngine>() {
     assert_eq!(read(&mut rt, "String(window.after)"), "true");
 }
 
+/// HTML re-prepares a `<script>` that is not parser-inserted when a node is
+/// inserted into it while it is connected. `svg/scripted/script-invalid-script-type.html`
+/// is the receipt: an SVG script with `type="text/plain"` is a data block, so
+/// preparing it during the parse returns *before* the already-started flag is
+/// set; giving it a valid `type` and appending a text node prepares it again,
+/// and this time it runs.
+fn a_script_with_an_invalid_type_reruns_when_its_type_becomes_valid<E: ScriptEngine>() {
+    let mut rt = parse::<E>(
+        "<body><svg><script type=\"text/plain\">window.scriptRan = true;</script></svg></body>",
+    );
+    assert_eq!(
+        read(&mut rt, "String(window.scriptRan)"),
+        "undefined",
+        "a data block does not run during the parse"
+    );
+    let _ = rt.eval(
+        "var s = document.querySelector('svg > script');\
+         s.type = 'text/javascript';\
+         s.appendChild(document.createTextNode(''));",
+    );
+    assert_eq!(
+        read(&mut rt, "String(window.scriptRan)"),
+        "true",
+        "the insertion re-prepares the script, and the valid type lets it run"
+    );
+}
+
+/// A script element created and appended by script runs when it becomes
+/// connected — the ordinary `createElement('script')` idiom.
+fn a_created_script_runs_when_it_becomes_connected<E: ScriptEngine>() {
+    let mut rt = parse::<E>("<body></body>");
+    let _ = rt.eval(
+        "var s = document.createElement('script');\
+         s.textContent = 'window.dynamic = 1;';\
+         document.body.appendChild(s);",
+    );
+    assert_eq!(read(&mut rt, "String(window.dynamic)"), "1");
+    // And exactly once: the already-started flag survives a move.
+    let _ = rt.eval("window.dynamic = 2; document.head.appendChild(s);");
+    assert_eq!(
+        read(&mut rt, "String(window.dynamic)"),
+        "2",
+        "re-inserting an already-started script must not run it again"
+    );
+}
+
+/// A `<script>` an `innerHTML` write produced must never run. The mechanism is
+/// the spec's, not a special case: the fragment parser prepares it in a
+/// document with no browsing context, which sets already-started at step 10 and
+/// then returns at step 13.
+fn an_inner_html_script_never_runs<E: ScriptEngine>() {
+    let mut rt = parse::<E>("<body><div id=host></div></body>");
+    let _ = rt.eval(
+        "document.getElementById('host').innerHTML = '<script>window.injected = 1;<\\/script>';",
+    );
+    assert_eq!(read(&mut rt, "String(window.injected)"), "undefined");
+    // Moving it into the document afterwards does not revive it either.
+    let _ = rt.eval("document.body.appendChild(document.querySelector('#host script'));");
+    assert_eq!(
+        read(&mut rt, "String(window.injected)"),
+        "undefined",
+        "already-started is what stops it, and it travels with the node"
+    );
+}
+
+/// `execution-timing/120`: a script created in a document with no browsing
+/// context must not run, in that document or after being appended to this one.
+/// The write must also leave the active document alone — it used to imply
+/// `document.open` on *this* page and wipe it.
+fn a_script_created_without_a_browsing_context_never_runs<E: ScriptEngine>() {
+    let mut rt = parse::<E>("<body><p id=keep>kept</p></body>");
+    let _ = rt.eval(
+        "var doc = document.implementation.createHTMLDocument('');\
+         doc.write('<script>window.ranWithoutContext = 1;<\\/script>');\
+         window.moved = doc.head.firstChild;",
+    );
+    assert_eq!(
+        read(&mut rt, "String(window.ranWithoutContext)"),
+        "undefined"
+    );
+    assert_eq!(
+        read(&mut rt, "String(document.getElementById('keep') && 1)"),
+        "1",
+        "a write into another document must not replace this one"
+    );
+    let _ = rt.eval("document.body.appendChild(window.moved);");
+    assert_eq!(
+        read(&mut rt, "String(window.ranWithoutContext)"),
+        "undefined",
+        "the script was already started when it was prepared without a context"
+    );
+    assert_eq!(
+        read(&mut rt, "window.moved.localName"),
+        "script",
+        "and it really is the script element that moved"
+    );
+}
+
 macro_rules! both_engines {
     ($($body:ident => ($boa:ident, $nova:ident)),* $(,)?) => {
         $(
@@ -479,4 +581,12 @@ both_engines! {
         => (svg_script_on_boa, svg_script_on_nova),
     a_script_in_template_contents_does_not_run
         => (template_script_inert_on_boa, template_script_inert_on_nova),
+    a_script_with_an_invalid_type_reruns_when_its_type_becomes_valid
+        => (invalid_type_reprepare_on_boa, invalid_type_reprepare_on_nova),
+    a_created_script_runs_when_it_becomes_connected
+        => (created_script_runs_on_boa, created_script_runs_on_nova),
+    an_inner_html_script_never_runs
+        => (inner_html_script_inert_on_boa, inner_html_script_inert_on_nova),
+    a_script_created_without_a_browsing_context_never_runs
+        => (no_browsing_context_on_boa, no_browsing_context_on_nova),
 }

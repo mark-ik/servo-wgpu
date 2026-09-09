@@ -128,6 +128,14 @@ impl<E: ScriptEngine> NativeFn<E> for GetInnerHtml {
 }
 
 /// `__setInnerHtml(node, html)` parses and replaces the node's child fragment.
+///
+/// Every `<script>` the fragment parse produces is flagged **already started**.
+/// That is not a policy choice: HTML's fragment parsing algorithm runs in a
+/// document with no browsing context, so each script reaches step 10 of
+/// "prepare the script element" (which sets the flag) and returns at step 13
+/// (scripting disabled). It is the whole reason
+/// `div.innerHTML = '<script>...'` does not execute — and, now that a script
+/// *is* re-prepared when it becomes connected, the only reason.
 pub(crate) struct SetInnerHtml;
 impl<E: ScriptEngine> NativeFn<E> for SetInnerHtml {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
@@ -137,8 +145,10 @@ impl<E: ScriptEngine> NativeFn<E> for SetInnerHtml {
         };
         let html_value = cx.arg(1);
         let html = cx.value_to_string(&html_value)?;
-        with_dom::<E, _>(cx, |dom| {
-            dom.set_inner_html(NodeId::from_raw(id as usize), &html)
+        with_host_state::<E, _>(cx, |host| {
+            let node = NodeId::from_raw(id as usize);
+            host.dom.set_inner_html(node, &html);
+            markup_insertion::mark_subtree_scripts_started(host, node);
         });
         Ok(cx.undefined())
     }
@@ -613,9 +623,12 @@ impl<E: ScriptEngine> NativeFn<E> for ParseDocument {
         if !has_root {
             return Ok(cx.undefined());
         }
-        match with_dom::<E, _>(cx, |dom| {
-            let doc = dom.create_document();
-            clone_into(&parsed, parsed.document(), dom, doc);
+        // A `DOMParser` document has no browsing context, so its scripts are
+        // already started and can never run, here or after being adopted.
+        match with_host_state::<E, _>(cx, |host| {
+            let doc = host.dom.create_document();
+            clone_into(&parsed, parsed.document(), &mut host.dom, doc);
+            markup_insertion::mark_subtree_scripts_started(host, doc);
             doc
         }) {
             Some(node) => reflect_pinned::<E>(cx, node.raw() as u64),

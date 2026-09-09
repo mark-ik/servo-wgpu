@@ -276,6 +276,19 @@ fn ns_attr_qual(ns: &str, qname: &str) -> QualName {
 
 /// Run `f` against the host's [`ScriptedDom`], recovered from the engine host-data
 /// slot (a `RefCell<HostState>`). `None` if no host state is set.
+/// Run `f` over the whole host state. `with_dom` is the common case; this is
+/// for a native that must touch the arena *and* something beside it (the
+/// already-started flag, say).
+fn with_host_state<E: ScriptEngine, R>(
+    cx: &mut E::CallCx<'_>,
+    f: impl FnOnce(&mut HostState) -> R,
+) -> Option<R> {
+    let data = cx.host_data()?;
+    let cell = data.downcast_ref::<RefCell<HostState>>()?;
+    let mut host = cell.borrow_mut();
+    Some(f(&mut host))
+}
+
 fn with_dom<E: ScriptEngine, R>(
     cx: &mut E::CallCx<'_>,
     f: impl FnOnce(&mut ScriptedDom) -> R,

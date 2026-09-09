@@ -34,6 +34,7 @@
 //! reason: they are host facts a native reads, set by the parser driver at the
 //! spec's points rather than guessed by the bootstrap.
 
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
 use genet_scripted_dom::parser::{DocumentParser, ParsePause, ParserPolicy};
@@ -95,6 +96,27 @@ pub struct MarkupState {
     /// How many `document.write` calls re-entered the token stream, for the
     /// parse report.
     pub writes_applied: usize,
+    /// HTML's **already started** flag, per `<script>` element.
+    ///
+    /// It lives here rather than on the parser because the flag outlives the
+    /// parse and travels with the node: "prepare the script element" sets it at
+    /// step 10, *before* the scripting-disabled check at step 13, which is
+    /// exactly why a script parsed into a document with no browsing context
+    /// never runs when it is later moved into one. The parser's own EOF marking
+    /// (`DocumentParser::script_already_started`) is a second, stream-scoped
+    /// source of the same answer and both are consulted.
+    pub already_started: HashSet<NodeId>,
+    /// `document.write` source per document that is **not** the active one.
+    ///
+    /// Such a document has no browsing context and so no script timing to
+    /// honour; there is no live tokenizer for it either, so each write appends
+    /// to this buffer and re-materializes the document's contents from the
+    /// whole of it. Its `<script>` elements are flagged already started as the
+    /// fragment parser would have.
+    pub detached_streams: HashMap<NodeId, String>,
+    /// `<script>` elements staged by `__stageScripts` for the bootstrap's
+    /// re-preparation loop, in tree order.
+    pub pending_prepare: VecDeque<NodeId>,
 }
 
 /// The document's source stream: a tokenizer over the live arena.
@@ -205,7 +227,9 @@ fn with_parked<R>(host: &mut HostState, stream: &OpenStream, f: impl FnOnce() ->
 fn open_stream_pump(host: &mut HostState) -> Option<String> {
     match stream_resume(host) {
         ParsePause::Script(node) => {
-            let inert = stream_script_already_started(host, node);
+            let inert = script_started(host, node);
+            clear_parser_inserted(host, node);
+            mark_script_started(host, node);
             host.markup.current_script = Some(node);
             Some(if inert {
                 String::new()
@@ -232,6 +256,178 @@ pub(crate) fn open_stream_close(host: &mut HostState) {
     host.dom.set_parsing(false);
     host.markup.stalled = None;
     host.markup.current_script = None;
+}
+
+/// Steps 5, 6 and 8 of HTML's "prepare the script element": the script's own
+/// text, its `src`, and the script kind its `type`/`language` name. `None` when
+/// the element is not a script, has neither a `src` nor any text, or names a
+/// type that is not a script at all (a data block) — the three ways prepare
+/// returns *before* step 10, and so without setting the already-started flag.
+fn script_prepare_gate(
+    dom: &ScriptedDom,
+    node: NodeId,
+) -> Option<(crate::parse::ScriptKind, Option<String>, String)> {
+    // Both the HTML and the SVG `script` element take these steps; the SVG one
+    // is why `svg/scripted/script-invalid-script-type.html` is a receipt here.
+    if dom.element_name(node)?.local.as_ref() != "script" {
+        return None;
+    }
+    let html = Namespace::from("");
+    let attr = |name: &str| {
+        dom.attribute(node, &html, &LocalName::from(name))
+            .map(str::to_owned)
+    };
+    let text: String = dom
+        .dom_children(node)
+        .filter_map(|c| dom.text(c))
+        .collect::<String>();
+    let src = attr("src").filter(|s| !s.is_empty());
+    if src.is_none() && text.is_empty() {
+        return None;
+    }
+    let kind = crate::parse::classify(attr("type").as_deref(), attr("language").as_deref())?;
+    Some((kind, src, text))
+}
+
+/// Whether `node` is a `<script>` the document's own parser created and has not
+/// prepared yet — HTML's "parser document is non-null". Such an element is
+/// **not** re-prepared by a DOM mutation; the parser will prepare it when it
+/// pops it. `execution-timing/026.html` writes an empty `<script>` and then sets
+/// its `src`, and expects exactly that.
+pub(crate) fn script_is_parser_inserted(host: &HostState, node: NodeId) -> bool {
+    host.markup
+        .open_stream
+        .as_ref()
+        .is_some_and(|stream| stream.parser.policy().is_parser_created_script(node))
+}
+
+/// Prepare's step 3: the element stops being parser-inserted as the parser
+/// prepares it.
+pub(crate) fn clear_parser_inserted(host: &HostState, node: NodeId) {
+    if let Some(stream) = host.markup.open_stream.as_ref() {
+        stream.parser.policy().clear_parser_created_script(node);
+    }
+}
+
+/// Whether `node` carries HTML's already-started flag, from either source.
+pub(crate) fn script_started(host: &HostState, node: NodeId) -> bool {
+    host.markup.already_started.contains(&node) || stream_script_already_started(host, node)
+}
+
+/// Step 10: set the already-started flag, if the element got that far.
+pub(crate) fn mark_script_started(host: &mut HostState, node: NodeId) {
+    if script_prepare_gate(&host.dom, node).is_some() {
+        host.markup.already_started.insert(node);
+    }
+}
+
+/// Flag every `<script>` in `root`'s subtree already started.
+///
+/// This is what a fragment parse does by construction: `innerHTML`,
+/// `DOMParser.parseFromString` and a write into a document with no browsing
+/// context all prepare their scripts in a document that has none, so each one
+/// reaches step 10, sets the flag, and returns at step 13 without running. It
+/// is also the only reason inserting such a subtree into the live document does
+/// not execute it.
+pub(crate) fn mark_subtree_scripts_started(host: &mut HostState, root: NodeId) {
+    let scripts = collect_scripts(&host.dom, root);
+    for node in scripts {
+        mark_script_started(host, node);
+    }
+}
+
+/// The `<script>` elements at or under `root`, in tree order.
+fn collect_scripts(dom: &ScriptedDom, root: NodeId) -> Vec<NodeId> {
+    fn walk(dom: &ScriptedDom, node: NodeId, out: &mut Vec<NodeId>) {
+        if dom
+            .element_name(node)
+            .is_some_and(|name| name.local.as_ref() == "script")
+        {
+            out.push(node);
+        }
+        for child in dom.dom_children(node).collect::<Vec<_>>() {
+            walk(dom, child, out);
+        }
+    }
+    let mut out = Vec::new();
+    if dom.is_live(root) {
+        walk(dom, root, &mut out);
+    }
+    out
+}
+
+/// Whether `node` is in the active document — the scripted tier's only browsing
+/// context. A `DOMParser` result and a `createHTMLDocument` document are not,
+/// so "scripting is disabled" for their contents (prepare, step 13).
+fn in_active_document(dom: &ScriptedDom, node: NodeId) -> bool {
+    dom.tree_root(node) == Some(dom.document())
+}
+
+/// HTML's "prepare the script element" for a `<script>` the parser did not
+/// insert: one that just became connected, had a node inserted into it while
+/// connected, or had its `src` set while connected.
+///
+/// Returns the classic source to evaluate, or `None` when the element must not
+/// run — and note the ordering that makes step 10 load-bearing: the flag is set
+/// *before* the scripting-disabled check, so a script prepared in a document
+/// with no browsing context can never run later either.
+pub(crate) fn prepare_script(host: &mut HostState, node: NodeId) -> Option<String> {
+    if script_started(host, node) {
+        return None; // step 1
+    }
+    let (kind, src, text) = script_prepare_gate(&host.dom, node)?; // steps 5, 6, 8
+    host.markup.already_started.insert(node); // step 10
+    if !in_active_document(&host.dom, node) {
+        return None; // steps 12-13
+    }
+    match kind {
+        // A module needs its whole graph, a base URL and the deferred queue the
+        // parser driver owns; this seam runs one classic script. Named as a
+        // residual in the lane plan rather than half-run here.
+        crate::parse::ScriptKind::Module => None,
+        crate::parse::ScriptKind::Classic => match src {
+            None => Some(text),
+            Some(src) => {
+                let url = crate::fetch::resolve_against(host.base_url.as_deref(), &src);
+                let loader = host.script_loader.clone()?;
+                loader.load(&url)
+            },
+        },
+    }
+}
+
+/// `document.write` into a document that is not the active one.
+///
+/// There is no tokenizer for such a document, and no script timing to honour,
+/// so the whole written stream is re-parsed and cloned in each time. Every
+/// `<script>` it produces is flagged already started, exactly as the fragment
+/// parser would.
+fn detached_write(host: &mut HostState, document: NodeId, text: &str) {
+    let source = {
+        let buffer = host.markup.detached_streams.entry(document).or_default();
+        buffer.push_str(text);
+        buffer.clone()
+    };
+    let children: Vec<NodeId> = host.dom.dom_children(document).collect();
+    for child in children {
+        host.dom.remove_child(child);
+    }
+    let parsed = genet_static_dom::StaticDocument::parse(&source);
+    let parsed_document = parsed.document();
+    clone_into(&parsed, parsed_document, &mut host.dom, document);
+    mark_subtree_scripts_started(host, document);
+}
+
+/// The document a `document.write` / `open` / `close` call names, and whether it
+/// is the active one. A reflector for something that is not a document node at
+/// all cannot happen from the bootstrap, which only reaches these through
+/// `Document.prototype`.
+fn write_target(host: &HostState, node: Option<NodeId>) -> (NodeId, bool) {
+    let active = host.dom.document();
+    match node {
+        Some(node) if node != active && host.dom.is_live(node) => (node, false),
+        _ => (active, true),
+    }
 }
 
 /// The source a written `<script>` runs, per HTML's "prepare the script
@@ -292,7 +488,23 @@ impl<E: ScriptEngine> NativeFn<E> for CurrentScript {
 pub(crate) struct DocOpen;
 impl<E: ScriptEngine> NativeFn<E> for DocOpen {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
-        with_host::<E, _>(cx, open_stream_begin);
+        let a0 = cx.arg(0);
+        let target = cx
+            .reflector_data(&a0)
+            .map(|id| NodeId::from_raw(id as usize));
+        with_host::<E, _>(cx, |host| match write_target(host, target) {
+            (_, true) => open_stream_begin(host),
+            // A document with no browsing context has no stream to open; its
+            // buffer is simply emptied, which is what "replace all" comes to
+            // for it.
+            (document, false) => {
+                host.markup.detached_streams.insert(document, String::new());
+                let children: Vec<NodeId> = host.dom.dom_children(document).collect();
+                for child in children {
+                    host.dom.remove_child(child);
+                }
+            },
+        });
         cx.make_string("")
     }
 }
@@ -313,7 +525,18 @@ impl<E: ScriptEngine> NativeFn<E> for DocWrite {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let text_v = cx.arg(0);
         let text = cx.value_to_string(&text_v)?;
+        let a1 = cx.arg(1);
+        let target = cx
+            .reflector_data(&a1)
+            .map(|id| NodeId::from_raw(id as usize));
         with_host::<E, _>(cx, |host| {
+            // A write into a document that is not the active one must not touch
+            // the active one — which is what this did until 2026-09-08, so
+            // `doc.write(...)` on a `createHTMLDocument` result wiped the page.
+            if let (document, false) = write_target(host, target) {
+                detached_write(host, document, &text);
+                return;
+            }
             if host.markup.open_stream.is_none() {
                 // The implied `document.open`: the document is replaced, so
                 // whatever is in it now goes.
@@ -340,8 +563,12 @@ impl<E: ScriptEngine> NativeFn<E> for DocWrite {
 pub(crate) struct DocPumpStream;
 impl<E: ScriptEngine> NativeFn<E> for DocPumpStream {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let a0 = cx.arg(0);
+        let target = cx
+            .reflector_data(&a0)
+            .map(|id| NodeId::from_raw(id as usize));
         let pumped = with_host::<E, _>(cx, |host| {
-            if host.markup.parser_active {
+            if host.markup.parser_active || !write_target(host, target).1 {
                 return None;
             }
             open_stream_pump(host)
@@ -360,8 +587,12 @@ impl<E: ScriptEngine> NativeFn<E> for DocPumpStream {
 pub(crate) struct DocClose;
 impl<E: ScriptEngine> NativeFn<E> for DocClose {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let a0 = cx.arg(0);
+        let target = cx
+            .reflector_data(&a0)
+            .map(|id| NodeId::from_raw(id as usize));
         with_host::<E, _>(cx, |host| {
-            if host.markup.parser_active {
+            if host.markup.parser_active || !write_target(host, target).1 {
                 return;
             }
             open_stream_close(host);
@@ -371,12 +602,131 @@ impl<E: ScriptEngine> NativeFn<E> for DocClose {
     }
 }
 
+/// `__stageScripts(node, selfOnly)` — queue the `<script>` elements HTML says
+/// must be re-prepared after a DOM insertion, and return how many.
+///
+/// `selfOnly` is the "a node was inserted into a connected script element" case:
+/// the script to prepare is the insertion *parent*, not anything under it.
+/// Otherwise the inserted root and its descendants are the candidates. Either
+/// way nothing is queued unless the element is connected, which is prepare's
+/// step 7.
+///
+/// The walk is here rather than in the bootstrap so that an ordinary
+/// `appendChild` of a script-free subtree costs one arena traversal and no JS
+/// wrappers at all.
+pub(crate) struct StageScripts;
+impl<E: ScriptEngine> NativeFn<E> for StageScripts {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let a0 = cx.arg(0);
+        let Some(id) = cx.reflector_data(&a0) else {
+            return cx.make_string("0");
+        };
+        let a1 = cx.arg(1);
+        let self_only = cx.value_to_string(&a1).unwrap_or_default() == "1";
+        let node = NodeId::from_raw(id as usize);
+        let staged = with_host::<E, _>(cx, |host| {
+            if !host.dom.is_live(node) || !in_active_document(&host.dom, node) {
+                return 0;
+            }
+            if script_is_parser_inserted(host, node) {
+                return 0;
+            }
+            let is_script = host
+                .dom
+                .element_name(node)
+                .is_some_and(|name| name.local.as_ref() == "script");
+            let candidates = match (self_only, is_script) {
+                (true, true) => vec![node],
+                (true, false) => Vec::new(),
+                (false, _) => collect_scripts(&host.dom, node),
+            };
+            let mut staged = 0;
+            for found in candidates {
+                if script_started(host, found) {
+                    continue;
+                }
+                host.markup.pending_prepare.push_back(found);
+                staged += 1;
+            }
+            staged
+        })
+        .unwrap_or(0);
+        cx.make_string(&staged.to_string())
+    }
+}
+
+/// `__nextPreparedScript()` — run "prepare the script element" for the next
+/// staged `<script>` and hand back the classic source to evaluate (`""` for one
+/// that must not run), or `null` when the queue is empty.
+///
+/// The loop lives in the bootstrap for the same reason `document.write`'s does:
+/// a native cannot re-enter the engine, and preparing a script is exactly a
+/// request to.
+pub(crate) struct NextPreparedScript;
+impl<E: ScriptEngine> NativeFn<E> for NextPreparedScript {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let next = with_host::<E, _>(cx, |host| {
+            let node = host.markup.pending_prepare.pop_front()?;
+            if !host.dom.is_live(node) {
+                return Some(String::new());
+            }
+            let source = prepare_script(host, node).unwrap_or_default();
+            host.markup.current_script = Some(node);
+            Some(source)
+        })
+        .flatten();
+        match next {
+            Some(source) => cx.make_string(&source),
+            None => Ok(cx.make_null()),
+        }
+    }
+}
+
+/// `__copyScriptStarted(from, to)` — HTML's cloning steps for a `script`
+/// element: "set copy's already started to el's already started".
+///
+/// Without it a clone of a script that has already run runs again, which is
+/// what `execution-timing/061`–`067` measure.
+pub(crate) struct CopyScriptStarted;
+impl<E: ScriptEngine> NativeFn<E> for CopyScriptStarted {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let a0 = cx.arg(0);
+        let a1 = cx.arg(1);
+        let from = cx.reflector_data(&a0);
+        let to = cx.reflector_data(&a1);
+        if let (Some(from), Some(to)) = (from, to) {
+            let from = NodeId::from_raw(from as usize);
+            let to = NodeId::from_raw(to as usize);
+            with_host::<E, _>(cx, |host| {
+                if script_started(host, from) {
+                    host.markup.already_started.insert(to);
+                }
+            });
+        }
+        cx.make_string("")
+    }
+}
+
+/// `__prepareScriptEnd()` — clear `document.currentScript` after a prepared
+/// script has run.
+pub(crate) struct PrepareScriptEnd;
+impl<E: ScriptEngine> NativeFn<E> for PrepareScriptEnd {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        with_host::<E, _>(cx, |host| host.markup.current_script = None);
+        cx.make_string("")
+    }
+}
+
 pub(crate) fn install<E: ScriptEngine>(engine: &mut E) -> Result<(), E::Error> {
     engine.set_function::<ReadyStateOf>("__readyState", 0)?;
     engine.set_function::<CurrentScript>("__currentScript", 0)?;
-    engine.set_function::<DocOpen>("__docOpen", 0)?;
-    engine.set_function::<DocWrite>("__docWrite", 1)?;
-    engine.set_function::<DocPumpStream>("__docPumpStream", 0)?;
-    engine.set_function::<DocClose>("__docClose", 0)?;
+    engine.set_function::<DocOpen>("__docOpen", 1)?;
+    engine.set_function::<DocWrite>("__docWrite", 2)?;
+    engine.set_function::<DocPumpStream>("__docPumpStream", 1)?;
+    engine.set_function::<DocClose>("__docClose", 1)?;
+    engine.set_function::<StageScripts>("__stageScripts", 2)?;
+    engine.set_function::<NextPreparedScript>("__nextPreparedScript", 0)?;
+    engine.set_function::<PrepareScriptEnd>("__prepareScriptEnd", 0)?;
+    engine.set_function::<CopyScriptStarted>("__copyScriptStarted", 2)?;
     Ok(())
 }

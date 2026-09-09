@@ -4,7 +4,7 @@
   "manifest_sha256": "d5ec5be9bf1a75ed00d7e7ab28afe8a694a55e11682ba74305874d70b18dd422",
   "policy": "exact",
   "renderer": "livery",
-  "runner_sha256": "c554f89a5ab1e7582dcb4d7c97a656750b49ca466a3ea67b7a9885666f06aab0",
+  "runner_sha256": "58f2d68ebe2ec94d0be20fd5ece5307825c0233a7dfb420f53ab0980b555a312",
   "subset": "css/mediaqueries",
   "tests": {
     "css/mediaqueries/aspect-ratio-001.html": {
@@ -512,7 +512,7 @@
         },
         {
           "name": "Test parsing ' ' with matchMedia",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "Test parsing 'all' with matchMedia",
@@ -520,11 +520,11 @@
         },
         {
           "name": "Test parsing ' all' with matchMedia",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "Test parsing '   all   ' with matchMedia",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "Test parsing 'all,all' with matchMedia",
@@ -544,7 +544,7 @@
         },
         {
           "name": "Test parsing ' (color)' with matchMedia",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "Test parsing ' ( color  )  ' with matchMedia",
@@ -568,7 +568,7 @@
         },
         {
           "name": "Test parsing ' foo ' with matchMedia",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "Test parsing ',' with matchMedia",
@@ -643,7 +643,7 @@
           "status": "fail"
         }
       ],
-      "subtests_passed": 9,
+      "subtests_passed": 14,
       "subtests_total": 34
     },
     "css/mediaqueries/media-queries-001.xht": {
