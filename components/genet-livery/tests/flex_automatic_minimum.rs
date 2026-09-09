@@ -66,7 +66,9 @@ fn nested_wrapped_column_uses_the_sum_of_intrinsic_item_heights_for_auto_minimum
 
     assert_eq!(outer.3, 100.0);
     assert_eq!(inner.3, 100.0);
-    assert_eq!(inner.2, 320.0);
+    // The auto-width body contains this flex tree inside its two default
+    // 8px margins, so its descendants receive 320 - 16 pixels.
+    assert_eq!(inner.2, 304.0);
     assert_eq!((first.0 - inner.0, first.1 - inner.1), (0.0, 0.0));
     assert_eq!((second.0 - inner.0, second.1 - inner.1), (0.0, 50.0));
     assert_eq!((first.2, first.3), (100.0, 50.0));
