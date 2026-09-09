@@ -31,8 +31,6 @@ impl ScriptWake {
     fn new() -> Self {
         Self
     }
-
-    fn set_callback(&self, _callback: impl Fn(()) + Send + Sync + 'static) {}
 }
 use genet_host_api::navigation::resolve_href;
 use genet_winit_host::{AccessKitBridge, BridgeStatus, SurfaceHost, wheel_delta_from_winit};
@@ -261,6 +259,8 @@ impl Ortet {
         let start = Instant::now();
         let receipt_deadline = (config.artifact.is_some() || config.expect_heading.is_some())
             .then_some(start + config.receipt_timeout);
+        #[cfg(not(feature = "scripted"))]
+        let _ = wake;
         Self {
             address: config.address.clone(),
             pending_actions: config.actions.clone(),
