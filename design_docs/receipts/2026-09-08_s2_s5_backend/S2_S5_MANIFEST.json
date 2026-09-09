@@ -1,0 +1,26 @@
+{
+  "scope": "tracked-ready scratch receipts only; S6 excluded",
+  "s5_runtime_wake": {
+    "result": "passed, 1 test",
+    "run": "runtime-wake-run.json",
+    "run_sha256": "39190b3f17bde3af8bcf52b5d2105c6a6db8b64a6c95b0b7dbfaba28434adbda",
+    "log": "runtime-wake.log",
+    "log_sha256": "b479e122403a044d7c864348dc2d3e9be6e53a17ff0a953d567d1a2f75151a14",
+    "source": "ee0b314 component archive plus pre-existing arena two-site retention overlay",
+    "arena_baseline_dom_sha256": "2ae4dbd65ef9e0e5b997c3d20c31a1279dcc37b479c48dac12b721decb7c21f0",
+    "arena_candidate_dom_sha256": "3b9adce55ed77d1be9356b371849b196432b8bcffd2e6a3457700d28e2732495",
+    "arena_patch_sha256": "59a5f7e9444cd919469633eb643aa477ca4c5d3a1ce18a45036117d28eb425ff"
+  },
+  "s2_backend": {
+    "result": "passed, 1 test",
+    "command": "cargo test --offline --locked --manifest-path probe-s2/Cargo.toml -- --nocapture",
+    "log": "s2-backend.log",
+    "log_sha256": "2ec7058db9b2481d2aacb6a93847ed6c124c2d3f031523f4f70cde1b34b0feb2",
+    "base": "ec5421b7591 archive plus current lib.rs/shadow.rs S2 overlay",
+    "probe_toml_sha256": "f7e6ea9727846d1149a3f755d568c454e7bfd277787d52ef086e9bcd06048c4c",
+    "probe_lock_sha256": "aefec44904d3cb63cd7f743582c2eff9ae88edf7c9c5c9ae964a2a24c80ece47",
+    "probe_lib_sha256": "31919ccbb04894ab49f47c0badcec07e6f7c9584f45f1037efe7f51fd2ccebfc",
+    "overlay_lib_sha256": "060e466265f050884218f049ec61f418e248de0c63ed2516eec46e4eeffcc3e4",
+    "overlay_shadow_sha256": "29ea08c4ebdc2150d63319186d45db047fa5e85e58f1feb151a44e743b730444"
+  }
+}

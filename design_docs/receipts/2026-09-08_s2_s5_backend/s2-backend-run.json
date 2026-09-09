@@ -1,0 +1,20 @@
+{
+  "command": "cargo test --offline --locked --manifest-path probe-s2/Cargo.toml -- --nocapture",
+  "exit_code": 0,
+  "result": "1 passed; 0 failed; test body 2.63 seconds",
+  "source_base_revision": "ec5421b7591",
+  "source_snapshot_kind": "git archive of ec5421b7591, with only the two S2 DOM files overlaid from the then-current candidate; no live checkout files",
+  "overlay": {
+    "components/genet-scripted-dom/lib.rs": "060e466265f050884218f049ec61f418e248de0c63ed2516eec46e4eeffcc3e4",
+    "components/genet-scripted-dom/shadow.rs": "29ea08c4ebdc2150d63319186d45db047fa5e85e58f1feb151a44e743b730444"
+  },
+  "cargo_home": "scratch/pillar-research-20260908/execution-next/cargo-home",
+  "target": "scratch/pillar-research-20260908/execution-next/target-s2",
+  "probe_toml_sha256": "f7e6ea9727846d1149a3f755d568c454e7bfd277787d52ef086e9bcd06048c4c",
+  "probe_lock_sha256": "aefec44904d3cb63cd7f743582c2eff9ae88edf7c9c5c9ae964a2a24c80ece47",
+  "probe_lib_sha256": "31919ccbb04894ab49f47c0badcec07e6f7c9584f45f1037efe7f51fd2ccebfc",
+  "log": "s2-backend.log",
+  "log_sha256": "2ec7058db9b2481d2aacb6a93847ed6c124c2d3f031523f4f70cde1b34b0feb2",
+  "network_scope": "final invocation offline and locked; private CARGO_HOME prepared earlier for the independent S5 probe",
+  "shared_cache_or_config_mutated": false
+}

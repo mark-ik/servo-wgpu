@@ -1,0 +1,21 @@
+{
+  "command": "cargo test --offline --locked --manifest-path probe/Cargo.toml -- --nocapture",
+  "exit_code": 0,
+  "result": "1 passed; 0 failed; test body 6.02 seconds; total cached invocation 40.25 seconds",
+  "source_snapshot_revision": "ee0b314b3e9ac4a2fadb07fb7816990fa3f2b71d",
+  "source_snapshot_kind": "ee0b314 component archive with the pre-existing two-site arena retention candidate overlay in genet-scripted-dom/lib.rs; no live checkout files",
+  "arena_baseline_dom_sha256": "2ae4dbd65ef9e0e5b997c3d20c31a1279dcc37b479c48dac12b721decb7c21f0",
+  "arena_candidate_dom_sha256": "3b9adce55ed77d1be9356b371849b196432b8bcffd2e6a3457700d28e2732495",
+  "arena_candidate_patch_sha256": "59a5f7e9444cd919469633eb643aa477ca4c5d3a1ce18a45036117d28eb425ff",
+  "boa_patch": "C:/Users/mark_/Code/crates/boa at 8ecd311be103b989341a4f8a0e60394d1dec3aa5, clean at read time",
+  "cargo_home": "scratch/pillar-research-20260908/execution-next/cargo-home",
+  "target": "scratch/pillar-research-20260908/execution-next/target",
+  "probe_toml_sha256": "0ae72ba63099e2c7702a31db8e2f854ad4e8fdefe3b2e19de3d7285fb7c84d20",
+  "probe_lock_sha256": "7ea1595aa1a9ec3b94b8fe5478cd3dbe750d7df77e15692de2c4cd6111d78865",
+  "probe_lib_sha256": "a9a0580fd876b5dc9aca649bbbdda6f6da2db0f202d02c700087d30e9042e8e0",
+  "runtime_lib_sha256": "66144cf8fe8465001fdbfa99124d47d691b77bc6707b66fff07fdcf0de674fcb",
+  "worker_impl_sha256": "4f608fb14a95acc84f0c3f0f442cc5f79c0b92d2bc0829ab65f46a8b7851dd1a",
+  "log_sha256": "b479e122403a044d7c864348dc2d3e9be6e53a17ff0a953d567d1a2f75151a14",
+  "network_scope": "initial dependency resolution/download into private CARGO_HOME only; final invocation offline and locked",
+  "shared_cache_or_config_mutated": false
+}

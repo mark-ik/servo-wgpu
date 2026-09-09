@@ -1,0 +1,16 @@
+{
+  ".gitattributes": "63b9951aa43ab30d0d0e40d8a7afb4419a9c7370c8ab0cdf54235399f220ddc1",
+  "post-test-doc-comment.patch": "a3cf4f4bd156bcc5e7eb162dc6cb499aa5d4955b51b48779358f660fa88391f1",
+  "receipt.md": "f14dc5b7c2bfa7939c2c94cd5a289def944dab4ac7551a6be3cb46c37cf0e7de",
+  "run_s6.py": "0b121d9f47ce10898e6a05b30e85acf8a663b9cbcb1c3a57be7586b6cdf14b84",
+  "runner/Cargo.lock": "ff46357ffb0b889c82cc81bce0086b4e561b6aa86d6e390887317f4382e321b7",
+  "runner/Cargo.toml": "92950664782e445927e91ffe4b366a05c5a018f8f2df91d81d4ac978bd757e3f",
+  "runner/src/lib.rs": "5f8ec0a0047d02e05bd2e219a4aed1cf45d70ac1741b1a90b683d04a7bf7be7a",
+  "s6-final-run.json": "563e06efd058d16dd995f7974332aacd8e8d78f958e6a129803cfbf3b7db8ad9",
+  "s6-final.log": "0f20467ea8e5235465566c522b23e95e606ae361295fc1364b807fca67bf7c9c",
+  "s6-final.patch": "10f3ffaae7a8048f7148b1b6be5b76fa295399c2c8359723b06d39afe36be464",
+  "s6-preforward-negative-run.json": "9b7d0b64ea9f222fbc08f33b87c8a16c46827d976d1a00fd743e9f2189d0dd95",
+  "s6-preforward-negative.log": "84edeaeaa8939597e2f27beb6adf8cdd941e6f015ff5317b2bdb99985f684e2c",
+  "s6-preforward-test.rs": "216d065a4fb16c5df8042d08210c31f4ee1ec252c0088f98d91a6b49ef1f073f",
+  "s6-preforward.patch": "7292a3cd9fe180229d27d7a49ae6657bf1d5d60499a69278f58349fb6d7860c8"
+}

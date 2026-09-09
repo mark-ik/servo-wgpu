@@ -1,0 +1,36 @@
+--- a/components/genet-scripted/document.rs
++++ b/components/genet-scripted/document.rs
+@@ -331,6 +331,16 @@
+         })
+     }
+ 
++    /// Install the host-owned route retained for worker scripts and imports.
++    /// The borrowed parser ResourceFetcher is not retained after construction.
++    /// Install this before the first pump that services worker resource requests.
++    pub fn set_script_resource_loader(
++        &mut self,
++        loader: Box<dyn script_runtime_api::ScriptResourceLoader>,
++    ) {
++        self.rt.set_script_resource_loader(loader);
++    }
++
+     /// Drive the runtime one frame's worth: fire due timers against the `now_ms`
+     /// virtual clock, settle microtasks, then take the GC tick. Returns
+     /// `(reflectors_unpinned, nodes_collected)` from the collection. This is the
+@@ -819,6 +829,16 @@
+     pub fn with_dom<R>(&self, inspect: impl FnOnce(&ScriptedDom) -> R) -> R {
+         let host = self.rt.host().borrow();
+         inspect(&host.dom)
++    }
++
++    /// Install the host-owned route retained for worker scripts and imports.
++    /// The borrowed parser ResourceFetcher is not retained after construction.
++    /// Install this before the first pump that services worker resource requests.
++    pub fn set_script_resource_loader(
++        &mut self,
++        loader: Box<dyn script_runtime_api::ScriptResourceLoader>,
++    ) {
++        self.rt.set_script_resource_loader(loader);
+     }
+ 
+     pub fn pump(&mut self, now_ms: f64) -> (usize, usize) {

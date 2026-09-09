@@ -1,0 +1,96 @@
+{
+  "algorithm": "sha256",
+  "scope": "all receipt files except this manifest",
+  "files": [
+    {
+      "path": ".gitattributes",
+      "sha256": "63b9951aa43ab30d0d0e40d8a7afb4419a9c7370c8ab0cdf54235399f220ddc1",
+      "bytes": 270
+    },
+    {
+      "path": "receipt.md",
+      "sha256": "cf14beae1db0514fd64f51d337730aa1c262e9b8db4d021b23198634b4059f35",
+      "bytes": 2724
+    },
+    {
+      "path": "runtime-wake-run.json",
+      "sha256": "39190b3f17bde3af8bcf52b5d2105c6a6db8b64a6c95b0b7dbfaba28434adbda",
+      "bytes": 1731
+    },
+    {
+      "path": "runtime-wake.log",
+      "sha256": "b479e122403a044d7c864348dc2d3e9be6e53a17ff0a953d567d1a2f75151a14",
+      "bytes": 1858
+    },
+    {
+      "path": "S2_S5_MANIFEST.json",
+      "sha256": "dde9f19deb0618d22479f2ab573b2a616bbecdec72a90be86ffc7ccd7324aa3a",
+      "bytes": 1568
+    },
+    {
+      "path": "s2-backend-run.json",
+      "sha256": "af8884dcbb05a64724effc1600b5164ec885abf297bdfd0134906b3f315950c5",
+      "bytes": 1317
+    },
+    {
+      "path": "s2-backend.log",
+      "sha256": "2ec7058db9b2481d2aacb6a93847ed6c124c2d3f031523f4f70cde1b34b0feb2",
+      "bytes": 1284
+    },
+    {
+      "path": "s2-dom-overlay.patch",
+      "sha256": "6529af5278fc0c40ad43aaa2a1697685dce431a4893687c8665dce69f3f9b0fc",
+      "bytes": 6664
+    },
+    {
+      "path": "s2-runner/Cargo.lock",
+      "sha256": "aefec44904d3cb63cd7f743582c2eff9ae88edf7c9c5c9ae964a2a24c80ece47",
+      "bytes": 77375
+    },
+    {
+      "path": "s2-runner/Cargo.toml",
+      "sha256": "f7e6ea9727846d1149a3f755d568c454e7bfd277787d52ef086e9bcd06048c4c",
+      "bytes": 788
+    },
+    {
+      "path": "s2-runner/src/lib.rs",
+      "sha256": "31919ccbb04894ab49f47c0badcec07e6f7c9584f45f1037efe7f51fd2ccebfc",
+      "bytes": 2563
+    },
+    {
+      "path": "s2-sources.json",
+      "sha256": "28601a237cc2a54ff683289f325c8f03b4fb2bafec8a1c736344c80e3f47cb87",
+      "bytes": 565
+    },
+    {
+      "path": "s5-arena-overlay-replay.patch",
+      "sha256": "8c7d1d3a21e14d32be04d11d806a880d015321a3feaf59f3d4fb588a20c7cbb1",
+      "bytes": 23092
+    },
+    {
+      "path": "s5-arena-overlay.patch",
+      "sha256": "59a5f7e9444cd919469633eb643aa477ca4c5d3a1ce18a45036117d28eb425ff",
+      "bytes": 902
+    },
+    {
+      "path": "s5-runner/Cargo.lock",
+      "sha256": "7ea1595aa1a9ec3b94b8fe5478cd3dbe750d7df77e15692de2c4cd6111d78865",
+      "bytes": 77351
+    },
+    {
+      "path": "s5-runner/Cargo.toml",
+      "sha256": "0ae72ba63099e2c7702a31db8e2f854ad4e8fdefe3b2e19de3d7285fb7c84d20",
+      "bytes": 703
+    },
+    {
+      "path": "s5-runner/src/lib.rs",
+      "sha256": "a9a0580fd876b5dc9aca649bbbdda6f6da2db0f202d02c700087d30e9042e8e0",
+      "bytes": 2253
+    },
+    {
+      "path": "s5-sources.json",
+      "sha256": "232d41fd42331f1affcbc03ce9f8b1fe9fc0fd7c63a3b1c7f21507b4f2927d91",
+      "bytes": 748
+    }
+  ]
+}

@@ -559,6 +559,13 @@ names positive and negative cases, exact source overlays and the failing
 baseline. This preserves the existing one-inert-owner-per-arena representation;
 per-owning-document/adoption semantics and backend-root closure remain open.
 
+**S2 backend probe, 2026-09-08:** the
+[exact Boa runtime receipt](../design_docs/receipts/2026-09-08_s2_s5_backend/receipt.md)
+retains JS wrappers across both replacements, forces collection, checks semantic
+readback and reattachment, then observes at least two unpins and collected nodes
+after release. This closes the narrow Boa wrapper case; queued observer/range
+roots, Nova, ownership/adoption and headed gates remain open.
+
 Freeze a fixture manifest and named regressions before implementation:
 
 1. Retain a node and descendant through JS references. Record their identity,

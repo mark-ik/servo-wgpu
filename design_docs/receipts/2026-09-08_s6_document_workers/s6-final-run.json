@@ -1,0 +1,26 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "--manifest-path",
+    "C:\\Users\\mark_\\Code\\scratch\\pillar-research-20260908\\execution-next\\probe-s6\\Cargo.toml",
+    "--",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "elapsed": 59.8293571472168,
+  "compiler": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "engine": "Boa",
+  "renderer": "none",
+  "server": "host-supplied synchronous worker script loader; no HTTP server",
+  "features": "genet-scripted default-features=false",
+  "sources": {
+    "probe-s6/Cargo.toml": "92950664782e445927e91ffe4b366a05c5a018f8f2df91d81d4ac978bd757e3f",
+    "probe-s6/Cargo.lock": "ff46357ffb0b889c82cc81bce0086b4e561b6aa86d6e390887317f4382e321b7",
+    "probe-s6/src/lib.rs": "5f8ec0a0047d02e05bd2e219a4aed1cf45d70ac1741b1a90b683d04a7bf7be7a",
+    "source-s6/components/genet-scripted/document.rs": "7b8d2f76e820a715058f7cbd4fc5f1d421b9021eddff72e87cd8925f272f0dc3",
+    "run_s6.py": "0b121d9f47ce10898e6a05b30e85acf8a663b9cbcb1c3a57be7586b6cdf14b84"
+  }
+}

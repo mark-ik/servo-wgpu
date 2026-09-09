@@ -356,6 +356,20 @@ exchanges messages with a live worker on each supported engine/target.
 Record unsupported worker globals and module variants as named residuals;
 retain the cheap-globals messaging regression manifest.
 
+**S5/S6 continuation, 2026-09-08.** The
+[actual Boa runtime receipt](receipts/2026-09-08_s2_s5_backend/receipt.md)
+separates timer/microtask-only non-delivery from worker pumping and acknowledged
+idle. The [scripted-document receipt](receipts/2026-09-08_s6_document_workers/receipt.md)
+then proves exact reply/Promise DOM changes, freeze/resume refusal and recovery,
+and missing-route error/quiescence on the real headless Boa document. Both
+scripted-document implementations now forward worker service and expose an
+owned script-loader setter; their borrowed parser fetcher is not a retained
+worker route. Two document regressions pass, and pre-change pending behavior
+fails the negative control. This is outstanding-work forwarding, not a ready-now
+signal or asynchronous host wake protocol. Livery compile/render, Nova, navigation
+teardown and Ortet O5 remain separate receipts; none of the transfer or full
+Worker conformance gates above are discharged by this slice.
+
 ## WebSocket
 
 Census: `websockets` 0 / 375 / 137 / 3 / 0, subtests 0 of 1,392; needs a

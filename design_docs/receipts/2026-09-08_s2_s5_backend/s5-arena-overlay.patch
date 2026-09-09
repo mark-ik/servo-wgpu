@@ -1,0 +1,20 @@
+--- a/components/genet-scripted-dom/lib.rs
++++ b/components/genet-scripted-dom/lib.rs
+@@ -617,7 +617,7 @@
+         for child in existing {
+             self.node_mut(child).parent = None;
+             self.structure_epoch += 1;
+-            self.release_subtree(child);
++            // Research candidate: orphan; pin-aware collection owns reclamation.
+         }
+         self.node_mut(node).text = None;
+         let mut added = Vec::new();
+@@ -1422,7 +1422,7 @@
+         for child in existing {
+             self.node_mut(child).parent = None;
+             self.structure_epoch += 1;
+-            self.release_subtree(child);
++            // Research candidate: orphan; pin-aware collection owns reclamation.
+         }
+         // Parse via the static parser (a LayoutDom) and copy the explicitly
+         // wrapped <body> children in. The wrapper keeps metadata elements such

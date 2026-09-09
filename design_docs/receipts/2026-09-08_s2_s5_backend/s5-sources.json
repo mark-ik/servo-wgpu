@@ -1,0 +1,11 @@
+{
+  "base_revision": "ee0b314b3e9ac4a2fadb07fb7816990fa3f2b71d",
+  "replay": "git archive ee0b314b3e9ac4a2fadb07fb7816990fa3f2b71d, then apply s5-arena-overlay-replay.patch from this directory",
+  "source_overlay": {
+    "components/genet-scripted-dom/lib.rs": "3b9adce55ed77d1be9356b371849b196432b8bcffd2e6a3457700d28e2732495"
+  },
+  "baseline_dom_sha256": "2ae4dbd65ef9e0e5b997c3d20c31a1279dcc37b479c48dac12b721decb7c21f0",
+  "replay_overlay_patch_sha256": "8c7d1d3a21e14d32be04d11d806a880d015321a3feaf59f3d4fb588a20c7cbb1",
+  "recorded_semantic_patch_sha256": "59a5f7e9444cd919469633eb643aa477ca4c5d3a1ce18a45036117d28eb425ff",
+  "excluded": "Concurrent parser/runtime working-tree changes; this is the pre-existing two-site arena candidate."
+}

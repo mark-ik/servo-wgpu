@@ -1,0 +1,20 @@
+[package]
+name = "execution-wake-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+script-runtime-api = { path = "../source/components/script-runtime-api" }
+script-engine-api = { path = "../source/components/script-engine-api" }
+script-engine-boa = { path = "../source/components/script-engine-boa" }
+
+[patch."https://github.com/mark-ik/boa.git"]
+boa_engine = { path = "C:/Users/mark_/Code/crates/boa/core/engine" }
+boa_gc = { path = "C:/Users/mark_/Code/crates/boa/core/gc" }
+
+[patch."https://github.com/mark-ik/boa.git?branch=genet"]
+boa_engine = { path = "C:/Users/mark_/Code/crates/boa/core/engine" }
+boa_gc = { path = "C:/Users/mark_/Code/crates/boa/core/gc" }
