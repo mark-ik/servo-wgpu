@@ -628,6 +628,14 @@ live session and drives an interaction loop with no polling.
 
 ## Progress
 
+- 2026-09-08: **Woodshed consumer verification passed.** Published probe
+  revision `09515e03d22` passes all 20 probe tests through Woodshed's aligned
+  dependency graph, including host hit, authoritative miss and legacy fallback.
+  The consumer passes 406 focused tests and five native Windows runs, including
+  zoomed recentering. The retained miss at an offscreen Stage control remains
+  a scroll/viewport prerequisite. Receipt under the user's workspace root:
+  `Code/testing/woodshed/retained-selectors-20260908/receipt.json`.
+
 - 2026-09-08: **host-owned selector targets landed in `genet-probe`.**
   `Automatable::selector_target` answers `Unsupported`, `Miss`, or an exact
   window-space `Hit`. `Unsupported` preserves retained-surface selector
