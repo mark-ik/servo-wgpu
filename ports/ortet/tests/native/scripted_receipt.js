@@ -16,6 +16,7 @@ activate.addEventListener("click", function () {
   // microtask route before its changed DOM can be painted and inspected.
   setTimeout(function () {
     Promise.resolve().then(function () {
+      document.documentElement.className = "complete";
       state.textContent = "Ortet O5 native receipt complete";
     });
   }, 0);

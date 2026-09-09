@@ -13,7 +13,7 @@
 //! between the winit event and the session's own input vocabulary.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use document_session_api::session_engine::{
     DocumentSession, SessionButtonState, SessionClick, SessionCursor, SessionEffect, SessionEngine,
@@ -22,7 +22,18 @@ use document_session_api::session_engine::{
 };
 use genet_documents::LiverySessionEngine;
 #[cfg(feature = "scripted")]
-use genet_documents::ScriptedSessionEngine;
+use genet_documents::{ScriptWake, ScriptWakeEvent, ScriptedSessionEngine};
+#[cfg(not(feature = "scripted"))]
+#[derive(Clone, Default)]
+struct ScriptWake;
+#[cfg(not(feature = "scripted"))]
+impl ScriptWake {
+    fn new() -> Self {
+        Self
+    }
+
+    fn set_callback(&self, _callback: impl Fn(()) + Send + Sync + 'static) {}
+}
 use genet_host_api::navigation::resolve_href;
 use genet_winit_host::{AccessKitBridge, BridgeStatus, SurfaceHost, wheel_delta_from_winit};
 use netrender::{ColorLoad, ExternalTexturePlacement, NetrenderOptions, Scene};
@@ -66,8 +77,6 @@ pub struct BuildMetadata {
     pub source_revision: Option<String>,
 }
 
-const RECEIPT_SETTLE_TIMEOUT: Duration = Duration::from_secs(5);
-
 pub fn build_metadata() -> BuildMetadata {
     BuildMetadata {
         target: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
@@ -76,14 +85,14 @@ pub fn build_metadata() -> BuildMetadata {
     }
 }
 
-#[cfg(not(feature = "scripted"))]
+#[cfg(feature = "scripted-nova")]
 const fn enabled_features() -> &'static str {
-    "none"
+    "scripted,scripted-nova"
 }
 
-#[cfg(not(feature = "scripted"))]
+#[cfg(all(feature = "scripted", not(feature = "scripted-nova")))]
 const fn enabled_features() -> &'static str {
-    "none"
+    "scripted"
 }
 
 #[cfg(not(feature = "scripted"))]
@@ -94,13 +103,14 @@ const fn enabled_features() -> &'static str {
 /// Open the window and run the document until the frame budget or the user
 /// closes it.
 pub fn run(config: Config, fetcher: OrtetFetcher) -> Result<Outcome, String> {
-    let engine = make_engine(config.engine, fetcher)?;
+    let wake = ScriptWake::new();
+    let engine = make_engine_with_wake(config.engine, fetcher, wake.clone())?;
     // Spawn before the window exists so a bad address fails without flashing a
     // window at anyone.
     let session = spawn(engine.as_ref(), &config.address, config.size)?;
     let event_loop =
         EventLoop::new().map_err(|error| format!("could not create the event loop: {error}"))?;
-    let mut app = Ortet::new(config, engine, session);
+    let mut app = Ortet::new(config, engine, session, wake);
     event_loop
         .run_app(&mut app)
         .map_err(|error| format!("the ortet event loop failed: {error}"))?;
@@ -124,9 +134,19 @@ fn spawn(
 /// Build the selected engine behind the common host contract. This is the O5a
 /// seam: engine choice is explicit host policy, while session construction,
 /// input, pumping, and frames remain the one `SessionEngine<Scene>` path.
+#[cfg(test)]
 fn make_engine(
     choice: crate::args::EngineChoice,
     fetcher: OrtetFetcher,
+) -> Result<Box<dyn SessionEngine<Scene>>, String> {
+    make_engine_with_wake(choice, fetcher, ScriptWake::new())
+}
+
+#[cfg(feature = "scripted")]
+fn make_engine_with_wake(
+    choice: crate::args::EngineChoice,
+    fetcher: OrtetFetcher,
+    wake: ScriptWake,
 ) -> Result<Box<dyn SessionEngine<Scene>>, String> {
     match choice {
         crate::args::EngineChoice::Livery => Ok(Box::new(LiverySessionEngine::new(fetcher))),
@@ -136,9 +156,10 @@ fn make_engine(
                 Ok(Box::new(ScriptedSessionEngine::<
                     script_engine_boa::BoaEngine,
                     _,
-                >::new(
+                >::new_with_wake(
                     document_session_api::engine_ids::ENGINE_GENET_SCRIPTED,
                     fetcher,
+                    wake,
                 )))
             }
             #[cfg(not(feature = "scripted"))]
@@ -156,9 +177,10 @@ fn make_engine(
                 Ok(Box::new(ScriptedSessionEngine::<
                     script_engine_nova::NovaEngine,
                     _,
-                >::new(
+                >::new_with_wake(
                     document_session_api::engine_ids::ENGINE_GENET_SCRIPTED_NOVA,
                     fetcher,
+                    wake,
                 )))
             }
             #[cfg(all(feature = "scripted-nova", not(target_pointer_width = "64")))]
@@ -175,6 +197,24 @@ fn make_engine(
                 )
             }
         },
+    }
+}
+
+#[cfg(not(feature = "scripted"))]
+fn make_engine_with_wake(
+    choice: crate::args::EngineChoice,
+    fetcher: OrtetFetcher,
+    _wake: ScriptWake,
+) -> Result<Box<dyn SessionEngine<Scene>>, String> {
+    match choice {
+        crate::args::EngineChoice::Livery => Ok(Box::new(LiverySessionEngine::new(fetcher))),
+        crate::args::EngineChoice::Boa => {
+            Err("the boa engine is unavailable: rebuild ortet with --features scripted".to_owned())
+        },
+        crate::args::EngineChoice::Nova => Err(
+            "the nova engine is unavailable: rebuild ortet with --features scripted-nova"
+                .to_owned(),
+        ),
     }
 }
 
@@ -205,6 +245,10 @@ struct Ortet {
     receipt_deadline: Option<Instant>,
     failure: Option<String>,
     matched_heading: Option<String>,
+    #[cfg(feature = "scripted")]
+    wake: ScriptWake,
+    #[cfg(feature = "scripted")]
+    last_external_generation: Option<u64>,
 }
 
 impl Ortet {
@@ -212,12 +256,11 @@ impl Ortet {
         config: Config,
         engine: Box<dyn SessionEngine<Scene>>,
         session: Box<dyn DocumentSession<Scene>>,
+        wake: ScriptWake,
     ) -> Self {
         let start = Instant::now();
-        let receipt_deadline = config
-            .artifact
-            .as_ref()
-            .map(|_| start + RECEIPT_SETTLE_TIMEOUT);
+        let receipt_deadline = (config.artifact.is_some() || config.expect_heading.is_some())
+            .then_some(start + config.receipt_timeout);
         Self {
             address: config.address.clone(),
             pending_actions: config.actions.clone(),
@@ -241,6 +284,10 @@ impl Ortet {
             receipt_deadline,
             matched_heading: None,
             failure: None,
+            #[cfg(feature = "scripted")]
+            wake,
+            #[cfg(feature = "scripted")]
+            last_external_generation: None,
         }
     }
 
@@ -276,6 +323,26 @@ impl Ortet {
     }
 
     fn receipt_settled(&mut self) -> Result<bool, String> {
+        if let Some(expected) = self.config.expect_heading.as_deref() {
+            let matched = self
+                .session
+                .inspect()
+                .is_some_and(|report| report.headings.iter().any(|h| h == expected));
+            if matched {
+                self.matched_heading = Some(expected.to_owned());
+                return Ok(true);
+            }
+            if self
+                .receipt_deadline
+                .is_some_and(|deadline| Instant::now() >= deadline)
+            {
+                return Err(format!(
+                    "receipt completion heading {expected:?} was absent before the {}ms deadline",
+                    self.config.receipt_timeout.as_millis()
+                ));
+            }
+            return Ok(false);
+        }
         if self.config.artifact.is_none() || self.session.settled() {
             return Ok(true);
         }
@@ -284,8 +351,8 @@ impl Ortet {
             .is_some_and(|deadline| Instant::now() >= deadline)
         {
             return Err(format!(
-                "semantic completion timed out after {}s",
-                RECEIPT_SETTLE_TIMEOUT.as_secs()
+                "semantic completion timed out after {}ms",
+                self.config.receipt_timeout.as_millis()
             ));
         }
         Ok(false)
@@ -301,7 +368,35 @@ impl Ortet {
             self.request_redraw();
         }
         let pending = self.session.pending_work();
-        if let Some(deadline) = pending.next_wake(now) {
+        #[cfg(feature = "scripted")]
+        if pending.external {
+            let generation = self.wake.active_generation();
+            if self.last_external_generation != Some(generation) {
+                eprintln!(
+                    "ortet: receipt idle generation={generation} timer={} microtasks={} external=true",
+                    pending
+                        .timer
+                        .map(|delay| format!("{delay:?}"))
+                        .unwrap_or_else(|| "none".to_owned()),
+                    pending.microtasks
+                );
+                self.last_external_generation = Some(generation);
+            }
+        } else {
+            #[cfg(feature = "scripted")]
+            {
+                self.last_external_generation = None;
+            }
+        }
+        let timer_deadline = pending.next_wake(now);
+        let receipt_deadline = self.receipt_deadline;
+        let deadline = match (timer_deadline, receipt_deadline) {
+            (Some(timer), Some(receipt)) => Some(timer.min(receipt)),
+            (Some(timer), None) => Some(timer),
+            (None, Some(receipt)) => Some(receipt),
+            (None, None) => None,
+        };
+        if let Some(deadline) = deadline {
             self.wake_deadline = Some(deadline);
             event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
         } else {
@@ -450,6 +545,14 @@ impl Ortet {
             scene = self.session.frame(width, height);
         }
         self.publish_accessibility();
+        let receipt_ready = match self.receipt_settled() {
+            Ok(ready) => ready,
+            Err(error) => {
+                self.failure = Some(error);
+                event_loop.exit();
+                return;
+            },
+        };
         let Some(host) = self.host.as_ref() else {
             return;
         };
@@ -462,15 +565,6 @@ impl Ortet {
             ColorLoad::Clear(wgpu::Color::WHITE),
             self.scale_factor,
         );
-
-        let receipt_ready = match self.receipt_settled() {
-            Ok(ready) => ready,
-            Err(error) => {
-                self.failure = Some(error);
-                event_loop.exit();
-                return;
-            },
-        };
         let capture_now = receipt_ready
             && self.config.artifact.is_some()
             && self.capture.is_none()
@@ -478,15 +572,6 @@ impl Ortet {
                 .config
                 .frames
                 .is_none_or(|limit| self.frames.saturating_add(1) >= limit);
-        let final_bounded_frame = self
-            .config
-            .frames
-            .is_some_and(|limit| self.frames.saturating_add(1) >= limit);
-        if final_bounded_frame && let Err(error) = self.verify_expected_heading() {
-            self.failure = Some(error);
-            event_loop.exit();
-            return;
-        }
         let captured = if capture_now {
             let path = self
                 .config
@@ -525,7 +610,11 @@ impl Ortet {
         }
 
         if let Some(limit) = self.config.frames {
-            if self.frames >= limit && (self.config.artifact.is_none() || self.capture.is_some()) {
+            let completion_ready = self.config.expect_heading.is_none() || receipt_ready;
+            if self.frames >= limit
+                && completion_ready
+                && (self.config.artifact.is_none() || self.capture.is_some())
+            {
                 event_loop.exit();
                 return;
             }
@@ -535,31 +624,10 @@ impl Ortet {
             if self.frames < limit {
                 self.request_redraw();
             }
-        }
-    }
-
-    /// Check the small, engine-owned semantic completion condition attached to
-    /// a bounded receipt. The report comes from the same retained session that
-    /// produced the scene captured below, so a passing heading cannot be a
-    /// separate harness DOM or a browser-side screenshot guess.
-    fn verify_expected_heading(&mut self) -> Result<(), String> {
-        let Some(expected) = self.config.expect_heading.as_deref() else {
-            return Ok(());
-        };
-        let report = self
-            .session
-            .inspect()
-            .ok_or_else(|| "the selected session exposes no semantic inspection report".to_owned())?;
-        let matched = report.headings.iter().find(|heading| heading.as_str() == expected);
-        match matched {
-            Some(heading) => {
-                self.matched_heading = Some(heading.clone());
-                Ok(())
-            },
-            None => Err(format!(
-                "receipt completion heading {expected:?} was absent; observed headings: {:?}",
-                report.headings
-            )),
+        } else if receipt_ready
+            && (self.config.expect_heading.is_some() || self.config.artifact.is_some())
+        {
+            event_loop.exit();
         }
     }
 }
@@ -585,6 +653,46 @@ impl ApplicationHandler for Ortet {
         self.width = size.width.max(1);
         self.height = size.height.max(1);
         self.scale_factor = window.scale_factor() as f32;
+        #[cfg(feature = "scripted")]
+        self.wake.set_callback({
+            let wake_window = window.clone();
+            move |event| {
+                match event {
+                    ScriptWakeEvent::Wake {
+                        source,
+                        generation,
+                        resource,
+                    } => {
+                        if let Some(resource) = resource {
+                            eprintln!(
+                                "ortet: receipt wake source={source} generation={generation} resource={resource}"
+                            );
+                        } else {
+                            eprintln!(
+                                "ortet: receipt wake source={source} generation={generation}"
+                            );
+                        }
+                        wake_window.request_redraw();
+                    },
+                    ScriptWakeEvent::Stale {
+                        source,
+                        generation,
+                        active_generation,
+                        resource,
+                    } => {
+                        if let Some(resource) = resource {
+                            eprintln!(
+                                "ortet: receipt stale-completion dropped source={source} generation={generation} active={active_generation} resource={resource}"
+                            );
+                        } else {
+                            eprintln!(
+                                "ortet: receipt stale-completion dropped source={source} generation={generation} active={active_generation}"
+                            );
+                        }
+                    },
+                }
+            }
+        });
         // The bridge must be installed while the native window is hidden on
         // Windows. Frame once to obtain the session's first real projection;
         // an honest empty document is used only if that engine has none.

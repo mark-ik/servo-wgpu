@@ -6,10 +6,12 @@
 //! the same engine on its own thread, `Worker` on the page, and `MessagePort`
 //! across the thread boundary. Each body runs against both backends.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use script_engine_api::ScriptEngine;
-use script_runtime_api::{Runtime, ScriptResourceLoader};
+use script_runtime_api::{FetchOutcome, FetchRequest, Runtime, ScriptResourceLoader};
 
 /// A fixed script route: the disk loader's shape, without a disk.
 struct Scripts(Vec<(String, String)>);
@@ -20,6 +22,36 @@ impl ScriptResourceLoader for Scripts {
             .iter()
             .find(|(name, _)| name == url)
             .map(|(_, src)| src.clone())
+    }
+}
+
+struct DeferredScripts;
+
+impl ScriptResourceLoader for DeferredScripts {
+    fn load(&self, _url: &str) -> Option<String> {
+        None
+    }
+
+    fn start(
+        &self,
+        _id: u64,
+        request: FetchRequest,
+        complete: Box<dyn FnOnce(FetchOutcome) + Send>,
+    ) -> Option<FetchRequest> {
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(5));
+            complete(FetchOutcome {
+                network_error: false,
+                status: 200,
+                status_text: "OK".to_owned(),
+                response_type: "basic".to_owned(),
+                url: request.url,
+                redirected: false,
+                headers: vec![("content-type".to_owned(), "text/javascript".to_owned())],
+                body: b"postMessage('deferred')".to_vec(),
+            });
+        });
+        None
     }
 }
 
@@ -390,6 +422,24 @@ fn worker_fetch_uses_the_page_route<E: ScriptEngine>() {
     assert_eq!(read(&mut rt, "got"), "payload");
 }
 
+fn deferred_worker_resource_wakes_page_service<E: ScriptEngine>() {
+    let mut rt = Runtime::<E>::new().expect("runtime");
+    let wake_count = Arc::new(AtomicUsize::new(0));
+    rt.set_script_resource_loader(Box::new(DeferredScripts));
+    let observed_wakes = Arc::clone(&wake_count);
+    rt.set_worker_resource_wake(Arc::new(move |_| {
+        observed_wakes.fetch_add(1, Ordering::Relaxed);
+    }));
+    rt.eval("var got = null; var w = new Worker('deferred.js'); w.onmessage = function(e) { got = e.data; };")
+        .expect("start");
+    assert!(
+        drive_until(&mut rt, "String(got !== null)"),
+        "no deferred reply"
+    );
+    assert_eq!(read(&mut rt, "got"), "deferred");
+    assert!(wake_count.load(Ordering::Relaxed) > 0);
+}
+
 macro_rules! both_engines {
     ($($body:ident => ($boa:ident, $nova:ident)),* $(,)?) => {
         $(
@@ -415,4 +465,5 @@ both_engines! {
     message_port_crosses_the_thread_boundary => (port_transfer_on_boa, port_transfer_on_nova),
     transferred_buffer_reaches_the_worker => (buffer_transfer_on_boa, buffer_transfer_on_nova),
     worker_fetch_uses_the_page_route => (worker_fetch_on_boa, worker_fetch_on_nova),
+    deferred_worker_resource_wakes_page_service => (deferred_worker_resource_on_boa, deferred_worker_resource_on_nova),
 }

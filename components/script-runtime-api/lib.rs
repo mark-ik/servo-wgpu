@@ -211,6 +211,11 @@ pub struct HostState {
     pub script_loader: Option<std::rc::Rc<dyn ScriptResourceLoader>>,
     /// Live dedicated workers this agent owns, indexed by the id script holds.
     workers: Vec<worker::WorkerHandle>,
+    /// Host wake sink copied into each worker so an idle/message transition
+    /// wakes a sleeping UI event loop.
+    pub(crate) worker_wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    /// Optional worker resource wake sink retaining the completed resource URL.
+    pub(crate) worker_resource_wake: Option<std::sync::Arc<dyn Fn(String) + Send + Sync>>,
     /// Envelopes drained off the worker links, waiting for `__worker_take`.
     worker_events: std::collections::VecDeque<String>,
     /// Cross-agent message ports: `(port id, owning worker index)`.
@@ -1138,6 +1143,17 @@ impl<E: ScriptEngine> Runtime<E> {
     /// so each `<canvas>` gets its own independent context.
     pub fn set_script_resource_loader(&mut self, loader: Box<dyn ScriptResourceLoader>) {
         self.host.borrow_mut().script_loader = Some(loader.into());
+    }
+
+    /// Install the host wake sink copied into dedicated workers. Workers are
+    /// separate threads, so they cannot request a redraw through the page's
+    /// runtime directly; this callback is the event-loop notification seam.
+    pub fn set_worker_wake(&mut self, wake: std::sync::Arc<dyn Fn() + Send + Sync>) {
+        self.host.borrow_mut().worker_wake = Some(wake);
+    }
+
+    pub fn set_worker_resource_wake(&mut self, wake: std::sync::Arc<dyn Fn(String) + Send + Sync>) {
+        self.host.borrow_mut().worker_resource_wake = Some(wake);
     }
 
     /// One turn of dedicated-worker service: drain the worker links, answer the

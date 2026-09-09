@@ -577,6 +577,13 @@ impl SessionPendingWork {
         self.timer.is_none() && !self.microtasks && !self.external
     }
 
+    /// Whether script-visible completion has settled. A future timer may still
+    /// repaint the page, but it does not keep a completion receipt open; host
+    /// external work and microtasks do.
+    pub const fn is_settled(self) -> bool {
+        !self.microtasks && !self.external
+    }
+
     /// Convert the session-relative delay into the host's next wake deadline.
     pub fn next_wake(self, now: Instant) -> Option<Instant> {
         if self.microtasks {
@@ -911,7 +918,7 @@ pub trait DocumentSession<F>: Any {
     /// The quiescence contract (native automation plan): no pending script
     /// work, layout clean. Static lanes are always settled.
     fn settled(&mut self) -> bool {
-        self.pending_work().is_idle()
+        self.pending_work().is_settled()
     }
 
     /// Visibility hint (a hidden tile may skip raster-adjacent work).
@@ -1333,6 +1340,17 @@ mod tests {
         let deadline = work.next_wake(now).expect("timer has a wake deadline");
         assert!(deadline >= now + std::time::Duration::from_millis(25));
         assert!(!work.is_idle());
+        assert!(
+            work.is_settled(),
+            "a future timer is wakeable without making a live page perpetually unsettled"
+        );
+        assert!(
+            !SessionPendingWork {
+                external: true,
+                ..SessionPendingWork::idle()
+            }
+            .is_settled()
+        );
         assert!(SessionPendingWork::idle().next_wake(now).is_none());
         assert_eq!(
             SessionPendingWork {

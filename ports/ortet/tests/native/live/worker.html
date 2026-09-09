@@ -16,7 +16,7 @@
   <p>The worker waits on a live resource before sending its result.</p>
 </main>
 <script>
-  var worker = new Worker("/worker.js?case=worker");
+  var worker = new Worker(new URL("/worker.js?case=worker", location.href).href);
   worker.onmessage = function (event) {
     if (event.data !== "WORKER_OK") throw new Error("unexpected worker receipt body");
     document.documentElement.className = "complete";

@@ -32,7 +32,7 @@ pub mod href;
 #[cfg(feature = "scripted")]
 pub use genet_scripted::{
     LiveryScriptedDocument, LiveryScriptedDocument as ScriptedDocument,
-    ResourceFetcher as ScriptResourceFetcher, ScriptedEngine,
+    ResourceFetcher as ScriptResourceFetcher, ScriptWake, ScriptWakeEvent, ScriptedEngine,
 };
 
 pub mod engines;

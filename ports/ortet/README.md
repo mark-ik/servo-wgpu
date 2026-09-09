@@ -28,9 +28,13 @@ vocabulary. Following a link is spawning a new session for the new address.
 ortet --url <address> [options]
 
   --url <address>      A file path, a file:// URL, or an http(s) URL.
+  --engine <name>      Session engine: livery (default), boa, or nova.
   --size <WxH>         Window size in physical pixels (default 960x640).
-  --frames <N>         Present exactly N frames, then exit.
+  --frames <N>         Present N frames, then exit once any receipt condition matches.
   --artifact <path>    Write the captured frame as a PNG and print its digest.
+  --expect-heading <text>
+                       Require an exact heading in the captured session report.
+  --timeout-ms <N>     Receipt completion deadline (default 10000ms).
   --actions <list>     Drive the document once, after its first laid-out frame.
   --help               Print the usage and exit.
 ```
@@ -55,12 +59,13 @@ frame — and therefore the captured receipt — shows.
 
 ### `--expect-heading`
 
-An optional completion condition for a bounded receipt. On its final frame,
-Ortet reads the selected session's engine-owned `ContentReport` and requires an
-exact matching heading. It is intended for a scripted fixture whose final DOM
-state must be correlated with the PNG capture; it is not general page
-automation. The option requires `--frames` so a failed asynchronous completion
-has a finite, reproducible timeout.
+An optional completion condition for a bounded receipt. Ortet reads the
+selected session's engine-owned `ContentReport` and requires an exact matching
+heading on the frame it captures. With `--frames`, that count is the minimum
+presentation budget. Without `--frames`, `--artifact` is required and the host
+sleeps until a timer or external completion wakes it. `--timeout-ms` bounds
+either form. This is a completion probe for a scripted fixture, not a page
+automation language.
 
 ## Accessibility
 

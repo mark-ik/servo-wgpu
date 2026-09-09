@@ -41,8 +41,6 @@
 //! script/layout split against its own retained viewport scroll.
 
 use layout_dom_api::{LayoutDom, LocalName, Namespace};
-#[cfg(feature = "livery")]
-use std::rc::Rc;
 
 use engine_observables_api::DomArenaStats;
 #[cfg(feature = "livery")]
@@ -62,6 +60,8 @@ use crate::ResourceFetcher;
 use crate::capture::DomCaptureRecorder;
 #[cfg(feature = "livery")]
 use crate::{LiveryCssom, ScriptedClick};
+#[cfg(feature = "livery")]
+use crate::{ScriptResourceBridge, ScriptWake};
 
 /// Host-neutral keyboard scrolling for either scripted layout engine.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -536,24 +536,6 @@ impl<E: ScriptEngine> ScriptedDocument<E> {
     }
 }
 
-/// A cloneable, host-owned resource handle. The Livery CSSOM retains one clone
-/// for live stylesheet and asset reconciliation while parser-blocking scripts
-/// read through the other clone during construction.
-#[cfg(feature = "livery")]
-#[derive(Clone)]
-struct SharedResourceFetcher(Rc<dyn ResourceFetcher>);
-
-#[cfg(feature = "livery")]
-impl ResourceFetcher for SharedResourceFetcher {
-    fn fetch(&self, url: &str) -> Option<Vec<u8>> {
-        self.0.fetch(url)
-    }
-
-    fn fetch_response(&self, url: &str) -> Option<genet_host_api::ResourceResponse> {
-        self.0.fetch_response(url)
-    }
-}
-
 #[cfg(feature = "livery")]
 struct EmptyResourceFetcher;
 
@@ -576,6 +558,7 @@ pub struct LiveryScriptedDocument<E: ScriptEngine> {
     // them so the route does not consume the Windows main-thread stack merely
     // by carrying one live document through `ViewerApp`.
     rt: Box<Runtime<E>>,
+    bridge: ScriptResourceBridge,
     cssom: Box<LiveryCssom>,
     pending_fragment: Option<NavigationFragment>,
     capture: Option<DomCaptureRecorder>,
@@ -590,10 +573,33 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
     /// parser-blocking script executes.
     pub fn load<Fetch>(fetcher: Fetch, url: &str) -> Result<Self, String>
     where
-        Fetch: ResourceFetcher + 'static,
+        Fetch: ResourceFetcher + Send + Sync + 'static,
+    {
+        Self::load_with_wake(fetcher, url, ScriptWake::new())
+    }
+
+    pub fn load_with_wake<Fetch>(
+        fetcher: Fetch,
+        url: &str,
+        wake: ScriptWake,
+    ) -> Result<Self, String>
+    where
+        Fetch: ResourceFetcher + Send + Sync + 'static,
+    {
+        Self::load_with_wake_generation(fetcher, url, wake, 0)
+    }
+
+    pub fn load_with_wake_generation<Fetch>(
+        fetcher: Fetch,
+        url: &str,
+        wake: ScriptWake,
+        generation: u64,
+    ) -> Result<Self, String>
+    where
+        Fetch: ResourceFetcher + Send + Sync + 'static,
     {
         let navigation = NavigationFragment::parse(url);
-        let fetcher = SharedResourceFetcher(Rc::new(fetcher));
+        let fetcher = ScriptResourceBridge::new_with_generation(fetcher, wake, generation);
         let bytes = fetcher
             .fetch(&navigation.resource_url)
             .ok_or_else(|| format!("could not load {}", navigation.resource_url))?;
@@ -613,12 +619,37 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
     /// and font reconciliation.
     pub fn from_body<Fetch>(html: &str, fetcher: Fetch, base_url: &str) -> Result<Self, String>
     where
-        Fetch: ResourceFetcher + 'static,
+        Fetch: ResourceFetcher + Send + Sync + 'static,
+    {
+        Self::from_body_with_wake(html, fetcher, base_url, ScriptWake::new())
+    }
+
+    pub fn from_body_with_wake<Fetch>(
+        html: &str,
+        fetcher: Fetch,
+        base_url: &str,
+        wake: ScriptWake,
+    ) -> Result<Self, String>
+    where
+        Fetch: ResourceFetcher + Send + Sync + 'static,
+    {
+        Self::from_body_with_wake_generation(html, fetcher, base_url, wake, 0)
+    }
+
+    pub fn from_body_with_wake_generation<Fetch>(
+        html: &str,
+        fetcher: Fetch,
+        base_url: &str,
+        wake: ScriptWake,
+        generation: u64,
+    ) -> Result<Self, String>
+    where
+        Fetch: ResourceFetcher + Send + Sync + 'static,
     {
         let navigation = NavigationFragment::parse(base_url);
         let mut document = Self::build(
             html,
-            SharedResourceFetcher(Rc::new(fetcher)),
+            ScriptResourceBridge::new_with_generation(fetcher, wake, generation),
             &navigation.script_visible_url,
         )?;
         document.pending_fragment = (!navigation.text_directives.is_empty()
@@ -632,14 +663,25 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
     pub fn parse(html: &str) -> Result<Self, String> {
         Self::build(
             html,
-            SharedResourceFetcher(Rc::new(EmptyResourceFetcher)),
+            ScriptResourceBridge::new(EmptyResourceFetcher, ScriptWake::new()),
             "about:blank",
         )
     }
 
-    fn build(html: &str, fetcher: SharedResourceFetcher, base_url: &str) -> Result<Self, String> {
+    fn build(html: &str, fetcher: ScriptResourceBridge, base_url: &str) -> Result<Self, String> {
         let mut rt =
             Runtime::<E>::new().map_err(|error| format!("script runtime init: {error:?}"))?;
+        rt.set_fetch_handler(Box::new(fetcher.clone()));
+        rt.set_script_resource_loader(Box::new(fetcher.clone()));
+        let worker_wake = fetcher.wake();
+        let generation = fetcher.generation();
+        rt.set_worker_wake(std::sync::Arc::new(move || {
+            worker_wake.notify_worker_for(generation)
+        }));
+        let worker_resource_wake = fetcher.wake();
+        rt.set_worker_resource_wake(std::sync::Arc::new(move |resource| {
+            worker_resource_wake.notify_worker_resource(generation, resource)
+        }));
         let _ = rt.set_base_url(base_url);
         // The CSSOM is installed over the *empty* arena, before the parse, and
         // re-resolves its author sheets from the live DOM at every read. That
@@ -688,6 +730,7 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
 
         Ok(Self {
             rt: Box::new(rt),
+            bridge: fetcher,
             cssom: Box::new(cssom),
             pending_fragment: None,
             capture,
@@ -841,14 +884,20 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
             }
             self.last_hidden_pump_ms = now_ms;
         }
+        let external = self.bridge.pump(&mut self.rt);
+        let workers = self.rt.pump_workers();
         self.rt.run_timers(64, now_ms);
         self.rt.run_microtasks();
         self.flush_dom_capture();
-        self.rt.collect_garbage()
+        let (unpinned, collected) = self.rt.collect_garbage();
+        (external + workers + unpinned, collected)
     }
 
     pub fn has_pending_work(&mut self) -> bool {
-        !self.frozen && self.rt.next_timer_delay().is_some()
+        !self.frozen
+            && (self.rt.next_timer_delay().is_some()
+                || self.bridge.has_pending()
+                || self.rt.has_worker_work())
     }
 
     /// Milliseconds until the next timer is due on the runtime's virtual
@@ -856,6 +905,10 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
     /// host instead of forcing a repaint loop.
     pub fn next_timer_delay(&mut self) -> Option<f64> {
         (!self.frozen).then(|| self.rt.next_timer_delay()).flatten()
+    }
+
+    pub fn has_external_work(&self) -> bool {
+        !self.frozen && (self.bridge.has_pending() || self.rt.has_worker_work())
     }
 
     pub fn set_hidden(&mut self, hidden: bool) {
@@ -917,20 +970,28 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
     }
 }
 
+#[cfg(feature = "livery")]
+impl<E: ScriptEngine> Drop for LiveryScriptedDocument<E> {
+    fn drop(&mut self) {
+        self.bridge.close();
+    }
+}
+
 #[cfg(all(test, feature = "livery"))]
 mod livery_text_fragment_tests {
     use super::*;
     use script_engine_boa::BoaEngine;
+    use std::sync::{Arc, Mutex};
 
     #[derive(Clone)]
     struct CountingFetcher {
-        calls: Rc<std::cell::RefCell<Vec<String>>>,
+        calls: Arc<Mutex<Vec<String>>>,
         body: Vec<u8>,
     }
 
     impl ResourceFetcher for CountingFetcher {
         fn fetch(&self, url: &str) -> Option<Vec<u8>> {
-            self.calls.borrow_mut().push(url.to_owned());
+            self.calls.lock().unwrap().push(url.to_owned());
             (url == "https://example.test/article").then(|| self.body.clone())
         }
     }
@@ -993,7 +1054,7 @@ mod livery_text_fragment_tests {
 
     #[test]
     fn initial_text_fragment_fetches_the_source_once_on_boa() {
-        let calls = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let calls = Arc::new(Mutex::new(Vec::new()));
         let fetcher = CountingFetcher {
             calls: calls.clone(),
             body: br#"<body><div style="height: 900px"></div><p>one needle two</p></body>"#
@@ -1007,7 +1068,7 @@ mod livery_text_fragment_tests {
 
         let _scene = document.frame(320, 160);
         assert_eq!(
-            calls.borrow().as_slice(),
+            calls.lock().unwrap().as_slice(),
             ["https://example.test/article"],
             "first-frame activation reuses the loaded source"
         );

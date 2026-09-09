@@ -28,6 +28,7 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
 use std::time::{Duration, Instant};
@@ -43,6 +44,19 @@ pub trait ScriptResourceLoader {
     /// The text of `url` on the page's resource route, or `None` to fall through
     /// to the network seam.
     fn load(&self, url: &str) -> Option<String>;
+
+    /// Start a worker resource request. Returning `Some(request)` declines
+    /// deferred service and hands the request back to the page fetch route;
+    /// returning `None` means the loader accepted it and will invoke
+    /// `complete` later.
+    fn start(
+        &self,
+        _id: u64,
+        request: FetchRequest,
+        _complete: Box<dyn FnOnce(FetchOutcome) + Send>,
+    ) -> Option<FetchRequest> {
+        Some(request)
+    }
 }
 
 /// Page -> worker.
@@ -74,6 +88,7 @@ pub(crate) struct WorkerBoot {
     name: String,
     rx: Receiver<ToWorker>,
     tx: Sender<FromWorker>,
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 /// The page's handle on one live worker.
@@ -86,7 +101,7 @@ pub(crate) struct WorkerHandle {
     idle: bool,
     alive: bool,
     /// Messages sent to this worker; compared against the count in `Idle`.
-    sent: u64,
+    sent: Arc<AtomicU64>,
 }
 
 /// Process-unique ids for cross-agent message ports.
@@ -96,6 +111,7 @@ static NEXT_PORT_ID: AtomicU64 = AtomicU64::new(1);
 pub(crate) struct WorkerLink {
     tx: Sender<FromWorker>,
     rx: Receiver<ToWorker>,
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
     /// Envelopes waiting for `__ws_take`.
     inbox: VecDeque<String>,
     next_req: u64,
@@ -116,6 +132,12 @@ const RESOURCE_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_JOIN: Duration = Duration::from_millis(500);
 
 impl WorkerLink {
+    fn notify(&self) {
+        if let Some(wake) = &self.wake {
+            wake();
+        }
+    }
+
     fn envelope(msg: ToWorker) -> Option<String> {
         match msg {
             ToWorker::Message(p) => Some(format!("{{\"k\":\"m\",\"d\":{}}}", js_str(&p))),
@@ -190,6 +212,7 @@ impl WorkerLink {
             self.terminated = true;
             return FetchOutcome::network_error();
         }
+        self.notify();
         let deadline = Instant::now() + RESOURCE_TIMEOUT;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
@@ -255,10 +278,17 @@ fn ok_status(out: &FetchOutcome) -> bool {
 /// The worker thread's whole life. Reached as a `fn(WorkerBoot)` pointer, so the
 /// spawning side needs no engine bound and no engine value crosses the boundary.
 pub(crate) fn worker_main<E: ScriptEngine>(boot: WorkerBoot) {
-    let WorkerBoot { url, name, rx, tx } = boot;
+    let WorkerBoot {
+        url,
+        name,
+        rx,
+        tx,
+        wake,
+    } = boot;
     let link = Rc::new(RefCell::new(WorkerLink {
         tx: tx.clone(),
         rx,
+        wake: wake.clone(),
         inbox: VecDeque::new(),
         next_req: 1,
         consumed: 0,
@@ -301,7 +331,7 @@ pub(crate) fn worker_main<E: ScriptEngine>(boot: WorkerBoot) {
         let msg = rt.describe_error(&e);
         let _ = tx.send(FromWorker::Error(msg));
     }
-    run_worker_loop(&mut rt, &link, &tx);
+    run_worker_loop(&mut rt, &link, &tx, wake.as_ref());
     let _ = tx.send(FromWorker::Closed);
 }
 
@@ -311,6 +341,7 @@ fn run_worker_loop<E: ScriptEngine>(
     rt: &mut Runtime<E>,
     link: &Rc<RefCell<WorkerLink>>,
     tx: &Sender<FromWorker>,
+    wake: Option<&Arc<dyn Fn() + Send + Sync>>,
 ) {
     let mut now_ms = 0.0f64;
     let mut idle_sent = false;
@@ -339,6 +370,9 @@ fn run_worker_loop<E: ScriptEngine>(
         if work == 0 {
             if !idle_sent {
                 let _ = tx.send(FromWorker::Idle(link.borrow().consumed));
+                if let Some(wake) = wake {
+                    wake();
+                }
                 idle_sent = true;
             }
             let mut l = link.borrow_mut();
@@ -399,16 +433,19 @@ impl<E: ScriptEngine> NativeFn<E> for WorkerCreate {
         let url = arg_string::<E>(cx, 0)?;
         let name = arg_string::<E>(cx, 1)?;
         let spawn = with_host::<E, _>(cx, |h| h.worker_spawn).flatten();
+        let wake = with_host::<E, _>(cx, |h| h.worker_wake.clone()).flatten();
         let Some(spawn) = spawn else {
             return cx.make_string("-1");
         };
         let (tx_to, rx_to) = channel::<ToWorker>();
         let (tx_from, rx_from) = channel::<FromWorker>();
+        let sent = Arc::new(AtomicU64::new(0));
         let boot = WorkerBoot {
             url,
             name,
             rx: rx_to,
             tx: tx_from,
+            wake,
         };
         let join = std::thread::Builder::new()
             .name("genet-worker".to_owned())
@@ -424,7 +461,7 @@ impl<E: ScriptEngine> NativeFn<E> for WorkerCreate {
                 join,
                 idle: false,
                 alive: true,
-                sent: 0,
+                sent,
             });
             h.workers.len() - 1
         });
@@ -443,7 +480,7 @@ impl<E: ScriptEngine> NativeFn<E> for WorkerPost {
         with_host::<E, _>(cx, |h| {
             if let Some(w) = h.workers.get_mut(id) {
                 w.idle = false;
-                w.sent += 1;
+                w.sent.fetch_add(1, Ordering::Relaxed);
                 let _ = w.tx.send(ToWorker::Message(payload));
             }
         });
@@ -457,7 +494,7 @@ impl<E: ScriptEngine> NativeFn<E> for WorkerTerminate {
         let id: usize = arg_string::<E>(cx, 0)?.parse().unwrap_or(usize::MAX);
         with_host::<E, _>(cx, |h| {
             if let Some(w) = h.workers.get_mut(id) {
-                w.sent += 1;
+                w.sent.fetch_add(1, Ordering::Relaxed);
                 let _ = w.tx.send(ToWorker::Terminate);
                 w.alive = false;
                 w.idle = true;
@@ -515,7 +552,7 @@ impl<E: ScriptEngine> NativeFn<E> for PortForward {
             }
             if let Some(w) = h.workers.get_mut(worker) {
                 w.idle = false;
-                w.sent += 1;
+                w.sent.fetch_add(1, Ordering::Relaxed);
                 let _ = w.tx.send(ToWorker::PortMessage(port, payload));
             }
         });
@@ -542,6 +579,7 @@ impl<E: ScriptEngine> NativeFn<E> for WsEmit {
         let payload = arg_string::<E>(cx, 0)?;
         with_link::<E, _>(cx, |l| {
             let _ = l.tx.send(FromWorker::Message(payload));
+            l.notify();
         });
         Ok(cx.undefined())
     }
@@ -563,7 +601,7 @@ impl<E: ScriptEngine> NativeFn<E> for WsPortForward {
             }
             if let Some(w) = h.workers.get_mut(worker) {
                 w.idle = false;
-                w.sent += 1;
+                w.sent.fetch_add(1, Ordering::Relaxed);
                 let _ =
                     w.tx.send(ToWorker::PortMessage(port.clone(), payload.clone()));
             }
@@ -573,6 +611,7 @@ impl<E: ScriptEngine> NativeFn<E> for WsPortForward {
         if !nested {
             with_link::<E, _>(cx, |l| {
                 let _ = l.tx.send(FromWorker::PortMessage(port, payload));
+                l.notify();
             });
         }
         Ok(cx.undefined())
@@ -636,7 +675,9 @@ pub(crate) fn pump<E: ScriptEngine>(rt: &mut Runtime<E>) -> usize {
                 };
                 match msg {
                     // Only quiesce on a report that has seen everything sent.
-                    FromWorker::Idle(seen) => h.workers[i].idle = seen == h.workers[i].sent,
+                    FromWorker::Idle(seen) => {
+                        h.workers[i].idle = seen == h.workers[i].sent.load(Ordering::Acquire)
+                    },
                     FromWorker::Closed => {
                         h.workers[i].alive = false;
                         h.workers[i].idle = true;
@@ -666,11 +707,39 @@ pub(crate) fn pump<E: ScriptEngine>(rt: &mut Runtime<E>) -> usize {
         }
     }
     for (i, id, req) in requests {
-        let out = load_resource(&host, *req);
-        let mut h = host.borrow_mut();
-        if let Some(w) = h.workers.get_mut(i) {
-            w.sent += 1;
-            let _ = w.tx.send(ToWorker::Resource(id, Box::new(out)));
+        let (loader, fetch, tx, sent, wake, resource_wake) = {
+            let h = host.borrow();
+            let Some(w) = h.workers.get(i) else { continue };
+            (
+                h.script_loader.clone(),
+                h.fetch.clone(),
+                w.tx.clone(),
+                Arc::clone(&w.sent),
+                h.worker_wake.clone(),
+                h.worker_resource_wake.clone(),
+            )
+        };
+        let fallback = if let Some(loader) = loader.as_ref() {
+            let resource_url = req.url.clone();
+            let deferred_tx = tx.clone();
+            let deferred_sent = Arc::clone(&sent);
+            let complete = Box::new(move |out: FetchOutcome| {
+                deferred_sent.fetch_add(1, Ordering::Release);
+                let _ = deferred_tx.send(ToWorker::Resource(id, Box::new(out)));
+                if let Some(wake) = resource_wake {
+                    wake(resource_url);
+                } else if let Some(wake) = wake {
+                    wake();
+                }
+            });
+            loader.start(id, *req, complete)
+        } else {
+            Some(*req)
+        };
+        if let Some(req) = fallback {
+            let out = load_resource(loader, fetch, req);
+            sent.fetch_add(1, Ordering::Release);
+            let _ = tx.send(ToWorker::Resource(id, Box::new(out)));
         }
         work += 1;
     }
@@ -683,11 +752,11 @@ pub(crate) fn pump<E: ScriptEngine>(rt: &mut Runtime<E>) -> usize {
 }
 
 /// Answer a worker resource request from the page's own route.
-fn load_resource(host: &SharedHost, req: FetchRequest) -> FetchOutcome {
-    let (loader, fetch) = {
-        let h = host.borrow();
-        (h.script_loader.clone(), h.fetch.clone())
-    };
+fn load_resource(
+    loader: Option<Rc<dyn ScriptResourceLoader>>,
+    fetch: Option<Rc<dyn FetchHandler>>,
+    req: FetchRequest,
+) -> FetchOutcome {
     if let Some(loader) = loader {
         if let Some(text) = loader.load(&req.url) {
             return FetchOutcome {
@@ -723,7 +792,7 @@ pub(crate) fn shutdown(host: &SharedHost) {
         h.workers
             .iter_mut()
             .filter_map(|w| {
-                w.sent += 1;
+                w.sent.fetch_add(1, Ordering::Relaxed);
                 let _ = w.tx.send(ToWorker::Terminate);
                 w.alive = false;
                 w.join.take()

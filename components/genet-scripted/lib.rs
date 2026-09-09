@@ -27,12 +27,14 @@ mod capture;
 mod document;
 #[cfg(feature = "livery")]
 mod livery;
+mod resource_bridge;
 
 #[cfg(feature = "livery")]
 pub use document::LiveryScriptedDocument;
 pub use document::{ScriptedDocument, ScriptedEngine, ScrollKey};
 #[cfg(feature = "livery")]
 pub use livery::{LiveryCssom, ScriptedClick};
+pub use resource_bridge::{ScriptResourceBridge, ScriptWake, ScriptWakeEvent};
 
 /// Byte-loading seam supplied by a shell or worker host. Networking and filesystem
 /// policy stay above the scripted document owner. This is the shared host contract;

@@ -6,8 +6,8 @@
 
 //! Ortet's command line.
 //!
-//! Six options and no configuration file: an address, an engine, a window size,
-//! a frame budget, a receipt artifact, and a small action list that lets a bounded run
+//! A deliberately small command surface: an address, an engine, a window size,
+//! a frame budget, a bounded receipt, and a small action list that lets a run
 //! drive the document the way a person's hands would. Anything larger than this
 //! is a product decision, and product decisions are Mere's.
 
@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 
 /// The window ortet opens when `--size` is absent.
 pub const DEFAULT_SIZE: (u32, u32) = (960, 640);
+pub const DEFAULT_RECEIPT_TIMEOUT_MS: u64 = 10_000;
 
 pub const USAGE: &str = "\
 ortet — the raw Genet host: one window, one document, no chrome.
@@ -24,11 +25,13 @@ usage: ortet --url <address> [options]
   --url <address>      A file path, a file:// URL, or an http(s) URL.
   --engine <name>      Session engine: livery (default), boa, or nova.
   --size <WxH>         Window size in physical pixels (default 960x640).
-  --frames <N>         Present exactly N frames, then exit.
+  --frames <N>         Present N frames, then exit once any receipt condition matches.
   --artifact <path>    Write the captured frame as a PNG and print its digest.
   --expect-heading <text>
-                      On the final bounded frame, require the session's
-                      semantic heading report to contain this exact text.
+                      Require the captured session's semantic heading report
+                      to contain this exact text. Without --frames, --artifact
+                      is required and the host sleeps until work wakes it.
+  --timeout-ms <N>     Receipt completion deadline (default 10000ms).
   --actions <list>     Drive the document once, after its first laid-out frame.
                        Steps are separated by ';' or ',' and are one of:
                          scroll:<dx>,<dy>   scroll at the viewport centre
@@ -82,6 +85,8 @@ pub struct Config {
     /// session report. This keeps scripted acceptance out of screenshot-only
     /// territory without adding a page-automation language to Ortet.
     pub expect_heading: Option<String>,
+    /// Bound for completion-driven receipt conditions.
+    pub receipt_timeout: std::time::Duration,
     pub actions: Vec<Action>,
 }
 
@@ -103,6 +108,7 @@ where
     let mut frames = None;
     let mut artifact = None;
     let mut expect_heading = None;
+    let mut receipt_timeout = std::time::Duration::from_millis(DEFAULT_RECEIPT_TIMEOUT_MS);
     let mut actions = Vec::new();
 
     let mut arguments = arguments.into_iter();
@@ -129,14 +135,24 @@ where
             },
             "--artifact" => artifact = Some(PathBuf::from(value("--artifact")?)),
             "--expect-heading" => expect_heading = Some(value("--expect-heading")?),
+            "--timeout-ms" => {
+                let raw = value("--timeout-ms")?;
+                let millis: u64 = raw
+                    .parse()
+                    .map_err(|_| format!("--timeout-ms wants a whole number, got {raw}"))?;
+                if millis == 0 {
+                    return Err("--timeout-ms must be at least 1".to_owned());
+                }
+                receipt_timeout = std::time::Duration::from_millis(millis);
+            },
             "--actions" => actions = parse_actions(&value("--actions")?)?,
             other => return Err(format!("unknown argument {other}")),
         }
     }
 
     let url = url.ok_or_else(|| "--url is required".to_owned())?;
-    if expect_heading.is_some() && frames.is_none() {
-        return Err("--expect-heading needs a bounded --frames run".to_owned());
+    if expect_heading.is_some() && frames.is_none() && artifact.is_none() {
+        return Err("--expect-heading without --frames needs --artifact".to_owned());
     }
     Ok(Invocation::Run(Box::new(Config {
         address: address_from_argument(&url)?,
@@ -145,6 +161,7 @@ where
         frames,
         artifact,
         expect_heading,
+        receipt_timeout,
         actions,
     })))
 }
@@ -285,6 +302,10 @@ mod tests {
         assert_eq!(config.size, DEFAULT_SIZE);
         assert_eq!(config.frames, None);
         assert_eq!(config.artifact, None);
+        assert_eq!(
+            config.receipt_timeout,
+            std::time::Duration::from_millis(DEFAULT_RECEIPT_TIMEOUT_MS)
+        );
         assert!(config.actions.is_empty());
     }
 
@@ -357,6 +378,22 @@ mod tests {
         assert!(parse(args(&["--url", "a.html", "--size", "0x10"])).is_err());
         assert!(parse(args(&["--url", "a.html", "--size", "wide"])).is_err());
         assert!(parse(args(&["--url", "a.html", "--expect-heading", "done"])).is_err());
+        let completion = run(&[
+            "--url",
+            "a.html",
+            "--artifact",
+            "out.png",
+            "--expect-heading",
+            "done",
+            "--timeout-ms",
+            "250",
+        ]);
+        assert_eq!(completion.frames, None);
+        assert_eq!(
+            completion.receipt_timeout,
+            std::time::Duration::from_millis(250)
+        );
+        assert!(parse(args(&["--url", "a.html", "--timeout-ms", "0"])).is_err());
     }
 
     /// A Windows drive letter is one character, so it must not read as a URL

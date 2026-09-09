@@ -8,14 +8,17 @@
 param(
     [Parameter(Mandatory)]
     [string]$ArtifactDir,
+    [string]$TargetDir,
     [ValidateRange(1, 65535)]
-    [int]$HttpPort = 18755
+    [int]$HttpPort = 18755,
+    [ValidateRange(1, 120000)]
+    [int]$ReceiptTimeoutMs = 10000
 )
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $artifact = [IO.Path]::GetFullPath($ArtifactDir)
-$target = Join-Path $artifact 'target'
+$target = if ($TargetDir) { [IO.Path]::GetFullPath($TargetDir) } else { Join-Path $artifact 'target' }
 $fixture = Join-Path $repo 'ports\ortet\tests\native\scripted_receipt.html'
 $completion = 'Ortet O5 native receipt complete'
 $serverScript = Join-Path $repo 'support\ci\ortet_scripted_native_receipt_server.mjs'
@@ -31,7 +34,9 @@ function Assert-ReceiptLog {
     )
 
     $output = Get-Content $Log -Raw
-    if ($output -notmatch "engine genet\.scripted.*backend $Engine") { throw "Ortet $Engine log did not report the selected backend." }
+    $engineId = if ($Engine -eq 'nova') { 'genet.scripted.nova' } else { 'genet.scripted' }
+    $identity = "engine $engineId backend $Engine presented"
+    if ($output -notmatch [regex]::Escape($identity)) { throw "Ortet $Engine log did not report exact engine/backend identity '$identity'." }
     if ($output -notmatch [regex]::Escape("semantic heading `"$Heading`"")) { throw "Ortet $Engine did not report semantic completion $Heading." }
     if ($output -notmatch [regex]::Escape("source $SourceRevision")) { throw "Ortet $Engine receipt lacks the exact source revision." }
     if ($output -notmatch [regex]::Escape("settled at $ExpectedAddress")) { throw "Ortet $Engine did not settle at $ExpectedAddress." }
@@ -117,6 +122,7 @@ try {
                 Heading = 'Ortet O5 fetch idle wake complete'
                 Color = '#185d8c'
                 Wake = 'fetch'
+                WakeResource = '/delayed-fetch?case=fetch'
                 Actions = $null
                 Events = @('fetch.html served', 'delayed-fetch requested', 'delayed-fetch released')
             },
@@ -126,6 +132,7 @@ try {
                 Heading = 'Ortet O5 worker idle wake complete'
                 Color = '#5b3b78'
                 Wake = 'worker'
+                WakeResource = '/worker-gate?case=worker'
                 Actions = $null
                 Events = @('worker.html served', 'worker.js served', 'worker-gate requested', 'worker-gate released')
             },
@@ -135,8 +142,9 @@ try {
                 Heading = 'Ortet O5 stale completion rejected'
                 Color = '#17324d'
                 Wake = $null
+                WakeResource = $null
                 Actions = 'click:100,120'
-                Events = @('stale.html served', 'late-stale requested', 'replacement.html served', 'late-stale released')
+                Events = @('stale.html served', 'replacement.html served', 'late-stale released')
             }
         )
 
@@ -147,9 +155,22 @@ try {
             $log = Join-Path $engineArtifact 'receipt.log'
             & $exe --url $fixture --engine $engine --size 640x400 --frames 6 --artifact $png --actions 'click:160,74' --expect-heading $completion 2>&1 | Tee-Object -FilePath $log
             if ($LASTEXITCODE -ne 0) { throw "Ortet $engine static receipt failed; see $log." }
-            $staticOutput = Assert-ReceiptLog -Log $log -Engine $engine -Heading $completion -SourceRevision $env:GENET_SOURCE_REVISION -ExpectedAddress $fixture
+            $staticAddress = ([Uri]::new($fixture)).AbsoluteUri
+            $staticOutput = Assert-ReceiptLog -Log $log -Engine $engine -Heading $completion -SourceRevision $env:GENET_SOURCE_REVISION -ExpectedAddress $staticAddress
             if (-not (Test-Path $png)) { throw "Ortet $engine static receipt did not write its PNG." }
             (Get-FileHash -Algorithm SHA256 $png).Hash.ToLowerInvariant() + '  receipt.png' | Set-Content (Join-Path $engineArtifact 'receipt.sha256')
+            Assert-CompletionPixels -Png $png -ExpectedColor '#d09b5b' -RecordPath (Join-Path $engineArtifact 'receipt-pixels.json')
+
+            $timeoutArtifact = Join-Path $engineArtifact 'timeout'
+            New-Item -ItemType Directory -Path $timeoutArtifact -Force | Out-Null
+            $timeoutLog = Join-Path $timeoutArtifact 'receipt.log'
+            $timeoutPng = Join-Path $timeoutArtifact 'receipt.png'
+            & $exe --url $fixture --engine $engine --size 640x400 --artifact $timeoutPng --expect-heading 'Ortet impossible timeout heading' --timeout-ms 25 2>&1 | Tee-Object -FilePath $timeoutLog
+            if ($LASTEXITCODE -eq 0) { throw "Ortet $engine timeout receipt unexpectedly succeeded." }
+            $timeoutOutput = Get-Content $timeoutLog -Raw
+            if ($timeoutOutput -notmatch [regex]::Escape('was absent before the 25ms deadline')) {
+                throw "Ortet $engine timeout receipt did not report its bounded deadline."
+            }
 
             foreach ($case in $cases) {
                 $caseArtifact = Join-Path $engineArtifact $case.Name
@@ -157,7 +178,7 @@ try {
                 $png = Join-Path $caseArtifact 'receipt.png'
                 $log = Join-Path $caseArtifact 'receipt.log'
                 Reset-ReceiptCase -Origin $origin -Case $case.Name
-                $arguments = @('--url', $case.Url, '--engine', $engine, '--size', '640x400', '--artifact', $png, '--expect-heading', $case.Heading)
+                $arguments = @('--url', $case.Url, '--engine', $engine, '--size', '640x400', '--artifact', $png, '--expect-heading', $case.Heading, '--timeout-ms', $ReceiptTimeoutMs)
                 if ($case.Actions) { $arguments += @('--actions', $case.Actions) }
                 & $exe @arguments 2>&1 | Tee-Object -FilePath $log
                 if ($LASTEXITCODE -ne 0) { throw "Ortet $engine $($case.Name) receipt failed; see $log." }
@@ -171,11 +192,16 @@ try {
 
                 if ($case.Wake) {
                     $idle = [regex]::Match($output, 'ortet: receipt idle generation=(?<generation>\d+) timer=none microtasks=false external=true')
-                    $wake = [regex]::Match($output, "ortet: receipt wake source=$($case.Wake) generation=(?<generation>\d+)")
+                    $wakePattern = "ortet: receipt wake source=$($case.Wake) generation=(?<generation>\d+) resource=\S*" + [regex]::Escape($case.WakeResource)
+                    $wake = [regex]::Match($output, $wakePattern)
                     if (-not $idle.Success -or -not $wake.Success) { throw "Ortet $engine $($case.Name) did not prove an external idle wake." }
                     if ($idle.Index -ge $wake.Index) { throw "Ortet $engine $($case.Name) woke before the host became externally idle." }
+                    if ($idle.Groups['generation'].Value -ne $wake.Groups['generation'].Value) { throw "Ortet $engine $($case.Name) wake belonged to a different session generation." }
                 }
                 if ($case.Name -eq 'stale') {
+                    if (-not ($events | Where-Object event -eq 'late-stale requested')) {
+                        throw "Ortet $engine stale receipt did not reach the delayed old-session resource."
+                    }
                     $drop = [regex]::Match($output, 'ortet: receipt stale-completion dropped source=fetch generation=(?<old>\d+) active=(?<active>\d+)')
                     if (-not $drop.Success) { throw "Ortet $engine stale receipt did not report a rejected stale completion." }
                     if ($drop.Groups['old'].Value -eq $drop.Groups['active'].Value) { throw "Ortet $engine stale receipt did not advance the active generation." }

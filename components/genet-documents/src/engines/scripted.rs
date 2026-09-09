@@ -8,6 +8,7 @@
 //! its scripts ran, wrapped for the session registry.
 
 use std::any::Any;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use document_session_api::DocumentCapabilities;
@@ -42,15 +43,27 @@ pub(crate) fn scripted_scroll_key(key: SessionScrollKey) -> genet_scripted::Scro
 pub struct ScriptedSessionEngine<E, Fetch> {
     engine_id: String,
     fetcher: Fetch,
+    wake: genet_scripted::ScriptWake,
+    generation: AtomicU64,
     _engine: std::marker::PhantomData<fn() -> E>,
 }
 
 #[cfg(feature = "scripted")]
 impl<E, Fetch> ScriptedSessionEngine<E, Fetch> {
     pub fn new(engine_id: impl Into<String>, fetcher: Fetch) -> Self {
+        Self::new_with_wake(engine_id, fetcher, genet_scripted::ScriptWake::new())
+    }
+
+    pub fn new_with_wake(
+        engine_id: impl Into<String>,
+        fetcher: Fetch,
+        wake: genet_scripted::ScriptWake,
+    ) -> Self {
         Self {
             engine_id: engine_id.into(),
             fetcher,
+            wake,
+            generation: AtomicU64::new(0),
             _engine: std::marker::PhantomData,
         }
     }
@@ -70,16 +83,23 @@ where
         &self,
         request: &SessionSpawnRequest,
     ) -> Result<Box<dyn DocumentSession<Scene>>, SessionError> {
+        let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
         let navigation = genet_livery::NavigationFragment::parse(&request.address);
         let doc = match &request.body {
-            Some(body) => genet_scripted::LiveryScriptedDocument::<E>::from_body(
-                body,
+            Some(body) => {
+                genet_scripted::LiveryScriptedDocument::<E>::from_body_with_wake_generation(
+                    body,
+                    self.fetcher.clone(),
+                    &request.address,
+                    self.wake.clone(),
+                    generation,
+                )
+            },
+            None => genet_scripted::LiveryScriptedDocument::<E>::load_with_wake_generation(
                 self.fetcher.clone(),
                 &request.address,
-            ),
-            None => genet_scripted::LiveryScriptedDocument::<E>::load(
-                self.fetcher.clone(),
-                &request.address,
+                self.wake.clone(),
+                generation,
             ),
         }
         .map_err(SessionError::SpawnFailed)?;
@@ -205,14 +225,20 @@ impl<E: script_engine_api::ScriptEngine + 'static> DocumentSession<Scene>
         let _ = self.doc.pump(now_ms);
     }
     fn pending_work(&mut self) -> SessionPendingWork {
-        self.doc
+        let timer = self
+            .doc
             .next_timer_delay()
             .and_then(|delay| delay.is_finite().then_some(delay.max(0.0)))
-            .map(|delay| SessionPendingWork::timer(Duration::from_secs_f64(delay / 1000.0)))
-            .unwrap_or_else(SessionPendingWork::idle)
+            .map(|delay| Duration::from_secs_f64(delay / 1000.0));
+        let external = self.doc.has_external_work();
+        SessionPendingWork {
+            timer,
+            microtasks: false,
+            external,
+        }
     }
     fn settled(&mut self) -> bool {
-        self.pending_work().is_idle()
+        self.pending_work().is_settled()
     }
     fn set_hidden(&mut self, hidden: bool) {
         self.doc.set_hidden(hidden);
