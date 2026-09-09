@@ -16,10 +16,10 @@
   <p>The late result from the replaced session must never arrive here.</p>
 </main>
 <script>
-  // The server releases the former document's delayed fetch after 250ms. This
+  // The server releases the former document's delayed fetch after five seconds. This
   // legitimate new-document timer completes later, leaving time to reject it.
   setTimeout(function () {
     document.documentElement.className = "complete";
     document.getElementById("state").textContent = "Ortet O5 stale completion rejected";
-  }, 500);
+  }, 6000);
 </script>
