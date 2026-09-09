@@ -566,6 +566,15 @@ readback and reattachment, then observes at least two unpins and collected nodes
 after release. This closes the narrow Boa wrapper case; queued observer/range
 roots, Nova, ownership/adoption and headed gates remain open.
 
+**S3 research, 2026-09-08:** [the repinned handle probe](../design_docs/receipts/2026-09-08_g5_s3_handle_boundary/receipt.md)
+passes three native debug tests and a release model run against committed
+`ec5421b7591`; wasm32 release checks only. Actual release roots still alias.
+The 24/40 u64 model distinguishes them but does not repair production NodeId.
+About 70 runtime inbound conversions still need a coherent migration; raw
+foreign capture, typed overflow refusal, high-bit engine round trips and wasm
+execution remain open. S4 is deliberately unimplemented while those seams
+are reconciled; the isolated parallel-handle sketch was discarded.
+
 Freeze a fixture manifest and named regressions before implementation:
 
 1. Retain a node and descendant through JS references. Record their identity,

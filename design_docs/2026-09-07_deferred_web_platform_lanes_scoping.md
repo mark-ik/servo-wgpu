@@ -312,18 +312,23 @@ policy families independently.
 Census: `workers` 1 / 222 / 22 / 2 / 0, subtests 17 of 574; `webmessaging`
 20 / 101 / 10 / 4 / 0, subtests 49 of 209.
 
-**What exists.** `genet-scripted-worker` is the wasm-bindgen
-entry that runs a whole `ScriptedDocument` inside a browser Web Worker for
-the wasm target, with an engine chosen by feature. It says nothing about the
-`Worker` global a page script constructs. What does exist is the engine
-seam (`script-engine-api`), a runtime per engine instance, and
-the [cheap-globals lane](2026-09-07_cheap_globals_plan.md)'s `structuredClone`,
-`MessagePort`, `MessageChannel`, `BroadcastChannel` and window `postMessage`.
-`structured_clone.rs` currently performs a fused in-agent clone walk, not a
-transportable serialization record. Buffer detachment and port transfer have
-observable shortcuts recorded in that plan; cross-agent use is unproved.
+**What exists (source refreshed 2026-09-08).** `genet-scripted-worker` is the
+wasm-bindgen entry that runs a whole `ScriptedDocument` inside a browser Web
+Worker. That deployment route remains distinct from a page-created `Worker`.
+The latter now exists in `components/script-runtime-api/worker.rs`: it starts
+a thread-confined runtime through the selected engine factory, exchanges
+messages and resource requests, and reports acknowledged idle. The S5/S6
+receipts below prove a narrow real Boa delivery path.
 
-**What the lane is.**
+The [cheap-globals lane](2026-09-07_cheap_globals_plan.md)'s in-agent APIs remain.
+`structured_clone.rs` now contains both its fused clone walk and a transportable
+tagged record through `__scSerialize`/`__scDeserialize`. Their existence does
+not close the transfer-custody gates: actual buffer detachment, receiving-port
+identity, cycles/aliases and negative transfer cases need their named regression
+manifest and per-engine receipts. The old cheap-globals shortcuts are historical
+baseline evidence, not the acceptance standard for the new cross-agent route.
+
+**Acceptance scope.**
 
 1. A worker-owned runtime and event loop (a native thread is one placement)
    with `DedicatedWorkerGlobalScope`: `self`, timers, `fetch`, `importScripts`,
@@ -366,7 +371,9 @@ scripted-document implementations now forward worker service and expose an
 owned script-loader setter; their borrowed parser fetcher is not a retained
 worker route. Two document regressions pass, and pre-change pending behavior
 fails the negative control. This is outstanding-work forwarding, not a ready-now
-signal or asynchronous host wake protocol. Livery compile/render, Nova, navigation
+signal or asynchronous host wake protocol. The generic `genet-documents`
+spawn adapter does not yet install that retained loader; automatic session-route
+wiring remains open alongside Livery compile/render, Nova, navigation
 teardown and Ortet O5 remain separate receipts; none of the transfer or full
 Worker conformance gates above are discharged by this slice.
 

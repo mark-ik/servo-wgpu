@@ -1,0 +1,26 @@
+{
+  "revision": "ec5421b75914529e017e084eb327df4dc13b76c7",
+  "debug": {
+    "command": "cargo test --locked",
+    "exit": 0,
+    "tests": "3 passed"
+  },
+  "release": {
+    "command": "cargo run --release --locked",
+    "exit": 0
+  },
+  "wasm": {
+    "command": "cargo check --release --target wasm32-unknown-unknown --locked",
+    "exit": 0,
+    "scope": "compile only"
+  },
+  "cargo_home": "isolated scratch cache; not tracked",
+  "target": "isolated scratch artifacts; not tracked",
+  "compiler": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "native_target": "x86_64-pc-windows-msvc",
+  "features": "genet-scripted-dom defaults",
+  "engine": "none",
+  "renderer": "none",
+  "server": "none",
+  "working_directory": "runner; sibling genet-sparse at pinned revision"
+}
