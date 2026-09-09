@@ -143,7 +143,7 @@ try {
                 Color = '#17324d'
                 Wake = $null
                 WakeResource = $null
-                Actions = 'click:100,120'
+                Actions = 'click:100,280'
                 Events = @('stale.html served', 'replacement.html served', 'late-stale released')
             }
         )
