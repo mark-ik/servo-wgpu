@@ -4,7 +4,7 @@
   "manifest_sha256": "d5ec5be9bf1a75ed00d7e7ab28afe8a694a55e11682ba74305874d70b18dd422",
   "policy": "exact",
   "renderer": "livery",
-  "runner_sha256": "d14c8c9886f146a2c9ea3c8904ff95278c86a68ec66cc240271fae5a6309b60b",
+  "runner_sha256": "58f2d68ebe2ec94d0be20fd5ece5307825c0233a7dfb420f53ab0980b555a312",
   "subset": "dom/nodes",
   "tests": {
     "dom/nodes/CharacterData-appendChild.html": {
@@ -19284,14 +19284,14 @@
       "subtests_total": 1
     },
     "dom/nodes/Node-cloneNode-document-allow-declarative-shadow-roots.window.html": {
-      "status": "fail",
+      "status": "pass",
       "subtests": [
         {
           "name": "cloneNode() and document's allow declarative shadow roots",
-          "status": "fail"
+          "status": "pass"
         }
       ],
-      "subtests_passed": 0,
+      "subtests_passed": 1,
       "subtests_total": 1
     },
     "dom/nodes/Node-cloneNode-document-with-doctype.html": {
@@ -38684,14 +38684,14 @@
       "subtests_total": 1
     },
     "dom/nodes/insertion-removing-steps/Node-appendChild-script-and-custom-from-fragment.tentative.html": {
-      "status": "fail",
+      "status": "pass",
       "subtests": [
         {
           "name": "An earlier-inserted script can upgrade a later-inserted custom element, whose upgrading is synchronously observable to the script, since DOM insertion has been completed by the time it runs",
-          "status": "fail"
+          "status": "pass"
         }
       ],
-      "subtests_passed": 0,
+      "subtests_passed": 1,
       "subtests_total": 1
     },
     "dom/nodes/insertion-removing-steps/Node-appendChild-script-and-default-style-meta-from-fragment.tentative.html": {
@@ -38706,14 +38706,14 @@
       "subtests_total": 1
     },
     "dom/nodes/insertion-removing-steps/Node-appendChild-script-and-div-from-fragment.tentative.html": {
-      "status": "fail",
+      "status": "pass",
       "subtests": [
         {
           "name": "Earlier-inserted scripts can observe the parentNode of later-inserted nodes, because script runs after DOM insertion completes",
-          "status": "fail"
+          "status": "pass"
         }
       ],
-      "subtests_passed": 0,
+      "subtests_passed": 1,
       "subtests_total": 1
     },
     "dom/nodes/insertion-removing-steps/Node-appendChild-script-and-iframe.tentative.html": {
@@ -38721,7 +38721,7 @@
       "subtests": [
         {
           "name": "Script inserted after an iframe in the same appendChild() call can observe the iframe's non-null contentWindow",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "name": "A script inserted atomically before an iframe (using a div) does not observe the iframe's contentWindow, since the 'script running' and 'iframe setup' both happen in order, after DOM insertion completes",
@@ -38736,18 +38736,18 @@
           "status": "fail"
         }
       ],
-      "subtests_passed": 0,
+      "subtests_passed": 1,
       "subtests_total": 4
     },
     "dom/nodes/insertion-removing-steps/Node-appendChild-script-and-source-from-fragment.tentative.html": {
-      "status": "fail",
+      "status": "pass",
       "subtests": [
         {
           "name": "Empty <source> immediately sets media.networkState during DOM insertion, so that an earlier-running script can observe networkState",
-          "status": "fail"
+          "status": "pass"
         }
       ],
-      "subtests_passed": 0,
+      "subtests_passed": 1,
       "subtests_total": 1
     },
     "dom/nodes/insertion-removing-steps/Node-appendChild-script-and-style.tentative.html": {
@@ -38778,25 +38778,25 @@
       "subtests_total": 5
     },
     "dom/nodes/insertion-removing-steps/Node-appendChild-script-in-script.tentative.html": {
-      "status": "fail",
+      "status": "pass",
       "subtests": [
         {
           "name": "An outer script whose preparation/execution gets triggered by the insertion of a 'nested'/'inner' script, executes *before* the inner script executes",
-          "status": "fail"
+          "status": "pass"
         }
       ],
-      "subtests_passed": 0,
+      "subtests_passed": 1,
       "subtests_total": 1
     },
     "dom/nodes/insertion-removing-steps/Node-appendChild-script-with-mutation-observer-takeRecords.html": {
-      "status": "fail",
+      "status": "pass",
       "subtests": [
         {
           "name": "An inserted script should be able to observe its own mutation record with takeRecords",
-          "status": "fail"
+          "status": "pass"
         }
       ],
-      "subtests_passed": 0,
+      "subtests_passed": 1,
       "subtests_total": 1
     },
     "dom/nodes/insertion-removing-steps/Node-appendChild-text-and-script-in-style.tentative.html": {
@@ -38811,14 +38811,14 @@
       "subtests_total": 1
     },
     "dom/nodes/insertion-removing-steps/Node-appendChild-text-in-script.tentative.html": {
-      "status": "fail",
+      "status": "pass",
       "subtests": [
         {
           "name": "Node.appendChild: inserting two text nodes in an empty script",
-          "status": "fail"
+          "status": "pass"
         }
       ],
-      "subtests_passed": 0,
+      "subtests_passed": 1,
       "subtests_total": 1
     },
     "dom/nodes/insertion-removing-steps/Node-appendChild-three-scripts-from-fragment.tentative.html": {
@@ -39808,14 +39808,14 @@
       "status": "skip"
     },
     "dom/nodes/remove-next-sibling-during-replace-with.html": {
-      "status": "fail",
+      "status": "pass",
       "subtests": [
         {
           "name": "remove-next-sibling-during-replace-with",
-          "status": "fail"
+          "status": "pass"
         }
       ],
-      "subtests_passed": 0,
+      "subtests_passed": 1,
       "subtests_total": 1
     },
     "dom/nodes/remove-unscopable.html": {

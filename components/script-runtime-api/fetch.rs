@@ -398,7 +398,7 @@ fn host_base_url<E: ScriptEngine>(cx: &mut E::CallCx<'_>) -> Option<String> {
 
 /// WHATWG-resolve `input` against `base`. Absolute `input` wins; with no base, a
 /// relative `input` is returned unchanged.
-fn resolve_against(base: Option<&str>, input: &str) -> String {
+pub(crate) fn resolve_against(base: Option<&str>, input: &str) -> String {
     match base.and_then(|b| url::Url::parse(b).ok()) {
         Some(b) => b
             .join(input)

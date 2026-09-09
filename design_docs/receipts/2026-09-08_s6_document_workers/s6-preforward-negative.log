@@ -1,0 +1,58 @@
+   Compiling genet-scripted v0.2.0 (C:\Users\mark_\Code\scratch\pillar-research-20260908\execution-next\source-s6\components\genet-scripted)
+warning: unused imports: `LocalName` and `Namespace`
+  --> C:\Users\mark_\Code\scratch\pillar-research-20260908\execution-next\source-s6\components\genet-scripted\document.rs:43:33
+   |
+43 | use layout_dom_api::{LayoutDom, LocalName, Namespace};
+   |                                 ^^^^^^^^^  ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling scripted-worker-forwarding-probe v0.0.0 (C:\Users\mark_\Code\scratch\pillar-research-20260908\execution-next\probe-s6)
+warning: unused import: `genet_scripted::ScriptedDocument`
+ --> src\lib.rs:1:5
+  |
+1 | use genet_scripted::ScriptedDocument;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `script_engine_boa::BoaEngine`
+ --> src\lib.rs:2:5
+  |
+2 | use script_engine_boa::BoaEngine;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `Duration` and `Instant`
+ --> src\lib.rs:4:17
+  |
+4 | use std::time::{Duration, Instant};
+  |                 ^^^^^^^^  ^^^^^^^
+
+warning: struct `Scripts` is never constructed
+ --> src\lib.rs:6:8
+  |
+6 | struct Scripts;
+  |        ^^^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `scripted-worker-forwarding-probe` (lib) generated 4 warnings (run `cargo fix --lib -p scripted-worker-forwarding-probe` to apply 3 suggestions)
+warning: `genet-scripted` (lib) generated 1 warning (run `cargo fix --lib -p genet-scripted` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.46s
+     Running unittests src\lib.rs (target-s6\debug\deps\scripted_worker_forwarding_probe-e6c0b1e9685956b6.exe)
+
+running 1 test
+
+thread 'document_pump_forwards_worker_service_and_waits_for_acknowledged_idle' (18204) panicked at src\lib.rs:22:5:
+live worker is outstanding without a timer
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test document_pump_forwards_worker_service_and_waits_for_acknowledged_idle ... FAILED
+
+failures:
+
+failures:
+    document_pump_forwards_worker_service_and_waits_for_acknowledged_idle
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.41s
+
+error: test failed, to rerun pass `--lib`

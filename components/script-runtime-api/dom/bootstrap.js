@@ -108,6 +108,7 @@
   // for CANVAS, etc.) — the rest fall back to HTMLElement. The tag lookup is one
   // native call per element wrap.
   var XHTML_NS = "http://www.w3.org/1999/xhtml";
+  var SVG_NS = "http://www.w3.org/2000/svg";
 
   // ASCII-only case folding. The DOM's "ASCII lowercase/uppercase" leave every
   // non-ASCII code point alone, which is exactly what separates a valid custom
@@ -134,6 +135,7 @@
     return isHtmlDocument(ownerDocumentOf(el)) ? asciiUpper(q) : q;
   }
 
+  var svgScriptProto;
   function wrapNode(ref) {
     if (ref === undefined || ref === null) return null;
     if (wrappers.has(ref)) return wrappers.get(ref);
@@ -151,6 +153,16 @@
         proto = (customDef && customDef.ctor.prototype) ||
                 (local && elementSubclassProto[local]) ||
                 unknownElementProto(local);
+      } else if (__namespaceURI(ref) === SVG_NS && __localName(ref) === 'script') {
+        // SVG's script element reflects `type`, and re-preparation depends on
+        // it: `svg/scripted/script-invalid-script-type.html` assigns
+        // `svgScript.type` and expects the *attribute* to change. A foreign
+        // element otherwise gets the bare `Element` interface here, so the
+        // assignment would land on an expando and the attribute would keep the
+        // invalid type. This is one reflected member on an internal prototype,
+        // not a declared `SVGScriptElement` global — the SVG interfaces are not
+        // in the generated table and adding one there is its own lane.
+        proto = svgScriptProto;
       } else {
         proto = Element.prototype;
       }
@@ -357,6 +369,7 @@
     if (move.oldDoc !== move.newDoc) disconnectMovedRoots(move);
     insertNodeInto(this, child, undefined);
     finalizeNodeMove(move);
+    prepareScriptsAfterInsertion(this, move.roots);
     return child;
   };
   Object.defineProperty(Node.prototype, 'textContent', {
@@ -526,6 +539,13 @@
           copy.setAttributeNS(recs[i].ns, recs[i].qname,
                               __getAttributeNS(node.__ref, recs[i].ns || '', recs[i].local));
         }
+        // HTML's cloning steps for a script element: the copy inherits the
+        // already-started flag, so cloning a script that has run does not run
+        // it again when the clone is inserted.
+        if (node.localName === 'script' && node.__ref !== undefined &&
+            copy.__ref !== undefined && typeof __copyScriptStarted === 'function') {
+          __copyScriptStarted(node.__ref, copy.__ref);
+        }
         break;
       case 3: copy = copyDocument.createTextNode(node.data); break;
       case 4: copy = wrapNode(__createCDATASection(node.data)); break;
@@ -589,6 +609,7 @@
     if (move.oldDoc !== move.newDoc) disconnectMovedRoots(move);
     insertNodeInto(this, node, ref ? ref.__ref : undefined);
     finalizeNodeMove(move);
+    prepareScriptsAfterInsertion(this, move.roots);
     return node;
   };
   // The tree top a node hangs from: its document when connected, else the root
@@ -1007,6 +1028,11 @@
     moSetAttribute(this.__ref, name, newValue);
     if (name === 'style') inlineStyleStates.delete(this);
     customElementAttributeChanged(this, name, oldValue, newValue);
+    // The third re-preparation trigger: a connected script element gains a
+    // `src` it did not have.
+    if (name === 'src' && oldValue === null && this.localName === 'script') {
+      prepareScriptsAfterInsertion(this, null);
+    }
   };
   Element.prototype.getAttribute = function(name) { return __getAttribute(this.__ref, String(name)); };
   Object.defineProperty(Element.prototype, 'innerHTML', {
@@ -1122,6 +1148,13 @@
   });
   Object.defineProperty(Element.prototype, 'namespaceURI', {
     configurable: true, get: function() { return __namespaceURI(this.__ref); }
+  });
+  // See `wrapNode`: the one reflected member an SVG `<script>` needs.
+  svgScriptProto = Object.create(Element.prototype);
+  Object.defineProperty(svgScriptProto, 'type', {
+    configurable: true,
+    get: function() { var v = this.getAttribute('type'); return v === null ? '' : v; },
+    set: function(v) { this.setAttribute('type', String(v)); }
   });
   Object.defineProperty(Element.prototype, 'prefix', {
     configurable: true, get: function() { return __prefix(this.__ref); }
@@ -5817,11 +5850,47 @@
   // The loop keeps pumping afterwards, so markup the written script itself
   // wrote is tokenized in place, at the insertion point, before the rest.
   var indirectEval = eval;
-  function pumpOpenStream() {
+  // HTML: "when a script element el that is not parser-inserted experiences one
+  // of the events listed in the following list, the user agent must immediately
+  // prepare the script element" — el becomes connected; a node is inserted into
+  // a connected el; a connected el gets a `src` where it had none. `type` is
+  // deliberately *not* one of them, which is why
+  // `svg/scripted/script-invalid-script-type.html` sets a valid type and then
+  // appends a text node: the append is the trigger, and the now-valid type is
+  // what makes the preparation reach execution.
+  //
+  // The host stages the candidates (one arena walk, no wrappers) and hands each
+  // one's source out in turn, for the same reason `document.write` does: a
+  // native cannot re-enter the engine.
+  function runStagedScripts() {
+    var guard = 0;
+    for (;;) {
+      var source = __nextPreparedScript();
+      if (source === null || source === undefined) return;
+      if (++guard > 10000) return;
+      if (source) {
+        try { indirectEval(source); } catch (e) { reportScriptError(e); }
+      }
+      __prepareScriptEnd();
+      __refreshNamedProperties();
+    }
+  }
+  function prepareScriptsAfterInsertion(parent, roots) {
+    if (typeof __stageScripts !== 'function') return;
+    var staged = 0;
+    if (parent && parent.__ref !== undefined) staged += Number(__stageScripts(parent.__ref, '1'));
+    if (roots) {
+      for (var i = 0; i < roots.length; i++) {
+        if (roots[i] && roots[i].__ref !== undefined) staged += Number(__stageScripts(roots[i].__ref, '0'));
+      }
+    }
+    if (staged > 0) runStagedScripts();
+  }
+  function pumpOpenStream(doc) {
     if (typeof __docPumpStream !== 'function') return;
     var guard = 0;
     for (;;) {
-      var source = __docPumpStream();
+      var source = __docPumpStream(doc);
       if (source === null || source === undefined) return;
       if (++guard > 10000) return;
       if (source) {
@@ -5839,30 +5908,30 @@
       throw new DOMException('document.open(url, name, features) is not supported',
                              'NotSupportedError');
     }
-    __docOpen();
+    __docOpen(this.__ref);
     __rebindDocument();
     __refreshNamedProperties();
     return this;
   };
   Document.prototype.close = function() {
-    pumpOpenStream();
-    __docClose();
+    pumpOpenStream(this.__ref);
+    __docClose(this.__ref);
     __rebindDocument();
     __refreshNamedProperties();
   };
   Document.prototype.write = function() {
     var text = '';
     for (var i = 0; i < arguments.length; i++) text += String(arguments[i]);
-    __docWrite(text);
-    pumpOpenStream();
+    __docWrite(text, this.__ref);
+    pumpOpenStream(this.__ref);
     __rebindDocument();
     __refreshNamedProperties();
   };
   Document.prototype.writeln = function() {
     var text = '';
     for (var i = 0; i < arguments.length; i++) text += String(arguments[i]);
-    __docWrite(text + '\n');
-    pumpOpenStream();
+    __docWrite(text + '\n', this.__ref);
+    pumpOpenStream(this.__ref);
     __rebindDocument();
     __refreshNamedProperties();
   };

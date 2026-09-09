@@ -517,7 +517,64 @@ fragment replacement call it. Reproduce the retained-reference case before
 claiming a defect fixed. Concurrent arena/runtime changes are not this plan's
 implementation or validation receipt.
 
+**Experiment, 2026-09-08 (Rust arena, not backend or headed acceptance).**
+The pinned `ee0b314b3e9` fixture now reproduces the replacement failure:
+native x64 debug passes 5 assertions and fails the 2 observers-off text/fragment
+replacement assertions, with the retained child absent before collection.
+Ordinary detachment and observers-on replacement controls pass. Disabling
+debug assertions only for `genet-scripted-dom` adds foreign-handle aliasing
+(`NodeId(2)` resolves to another arena's local slot): 4 pass, 3 fail. That is a
+dev-profile configuration probe, not a full optimized-release or wasm run.
+The manifest, lock, runner/source digests and logs live with the shared R2-A
+research receipt at
+`mere/design_docs/mere_docs/testing/receipts/2026-09-08_stack_pillar_probes/arena/R2_A_RECEIPT.md`.
+Restoring baseline debug configuration and deferring reclamation at just the
+two replacement sites makes all 7 assertions pass in the scratch snapshot.
+That diagnostic patch is preserved with the receipt; it does not fix foreign
+handles or establish replacement memory bounds. Direct Rust pins do not close the JS reflector/range/observer root matrix,
+adoption, owning-document or O5 headed gates below. Production source is unchanged.
+
 **Proof sequence: retain → detach → collect → adopt → mutate → render → release.**
+
+**Continuation, 2026-09-08.** The shared research ledger's S1-S4 at
+`mere/design_docs/2026-08-12_family_composition_thesis_brief.md` now authorize
+bounded implementation here. S1 changes only text/fragment replacement to
+orphan old children until pin-aware collection. Its named regression manifest
+is `components/genet-scripted-dom/tests/replacement_retention.rs`: observers
+off/on, empty/nonempty replacements, a pin on a descendant, exact mutation
+records, semantic readback, reattachment, unpin/reclamation and replacement
+churn. Existing crate tests must remain green. S2 covers root closure; S3/S4
+select and implement the all-target handle contract. **S1 implemented and
+validated 2026-09-08:** 6 production regressions, 37 existing crate source tests
+and 7 original probe assertions pass in the exact isolated overlay documented
+in [the S1 receipt](../design_docs/receipts/2026-09-08_g5_s1/receipt.md).
+Concurrent parser/runtime WIP was excluded; the larger G5/backend/Ortet proof
+sequence remains open.
+
+**S2 store correction, 2026-09-08:** five reproduced template-root failures
+are repaired by tracing contents to their inert owner and pruning stale
+metadata. Seven root-closure tests, 38 crate-source tests, six S1 tests and
+seven original assertions pass. [The S2 receipt](../design_docs/receipts/2026-09-08_g5_s2/receipt.md)
+names positive and negative cases, exact source overlays and the failing
+baseline. This preserves the existing one-inert-owner-per-arena representation;
+per-owning-document/adoption semantics and backend-root closure remain open.
+
+**S2 backend probe, 2026-09-08:** the
+[exact Boa runtime receipt](../design_docs/receipts/2026-09-08_s2_s5_backend/receipt.md)
+retains JS wrappers across both replacements, forces collection, checks semantic
+readback and reattachment, then observes at least two unpins and collected nodes
+after release. This closes the narrow Boa wrapper case; queued observer/range
+roots, Nova, ownership/adoption and headed gates remain open.
+
+**S3 research, 2026-09-08:** [the repinned handle probe](../design_docs/receipts/2026-09-08_g5_s3_handle_boundary/receipt.md)
+passes three native debug tests and a release model run against committed
+`ec5421b7591`; wasm32 release checks only. Actual release roots still alias.
+The 24/40 u64 model distinguishes them but does not repair production NodeId.
+About 70 runtime inbound conversions still need a coherent migration; raw
+foreign capture, typed overflow refusal, high-bit engine round trips and wasm
+execution remain open. S4 is deliberately unimplemented while those seams
+are reconciled; the isolated parallel-handle sketch was discarded.
+
 Freeze a fixture manifest and named regressions before implementation:
 
 1. Retain a node and descendant through JS references. Record their identity,
@@ -546,8 +603,9 @@ where supported, named DOM/Range/MutationObserver regressions, and the headed
 Ortet sequence pass against pinned sources. Retain runner/lock digests,
 semantic snapshots, collection statistics and frame artifacts. Record
 unsupported targets and future shadow/iframe extensions independently.
-G5 runtime work can land before Ortet O5; the headed acceptance remains open
-until that host actually runs the sequence. Mere/Pelt evidence is additional.
+Ortet O5's native host prerequisite is accepted at `f3dc1bcf909`; G5 headed
+acceptance remains open until that host runs this arena sequence. Mere/Pelt
+evidence is additional.
 
 ### Ordering and the sooner-than-later cut
 

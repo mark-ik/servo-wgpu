@@ -987,3 +987,66 @@ Livery transition/animation machinery to port onto at all). The
 gone from `Cargo.toml`, `document.rs`, and `capture.rs`. `cargo test -p
 genet-scripted` is green (60 passed, 4 ignored, each with a reason);
 `cargo clippy -p genet-scripted --all-targets` adds no new warnings.
+
+## Residuals closed (2026-09-08)
+
+The five residuals this plan and the test-revival entry had named are closed
+in one lane. The lane's agent was cut off by an API session limit at its last
+gate; the orchestrating session finished the verification and wrote this
+phase from the lane's ledger and code.
+
+**What changed.**
+
+1. `resolve_href` resolves against a URL base with `url::Url::join`, so `./`,
+   `../`, fragment-only and query-only specifiers normalize; Windows drive
+   paths and bare local paths keep the string path they always had. The four
+   module-import tests in `genet-scripted` (`module_imports_dependency`,
+   `module_import_diamond_loads_shared_once`, both engines) run again.
+2. `async` classic scripts run when fetched, after the parser-blocking scripts
+   ahead of them in the drive loop, with no ordering promise among themselves;
+   `ScriptTiming::Async`'s documentation now says what HTML says and
+   `async_runs_after_parser_blocking` asserts it.
+3. `LiveryScriptedDocument` installs a `MediaQueryHandler` over Livery's
+   `MediaQueryList`, re-evaluated when the device changes, so `matchMedia`
+   and its change events work on the live route;
+   `match_media_evaluates_against_the_frame` runs again.
+4. The prepare-a-script steps run when a script element becomes connected
+   through any insertion path, not only the parser's, with HTML's
+   already-started flag; two rules the first attempt missed were found by
+   measuring it (an earlier post runner regressed six execution-timing files
+   and was discarded): a script element's cloning steps copy the
+   already-started flag, and a parser-inserted script is not re-prepared by a
+   later DOM mutation.
+5. A script whose node document has no browsing context does not run.
+
+**Census** (disk, Boa/Livery, `--jobs 8 --timeout 240`; pre
+`f1af7e76...f21339` from ee0b314b3e9, post `58f2d68e...b555a312`; maps and
+diff under `Code/testing/genet/wpt-ledger/2026-09-08_scripted_residuals/`):
+
+| Directory | subtests moved |
+|---|---:|
+| html/semantics/scripting-1 | +34 |
+| dom | +9 |
+| css/mediaqueries | +5 |
+| html/syntax | +1 |
+| svg/scripted | +1 |
+
+30 files `fail -> pass`, 2 `no-results -> pass`, 5 `no-results -> fail`
+(they report subtests where they reported none), zero `pass -> fail`. Named
+receipts: `execution-timing/120.html` passes, as do sixteen more
+execution-timing files, the module import family, the dom insertion-steps
+family, and `svg/scripted/script-invalid-script-type.html`.
+`execution-timing/112.html` stays `fail` and remains the one open
+execution-timing residual.
+
+**Repins**, forward only: `css_mediaqueries_boa.json`, `dom_boa.json`,
+`dom_nodes_boa.json`.
+
+**Gates**, re-run by the orchestrating session on the finished tree:
+`cargo test` green for genet-scripted (72, none ignored), genet-scripted-dom
+and script-runtime-api (378, both engines); four timing-bound tests failed
+once while a release build shared the machine and pass in isolation, which
+is contention, not the tree. clippy on the three crates reports no error and
+no warning of theirs. The full testharness baseline guard on a runner built
+from this tree (`34661081...ca90a641`) reports unexpected=0 on every checked
+slice.

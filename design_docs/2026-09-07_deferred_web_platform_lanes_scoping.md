@@ -54,7 +54,8 @@ the historical Boa census is not a Nova receipt. Pixel gates identify the
 backend and the test's prescribed comparison tolerance.
 
 [Ortet O5](2026-09-03_ortet_founding_plan.md#o5-scripted-platform-host-native-route-accepted-2026-09-08)
-is the accepted native Genet-owned route for JS-driven headed receipts below. Mark's
+is the accepted native Genet-owned route for JS-driven headed receipts below.
+Mark's
 [testing-role ruling](2026-09-03_ortet_founding_plan.md#platform-testing-roles-marks-ruling-2026-09-07)
 keeps `genet-wpt` responsible for automated conformance/scoring, Ortet for
 headed engine/session proof, and Pelt for downstream Mere/Genet composition.
@@ -312,18 +313,23 @@ policy families independently.
 Census: `workers` 1 / 222 / 22 / 2 / 0, subtests 17 of 574; `webmessaging`
 20 / 101 / 10 / 4 / 0, subtests 49 of 209.
 
-**What exists.** `genet-scripted-worker` is the wasm-bindgen
-entry that runs a whole `ScriptedDocument` inside a browser Web Worker for
-the wasm target, with an engine chosen by feature. It says nothing about the
-`Worker` global a page script constructs. What does exist is the engine
-seam (`script-engine-api`), a runtime per engine instance, and
-the [cheap-globals lane](2026-09-07_cheap_globals_plan.md)'s `structuredClone`,
-`MessagePort`, `MessageChannel`, `BroadcastChannel` and window `postMessage`.
-`structured_clone.rs` currently performs a fused in-agent clone walk, not a
-transportable serialization record. Buffer detachment and port transfer have
-observable shortcuts recorded in that plan; cross-agent use is unproved.
+**What exists (source refreshed 2026-09-08).** `genet-scripted-worker` is the
+wasm-bindgen entry that runs a whole `ScriptedDocument` inside a browser Web
+Worker. That deployment route remains distinct from a page-created `Worker`.
+The latter now exists in `components/script-runtime-api/worker.rs`: it starts
+a thread-confined runtime through the selected engine factory, exchanges
+messages and resource requests, and reports acknowledged idle. The S5/S6
+receipts below prove a narrow real Boa delivery path.
 
-**What the lane is.**
+The [cheap-globals lane](2026-09-07_cheap_globals_plan.md)'s in-agent APIs remain.
+`structured_clone.rs` now contains both its fused clone walk and a transportable
+tagged record through `__scSerialize`/`__scDeserialize`. Their existence does
+not close the transfer-custody gates: actual buffer detachment, receiving-port
+identity, cycles/aliases and negative transfer cases need their named regression
+manifest and per-engine receipts. The old cheap-globals shortcuts are historical
+baseline evidence, not the acceptance standard for the new cross-agent route.
+
+**Acceptance scope.**
 
 1. A worker-owned runtime and event loop (a native thread is one placement)
    with `DedicatedWorkerGlobalScope`: `self`, timers, `fetch`, `importScripts`,
@@ -355,6 +361,23 @@ script-load errors and termination with pending work. A scripted hosted page
 exchanges messages with a live worker on each supported engine/target.
 Record unsupported worker globals and module variants as named residuals;
 retain the cheap-globals messaging regression manifest.
+
+**S5/S6 continuation, 2026-09-08.** The
+[actual Boa runtime receipt](receipts/2026-09-08_s2_s5_backend/receipt.md)
+separates timer/microtask-only non-delivery from worker pumping and acknowledged
+idle. The [scripted-document receipt](receipts/2026-09-08_s6_document_workers/receipt.md)
+then proves exact reply/Promise DOM changes, freeze/resume refusal and recovery,
+and missing-route error/quiescence on the real headless Boa document. Both
+scripted-document implementations now forward worker service and expose an
+owned script-loader setter; their borrowed parser fetcher is not a retained
+worker route. Two document regressions pass, and pre-change pending behavior
+fails the negative control. At that S5/S6 checkpoint this was
+outstanding-work forwarding without a ready signal or asynchronous host wake.
+Ortet O5 later installed the retained host route through the generic
+`genet-documents` spawn adapter and accepted delayed Worker resource/message
+delivery, idle wake, and replacement teardown on native Boa and Nova at
+`f3dc1bcf909`. That discharges the hosted-page integration item only; the
+transfer and full Worker conformance gates above remain open.
 
 ## WebSocket
 

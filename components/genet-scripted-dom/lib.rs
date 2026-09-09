@@ -206,6 +206,9 @@ pub struct ScriptedDom {
     /// fragment is parentless and is **not** in the main tree, so no ordinary
     /// walk reaches it; that is exactly what makes template contents inert.
     template_contents: std::collections::HashMap<usize, NodeId>,
+    /// Contents fragment store key -> inert owner document. This is a directed
+    /// retention edge, not a DOM parent link or a back-reference to the template.
+    template_content_owners: std::collections::HashMap<usize, NodeId>,
     /// The one inert `Document` that owns every template's contents fragment,
     /// minted on the first `<template>` and shared by all of them — HTML's
     /// "appropriate template contents owner document", which is what makes
@@ -341,6 +344,7 @@ impl ScriptedDom {
             slot_assignments: std::collections::HashMap::new(),
             slot_changes: Vec::new(),
             template_contents: std::collections::HashMap::new(),
+            template_content_owners: std::collections::HashMap::new(),
             template_document: None,
             #[cfg(all(debug_assertions, target_pointer_width = "64"))]
             doc_tag: fence::next_doc_tag(),
@@ -617,7 +621,8 @@ impl ScriptedDom {
         for child in existing {
             self.node_mut(child).parent = None;
             self.structure_epoch += 1;
-            self.release_subtree(child);
+            // Replacement detaches like removeChild: a reflector or queued
+            // record can still retain this subtree. Only collect sees all pins.
         }
         self.node_mut(node).text = None;
         let mut added = Vec::new();
@@ -883,6 +888,7 @@ impl ScriptedDom {
                     .chain(self.shadow_hosts.get(&v).copied())
                     .chain(self.shadow_roots.get(&v).map(|data| data.host))
                     .chain(self.template_contents.get(&v).copied())
+                    .chain(self.template_content_owners.get(&v).copied())
                     .collect(),
                 None => continue,
             };
@@ -896,6 +902,7 @@ impl ScriptedDom {
         self.nodes.retain(|k, _| marked.contains(k));
         let pruned = before - self.nodes.len();
         self.prune_shadow_tables();
+        self.prune_template_tables();
         pruned
     }
 
@@ -1416,13 +1423,13 @@ impl LayoutDomMut for ScriptedDom {
     }
 
     fn set_inner_html(&mut self, node: NodeId, html: &str) {
-        // Drop the current children silently — the single SubtreeReplaced covers it.
+        // Orphan the current children; the single SubtreeReplaced covers it.
         let existing = std::mem::take(&mut self.node_mut(node).children);
         let removed = existing.clone();
         for child in existing {
             self.node_mut(child).parent = None;
             self.structure_epoch += 1;
-            self.release_subtree(child);
+            // Keep retained descendants available until pin-aware collection.
         }
         // Parse via the static parser (a LayoutDom) and copy the explicitly
         // wrapped <body> children in. The wrapper keeps metadata elements such

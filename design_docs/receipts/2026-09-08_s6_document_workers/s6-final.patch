@@ -1,0 +1,72 @@
+--- a/components/genet-scripted/document.rs
++++ b/components/genet-scripted/document.rs
+@@ -331,6 +331,16 @@
+         })
+     }
+ 
++    /// Install the host-owned route retained for worker scripts and imports.
++    /// The borrowed parser ResourceFetcher is not retained after construction.
++    /// Install this before the first pump that services worker resource requests.
++    pub fn set_script_resource_loader(
++        &mut self,
++        loader: Box<dyn script_runtime_api::ScriptResourceLoader>,
++    ) {
++        self.rt.set_script_resource_loader(loader);
++    }
++
+     /// Drive the runtime one frame's worth: fire due timers against the `now_ms`
+     /// virtual clock, settle microtasks, then take the GC tick. Returns
+     /// `(reflectors_unpinned, nodes_collected)` from the collection. This is the
+@@ -358,6 +368,8 @@
+             self.last_hidden_pump_ms = now_ms;
+         }
+         self.rt.run_timers(64, now_ms);
++        self.rt.run_microtasks();
++        let _ = self.rt.pump_workers();
+         self.rt.run_microtasks();
+         self.flush_dom_capture();
+         self.rt.collect_garbage()
+@@ -417,7 +429,8 @@
+     /// shell should keep requesting frames. `setInterval` re-arms each fire, so a
+     /// churning soak page stays animated; a quiescent page lets the loop idle.
+     pub fn has_pending_work(&mut self) -> bool {
+-        !self.frozen && self.rt.next_timer_delay().is_some()
++        !self.frozen
++            && (self.rt.next_timer_delay().is_some() || self.rt.has_worker_work())
+     }
+ 
+     /// Set Page Visibility (W3C adoption plan P1). The host calls this as a
+@@ -821,6 +834,16 @@
+         inspect(&host.dom)
+     }
+ 
++    /// Install the host-owned route retained for worker scripts and imports.
++    /// The borrowed parser ResourceFetcher is not retained after construction.
++    /// Install this before the first pump that services worker resource requests.
++    pub fn set_script_resource_loader(
++        &mut self,
++        loader: Box<dyn script_runtime_api::ScriptResourceLoader>,
++    ) {
++        self.rt.set_script_resource_loader(loader);
++    }
++
+     pub fn pump(&mut self, now_ms: f64) -> (usize, usize) {
+         if self.frozen {
+             return (0, 0);
+@@ -836,12 +859,15 @@
+         }
+         self.rt.run_timers(64, now_ms);
+         self.rt.run_microtasks();
++        let _ = self.rt.pump_workers();
++        self.rt.run_microtasks();
+         self.flush_dom_capture();
+         self.rt.collect_garbage()
+     }
+ 
+     pub fn has_pending_work(&mut self) -> bool {
+-        !self.frozen && self.rt.next_timer_delay().is_some()
++        !self.frozen
++            && (self.rt.next_timer_delay().is_some() || self.rt.has_worker_work())
+     }
+ 
+     pub fn set_hidden(&mut self, hidden: bool) {

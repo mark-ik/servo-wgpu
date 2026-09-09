@@ -99,17 +99,26 @@ enum ScriptTiming {
     /// Runs now, blocking the parser: an inline classic, or an external classic
     /// with neither `async` nor `defer`.
     Blocking,
-    /// External classic with `async`. HTML runs it as soon as it is available
-    /// and does not block the parser; with a synchronous resource route it *is*
-    /// available at the pause, so this runs there. The observable difference
-    /// from `Blocking` is only that ordering against other async scripts is not
-    /// promised, which is exactly what HTML says.
+    /// External classic with `async`. HTML runs it "as soon as it is
+    /// available", by *queuing a task* — it never blocks the parser, and a
+    /// later parser-blocking script therefore runs first even though the async
+    /// script's fetch finished earlier.
+    ///
+    /// The resource route here is synchronous, so the fetch completes during
+    /// the parse and the task is queued during the parse; the earliest the
+    /// event loop can turn is when the tokenizer stops. So the driver collects
+    /// these and runs them at the end of the token stream, after readiness
+    /// becomes `interactive` and before the deferred list — HTML's "stop
+    /// parsing" step 3 then its spin-the-event-loop at step 5. Ordering among
+    /// async scripts is not promised by HTML; the driver runs them in
+    /// fetch-completion order, which for a synchronous route is document order.
     Async,
     /// External classic with `defer`, and every module script: after parsing,
     /// in document order, before `DOMContentLoaded`.
     Deferred,
     /// A data block (`type` naming neither a classic nor a module script), or a
-    /// script the tokenizer marked "already started". Never runs.
+    /// script already marked "already started" — by the tokenizer's EOF
+    /// handling, by a fragment parse, or by an earlier preparation. Never runs.
     Skipped,
 }
 
@@ -253,6 +262,9 @@ impl<E: ScriptEngine> Runtime<E> {
             .eval("globalThis.__rebindDocument(); globalThis.__refreshNamedProperties()");
 
         let mut deferred: Vec<ScriptFacts> = Vec::new();
+        // Async scripts do not block the parser, so they are not run here. See
+        // `ScriptTiming::Async`.
+        let mut async_pending: Vec<(NodeId, ScriptFacts)> = Vec::new();
         loop {
             let pause = markup_insertion::stream_resume(&mut self.host.borrow_mut());
             let node = match pause {
@@ -271,16 +283,24 @@ impl<E: ScriptEngine> Runtime<E> {
             // Foreign-namespace scripts do not pause the tokenizer, so run any
             // the parser has completed since the last pause — they precede this
             // one in the document, and this one may name what they defined.
-            report.scripts_run += self.run_foreign_scripts(&policy, loader, &mut deferred);
-            let already_started =
-                markup_insertion::stream_script_already_started(&self.host.borrow(), node);
+            report.scripts_run +=
+                self.run_foreign_scripts(&policy, loader, &mut deferred, &mut async_pending);
+            let already_started = markup_insertion::script_started(&self.host.borrow(), node);
             // HTML never executes a `<script>` found in a template's contents.
             let inert = already_started || self.host.borrow().dom.is_in_template_contents(node);
             let facts = self.script_facts(node, inert);
+            // Prepare's step 10, and it happens whatever the timing: a deferred
+            // or async script is already started the moment it is prepared, so
+            // moving it later cannot re-run it.
+            markup_insertion::clear_parser_inserted(&self.host.borrow(), node);
+            if !inert {
+                markup_insertion::mark_script_started(&mut self.host.borrow_mut(), node);
+            }
             match facts.timing {
                 ScriptTiming::Skipped => {},
                 ScriptTiming::Deferred => deferred.push(facts),
-                ScriptTiming::Blocking | ScriptTiming::Async => {
+                ScriptTiming::Async => async_pending.push((node, facts)),
+                ScriptTiming::Blocking => {
                     self.run_parser_script(node, &facts, loader);
                     report.scripts_run += 1;
                 },
@@ -297,11 +317,17 @@ impl<E: ScriptEngine> Runtime<E> {
         }
         self.refresh_parser_policy(&policy);
         self.upgrade_parser_created(&policy);
-        report.scripts_run += self.run_foreign_scripts(&policy, loader, &mut deferred);
+        report.scripts_run +=
+            self.run_foreign_scripts(&policy, loader, &mut deferred, &mut async_pending);
 
-        // HTML, "the end". Readiness first, then the deferred list, then
-        // DOMContentLoaded, then the load event.
+        // HTML, "the end". Readiness first, then the tasks already queued (the
+        // async scripts, whose fetches completed while the parser ran), then
+        // the deferred list, then DOMContentLoaded, then the load event.
         self.set_ready_state(ReadyState::Interactive);
+        for (node, facts) in &async_pending {
+            self.run_parser_script(*node, facts, loader);
+            report.scripts_run += 1;
+        }
         for facts in &deferred {
             self.run_parser_script_deferred(facts, loader);
             report.deferred_run += 1;
@@ -388,6 +414,7 @@ impl<E: ScriptEngine> Runtime<E> {
         policy: &Rc<ParserPolicy>,
         loader: &dyn ParserScriptLoader,
         deferred: &mut Vec<ScriptFacts>,
+        async_pending: &mut Vec<(NodeId, ScriptFacts)>,
     ) -> usize {
         let nodes = policy.take_foreign_scripts();
         let mut ran = 0;
@@ -399,13 +426,17 @@ impl<E: ScriptEngine> Runtime<E> {
             if skip {
                 continue;
             }
-            let facts = self.script_facts(node, false);
+            let started = markup_insertion::script_started(&self.host.borrow(), node);
+            let facts = self.script_facts(node, started);
+            markup_insertion::clear_parser_inserted(&self.host.borrow(), node);
+            markup_insertion::mark_script_started(&mut self.host.borrow_mut(), node);
             match facts.timing {
                 ScriptTiming::Skipped => continue,
                 // A module in foreign content is deferred like any other, and
                 // must still run before the load event.
                 ScriptTiming::Deferred => deferred.push(facts),
-                ScriptTiming::Blocking | ScriptTiming::Async => {
+                ScriptTiming::Async => async_pending.push((node, facts)),
+                ScriptTiming::Blocking => {
                     self.run_parser_script(node, &facts, loader);
                     ran += 1;
                 },
@@ -519,9 +550,17 @@ impl<E: ScriptEngine> Runtime<E> {
                     // An import's own URL is resolved by the loader, which is
                     // the document's resource route; the referrer is already
                     // folded into that route's base.
+                    //
+                    // `ScriptEngine::eval_module`'s resolver returns
+                    // `(resolved_url, source)` — in that order. This closure had
+                    // them swapped, so every backend parsed the *URL string* as
+                    // the dependency's source and the import rejected with the
+                    // failure swallowed. Nothing caught it because the only
+                    // tests that reach a second module were themselves ignored
+                    // over `resolve_href`.
                     let mut resolve = |specifier: &str, _referrer: &str| {
                         let url = loader.resolve(specifier);
-                        loader.load(specifier, None, None).map(|text| (text, url))
+                        loader.load(specifier, None, None).map(|text| (url, text))
                     };
                     let _ = self.engine.eval_module(&source, &base, &mut resolve);
                     self.flush_host_trace_events();

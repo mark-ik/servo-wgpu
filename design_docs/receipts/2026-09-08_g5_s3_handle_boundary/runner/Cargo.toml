@@ -1,0 +1,11 @@
+[package]
+name = "genet-handle-boundary-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+genet-scripted-dom = { path = "../../../../components/genet-scripted-dom" }
+layout-dom-api = { path = "../../../../components/shared/layout-dom" }
+
+[workspace]

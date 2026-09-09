@@ -50,17 +50,93 @@ pub const STRUCTURAL_SHEET: &[&str] = &[
     "body { padding: 8px; }",
 ];
 
-/// Resolve browser URLs and local paths without treating a Windows drive as a URL
-/// scheme. Module resolution uses `url::Url::join` separately where normalization
-/// is required.
+/// Resolve a URL or local path against `base`, without treating a Windows drive
+/// as a URL scheme.
+///
+/// When `base` is a real URL this is the URL standard's relative resolution,
+/// through [`url::Url::join`], which is the only thing that answers `./dep.js`,
+/// `../dep.js`, the empty string, `#frag` and `?q=1` correctly. It used to be
+/// plain prefix concatenation, so a module's `import './dep.js'` resolved to
+/// `http://x/./dep.js` and never matched the resource route's key — the bug the
+/// module tests in `document.rs` had recorded as their reason for being ignored.
+///
+/// A scheme-less base (a bare relative path, a Windows path) is not a URL and
+/// cannot go through `Url`, so it keeps the prefix form, extended with the same
+/// five relative cases and RFC 3986 dot-segment removal.
 pub fn resolve_href(base: &str, href: &str) -> String {
-    if has_scheme(href) || href.starts_with('/') || href.starts_with('\\') {
+    if is_windows_drive(href) || href.starts_with('\\') || has_scheme(href) {
         return href.to_string();
     }
-    let cut = base.rfind(['/', '\\']).map_or(0, |i| i + 1);
-    format!("{}{}", &base[..cut], href)
+    if has_scheme(base) && !is_windows_drive(base) {
+        if let Ok(joined) = url::Url::parse(base).and_then(|b| b.join(href)) {
+            return joined.to_string();
+        }
+    }
+    resolve_pathlike(base, href)
 }
 
+/// `C:\...` / `c:/...`: a one-letter "scheme" is a drive letter, not a scheme.
+fn is_windows_drive(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+}
+
+/// The URL standard's relative cases over a base that is not a URL: an empty
+/// reference is the base minus its fragment, a fragment-only or query-only
+/// reference replaces that component, an absolute path replaces the whole path,
+/// and anything else joins at the base's last separator with `.` and `..`
+/// removed.
+fn resolve_pathlike(base: &str, href: &str) -> String {
+    let base_no_frag = base.split('#').next().unwrap_or("");
+    if href.is_empty() {
+        return base_no_frag.to_string();
+    }
+    if href.starts_with('#') {
+        return format!("{base_no_frag}{href}");
+    }
+    let base_path = base_no_frag.split('?').next().unwrap_or("");
+    if href.starts_with('?') {
+        return format!("{base_path}{href}");
+    }
+    let (href_path, href_rest) = match href.find(['?', '#']) {
+        Some(i) => (&href[..i], &href[i..]),
+        None => (href, ""),
+    };
+    let joined = if href_path.starts_with('/') {
+        href_path.to_string()
+    } else {
+        let cut = base_path.rfind(['/', '\\']).map_or(0, |i| i + 1);
+        format!("{}{}", &base_path[..cut], href_path)
+    };
+    format!("{}{href_rest}", remove_dot_segments(&joined))
+}
+
+/// RFC 3986 "remove dot segments", over the `/` separator only: a Windows path
+/// has no `.`/`..` convention a browser href would use.
+fn remove_dot_segments(path: &str) -> String {
+    if !path.contains("./") && !path.ends_with('.') {
+        return path.to_string();
+    }
+    let leading = path.starts_with('/');
+    let trailing = path.ends_with('/') || path.ends_with("/.") || path.ends_with("/..");
+    let mut out: Vec<&str> = Vec::new();
+    for segment in path.split('/') {
+        match segment {
+            "." => {},
+            ".." => {
+                if out.len() > usize::from(leading) {
+                    out.pop();
+                }
+            },
+            other => out.push(other),
+        }
+    }
+    let mut joined = out.join("/");
+    if trailing && !joined.ends_with('/') {
+        joined.push('/');
+    }
+    joined
+}
 fn has_scheme(url: &str) -> bool {
     match url.find(':') {
         Some(i) if i > 0 => url[..i]
@@ -276,5 +352,125 @@ mod drain_tests {
         // Teardown clears it.
         pins.clear();
         assert!(pins.is_empty());
+    }
+}
+
+/// [`resolve_href`], one case per relative form the URL standard defines.
+/// Every one of these is a specifier a module `import` can carry, and the
+/// prefix-concatenation version answered four of them wrongly.
+#[cfg(test)]
+mod href_tests {
+    use super::resolve_href;
+
+    #[test]
+    fn single_dot_is_collapsed() {
+        assert_eq!(
+            resolve_href("http://x/main.js", "./dep.js"),
+            "http://x/dep.js"
+        );
+        assert_eq!(
+            resolve_href("http://x/a/b/main.js", "./dep.js"),
+            "http://x/a/b/dep.js"
+        );
+        // Directory-relative `.` on a scheme-less base takes the same route.
+        assert_eq!(resolve_href("a/b/main.js", "./dep.js"), "a/b/dep.js");
+    }
+
+    #[test]
+    fn double_dot_walks_up() {
+        assert_eq!(
+            resolve_href("http://x/a/b/main.js", "../dep.js"),
+            "http://x/a/dep.js"
+        );
+        assert_eq!(
+            resolve_href("http://x/a/b/main.js", "../../dep.js"),
+            "http://x/dep.js"
+        );
+        // Past the root the URL standard clamps rather than escaping the host.
+        assert_eq!(
+            resolve_href("http://x/a/main.js", "../../../dep.js"),
+            "http://x/dep.js"
+        );
+        assert_eq!(resolve_href("a/b/main.js", "../dep.js"), "a/dep.js");
+    }
+
+    #[test]
+    fn empty_specifier_is_the_base_without_its_fragment() {
+        assert_eq!(resolve_href("http://x/a/main.js", ""), "http://x/a/main.js");
+        assert_eq!(
+            resolve_href("http://x/a/main.js?v=1#top", ""),
+            "http://x/a/main.js?v=1"
+        );
+        assert_eq!(resolve_href("a/main.js#top", ""), "a/main.js");
+    }
+
+    #[test]
+    fn fragment_only_keeps_the_path_and_query() {
+        assert_eq!(
+            resolve_href("http://x/a/main.js?v=1#old", "#new"),
+            "http://x/a/main.js?v=1#new"
+        );
+        assert_eq!(
+            resolve_href("a/main.js?v=1#old", "#new"),
+            "a/main.js?v=1#new"
+        );
+    }
+
+    #[test]
+    fn query_only_replaces_the_query_and_drops_the_fragment() {
+        assert_eq!(
+            resolve_href("http://x/a/main.js?v=1#top", "?v=2"),
+            "http://x/a/main.js?v=2"
+        );
+        assert_eq!(resolve_href("a/main.js?v=1#top", "?v=2"), "a/main.js?v=2");
+    }
+
+    #[test]
+    fn absolute_and_opaque_references_are_unchanged_relative_forms() {
+        // An absolute path against a URL base gains the base's origin, which is
+        // what the resource route is keyed by.
+        assert_eq!(
+            resolve_href("http://x/a/main.js", "/dep.js"),
+            "http://x/dep.js"
+        );
+        // Against a scheme-less base there is no origin to gain.
+        assert_eq!(resolve_href("a/b/main.js", "/dep.js"), "/dep.js");
+        // A specifier with its own scheme wins outright.
+        assert_eq!(
+            resolve_href("http://x/main.js", "https://y/dep.js"),
+            "https://y/dep.js"
+        );
+        assert_eq!(
+            resolve_href("http://x/main.js", "data:text/javascript,0"),
+            "data:text/javascript,0"
+        );
+    }
+
+    #[test]
+    fn a_windows_drive_is_not_a_scheme() {
+        assert_eq!(
+            resolve_href("docs/a.html", "C:\\pages\\root.html"),
+            "C:\\pages\\root.html"
+        );
+        // As a base it must not be handed to `Url`, which would read `c:` as an
+        // opaque scheme and produce nonsense.
+        assert_eq!(
+            resolve_href("C:\\pages\\index.html", "dep.js"),
+            "C:\\pages\\dep.js"
+        );
+    }
+
+    #[test]
+    fn ordinary_relative_joins_are_unchanged() {
+        assert_eq!(resolve_href("docs/a.html", "b.html"), "docs/b.html");
+        assert_eq!(resolve_href("a.html", "sub/c.html"), "sub/c.html");
+        assert_eq!(
+            resolve_href("file:///x/a.html", "b.html"),
+            "file:///x/b.html"
+        );
+        assert_eq!(
+            resolve_href("http://x/index.html", "main.js"),
+            "http://x/main.js"
+        );
     }
 }

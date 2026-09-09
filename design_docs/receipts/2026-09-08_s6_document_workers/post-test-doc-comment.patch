@@ -1,0 +1,15 @@
+--- a/components/genet-scripted/document.rs
++++ b/components/genet-scripted/document.rs
+@@ -425,9 +425,9 @@
+         self.rt.collect_garbage()
+     }
+ 
+-    /// Whether the runtime has pending time-based work (a scheduled timer), so the
+-    /// shell should keep requesting frames. `setInterval` re-arms each fire, so a
+-    /// churning soak page stays animated; a quiescent page lets the loop idle.
++    /// Whether an unfrozen runtime has a timer or outstanding worker work.
++    /// Worker liveness keeps a polling host driving until acknowledged idle;
++    /// it does not mean a message is ready now or provide a wake callback.
+     pub fn has_pending_work(&mut self) -> bool {
+         !self.frozen
+             && (self.rt.next_timer_delay().is_some() || self.rt.has_worker_work())

@@ -1,0 +1,10 @@
+{
+  "base_revision": "ec5421b7591",
+  "replay": "git archive ec5421b7591, then apply s2-dom-overlay.patch from this directory",
+  "source_overlay": {
+    "components/genet-scripted-dom/lib.rs": "060e466265f050884218f049ec61f418e248de0c63ed2516eec46e4eeffcc3e4",
+    "components/genet-scripted-dom/shadow.rs": "29ea08c4ebdc2150d63319186d45db047fa5e85e58f1feb151a44e743b730444"
+  },
+  "overlay_patch_sha256": "6529af5278fc0c40ad43aaa2a1697685dce431a4893687c8665dce69f3f9b0fc",
+  "excluded": "All other working-tree changes; only these two DOM files were overlaid."
+}

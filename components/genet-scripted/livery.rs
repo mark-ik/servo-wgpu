@@ -30,11 +30,12 @@ use genet_scripted_dom::{NodeId, ScriptedDom};
 use layout_dom_api::{
     AttributeView, LayoutDom, LayoutDomMut, LocalName, Namespace, NodeKind, QualName, QuirksMode,
 };
+use livery::media::MediaQueryList;
 use paint_list_api::{ColorF, DeviceIntSize, LayoutPoint, LayoutRect, LayoutSize};
 use script_engine_api::ScriptEngine;
 use script_runtime_api::{
-    ComputedStyleHandler, HostState, InlineStyleHandler, InlineStyleValueResult, Runtime,
-    SelectionHandler, StyleSheetHandler, StyleSheetImportOwner, StyleSheetImportRule,
+    ComputedStyleHandler, HostState, InlineStyleHandler, InlineStyleValueResult, MediaQueryHandler,
+    Runtime, SelectionHandler, StyleSheetHandler, StyleSheetImportOwner, StyleSheetImportRule,
     StyleSheetMutationError, StyleSheetRule, StyleSheetRuleKind,
 };
 
@@ -56,6 +57,12 @@ struct LiveryState {
     selection_anchor: Option<(NodeId, usize)>,
     selection_range: Option<TextRange<NodeId>>,
     live_sheets: Option<LiveStylesheetSource>,
+    /// Set whenever `device` moves, cleared by
+    /// [`LiveryCssom::take_device_changed`]. A live `MediaQueryList` has to be
+    /// re-evaluated and its `change` event fired, and only the owner of the
+    /// `Runtime` can do that — a handler called from inside a native cannot
+    /// re-enter the engine.
+    device_changed: bool,
 }
 
 const SELECTION_COLOR: ColorF = ColorF {
@@ -118,6 +125,12 @@ impl LiveryState {
     fn invalidate_frame(&mut self) {
         self.cached_frame = None;
         self.frame = None;
+    }
+
+    /// Move the device and record that media queries must be re-evaluated.
+    fn device_moved(&mut self) {
+        self.device_changed = true;
+        self.invalidate_frame();
     }
 }
 
@@ -251,6 +264,7 @@ impl LiveryCssom {
             selection_anchor: None,
             selection_range: None,
             live_sheets: None,
+            device_changed: false,
         }));
         Self::install_state(runtime, state)
     }
@@ -381,6 +395,7 @@ impl LiveryCssom {
                 mutation_cursor,
                 resource_sink,
             }),
+            device_changed: false,
         };
         replace_resource_ledger(&mut initial_state, &resources);
         let state = Rc::new(RefCell::new(initial_state));
@@ -394,6 +409,9 @@ impl LiveryCssom {
         let host = Rc::downgrade(runtime.host());
         runtime.set_computed_style_handler(Box::new(LiveryComputedStyle {
             host: host.clone(),
+            state: state.clone(),
+        }));
+        runtime.set_media_query_handler(Box::new(LiveryMediaQueries {
             state: state.clone(),
         }));
         runtime.set_inline_style_handler(Box::new(LiveryInlineStyle));
@@ -412,14 +430,23 @@ impl LiveryCssom {
     pub fn set_viewport_size(&self, width: f32, height: f32) {
         let mut state = self.state.borrow_mut();
         state.device.set_viewport_size(width, height);
-        state.invalidate_frame();
+        state.device_moved();
+    }
+
+    /// Whether the device has moved since this was last asked, clearing the
+    /// flag. The owner of the `Runtime` calls
+    /// [`Runtime::notify_media_features_changed`] when it answers `true`, which
+    /// is what makes `matchMedia(q).onchange` fire on this route.
+    pub fn take_device_changed(&self) -> bool {
+        let mut state = self.state.borrow_mut();
+        std::mem::take(&mut state.device_changed)
     }
 
     /// Supply distinct small, large, and dynamic viewport sizes.
     pub fn set_viewport_sizes(&self, sizes: ViewportSizes) {
         let mut state = self.state.borrow_mut();
         state.device.set_viewport_sizes(sizes);
-        state.invalidate_frame();
+        state.device_moved();
     }
 
     /// The retained generation stamp for one author sheet.
@@ -475,7 +502,7 @@ impl LiveryCssom {
             state
                 .device
                 .set_viewport_size(viewport.0 as f32, viewport.1 as f32);
-            state.invalidate_frame();
+            state.device_moved();
         }
         if state.mutation_cursor < base || state.mutation_cursor > end {
             // Another selected layout consumer drained a batch first. Its
@@ -1201,6 +1228,29 @@ impl InlineStyleHandler for LiveryInlineStyle {
         components: &[(String, String)],
     ) -> Option<String> {
         reconstruct_specified_shorthand(property, components)
+    }
+}
+
+/// The host side of `script_runtime_api`'s media-query seam on the live route:
+/// evaluates a `matchMedia` string against Livery's own retained `Device`,
+/// which is the device the frame was laid out with. This is the seam the
+/// retired `MediaQueryBridge` filled over `genet_layout::IncrementalLayout`;
+/// without it `matchMedia(q).matches` was `false` for every query.
+///
+/// `livery::media` has no serializer for a parsed query, so the normalized form
+/// is the trimmed input — enough for `MediaQueryList.media` to be non-empty and
+/// stable, and honest about being no more than that.
+struct LiveryMediaQueries {
+    state: Rc<RefCell<LiveryState>>,
+}
+
+impl MediaQueryHandler for LiveryMediaQueries {
+    fn evaluate(&self, query: &str) -> (String, bool) {
+        let serialized = query.trim().to_owned();
+        let matches = serialized
+            .parse::<MediaQueryList>()
+            .is_ok_and(|list| list.matches(&self.state.borrow().device));
+        (serialized, matches)
     }
 }
 
