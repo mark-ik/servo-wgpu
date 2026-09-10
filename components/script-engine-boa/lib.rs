@@ -444,12 +444,12 @@ impl CallCx for BoaCallCx<'_> {
             .and_then(|o| o.downcast_ref::<Reflector>().map(|r| r.data))
     }
 
-    fn reflector_is_local(&mut self, value: &JsValue) -> bool {
+    fn local_reflector_data(&mut self, value: &JsValue) -> Option<ReflectorData> {
         let current = realm_id_of(self.ctx);
         value
             .as_object()
-            .and_then(|o| o.downcast_ref::<Reflector>().map(|r| r.owner == current))
-            .unwrap_or(false)
+            .and_then(|o| o.downcast_ref::<Reflector>().map(|r| (r.owner, r.data)))
+            .and_then(|(owner, data)| (owner == current).then_some(data))
     }
 
     fn make_reflector(&mut self, data: ReflectorData) -> Result<JsValue, JsError> {
@@ -1755,7 +1755,7 @@ mod tests {
                 cx: &mut <E as ScriptEngine>::CallCx<'_>,
             ) -> Result<<E as ScriptEngine>::Value, <E as ScriptEngine>::Error> {
                 let value = cx.arg(0);
-                let local = cx.reflector_is_local(&value);
+                let local = cx.local_reflector_data(&value).is_some();
                 let raw = cx.reflector_data(&value);
                 cx.make_string(&format!("{local}:{raw:?}"))
             }

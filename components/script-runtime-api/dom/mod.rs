@@ -49,7 +49,7 @@
 //! reflected kind remains. See
 //! `docs/2026-05-26_pluggable_engines_testharness_plan.md`.
 
-use crate::LocalReflectorCx as _;
+use crate::OwnerResolvedCx as _;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -571,12 +571,13 @@ struct ComputedStyleValue;
 impl<E: ScriptEngine> NativeFn<E> for ComputedStyleValue {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let el = cx.arg(0);
-        let Some(node) = cx.local_reflector_data(&el)? else {
+        let Some(node) = cx.owned_node(&el)? else {
             return Ok(cx.make_null());
         };
         let a1 = cx.arg(1);
         let property = cx.value_to_string(&a1)?;
-        let value = host_computed_style::<E>(cx).and_then(|h| h.computed_value(node, &property));
+        let value =
+            host_computed_style::<E>(cx).and_then(|h| h.computed_value(node.raw(), &property));
         match value {
             Some(v) => cx.make_string(&v),
             None => Ok(cx.make_null()),
@@ -591,16 +592,16 @@ impl<E: ScriptEngine> NativeFn<E> for ComputedStyleValueInContext {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let context_value = cx.arg(0);
         let node_value = cx.arg(1);
-        let (Some(context), Some(node)) = (
-            cx.local_reflector_data(&context_value)?,
-            cx.local_reflector_data(&node_value)?,
-        ) else {
+        let (Some(context), Some(node)) =
+            (cx.owned_node(&context_value)?, cx.owned_node(&node_value)?)
+        else {
             return Ok(cx.make_null());
         };
         let property_value = cx.arg(2);
         let property = cx.value_to_string(&property_value)?;
-        let value = host_computed_style::<E>(cx)
-            .and_then(|handler| handler.computed_value_in_context(context, node, &property));
+        let value = host_computed_style::<E>(cx).and_then(|handler| {
+            handler.computed_value_in_context(context.raw(), node.raw(), &property)
+        });
         match value {
             Some(value) => cx.make_string(&value),
             None => Ok(cx.make_null()),

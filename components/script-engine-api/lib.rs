@@ -609,12 +609,26 @@ pub trait CallCx {
     /// is not a reflector.
     fn reflector_data(&mut self, value: &Self::Value) -> Option<ReflectorData>;
 
-    /// Whether this reflector was minted for the callback's current realm.
-    /// Check this before decoding arena-local data. `reflector_data` itself
-    /// remains agent-wide and does not establish permission to use that arena.
-    /// Single-realm engines accept any native reflector; nonreflectors are false.
-    fn reflector_is_local(&mut self, value: &Self::Value) -> bool {
-        self.reflector_data(value).is_some()
+    /// Native data for a reflector **minted in the callback's current realm**,
+    /// resolved in one step: the locality test and the decode cannot be
+    /// separated, so a caller cannot decode first and check afterwards.
+    ///
+    /// The realm and arena it answers for are the *current callback's*: the
+    /// realm [`current_realm`](Self::current_realm) reports, and therefore the
+    /// DOM arena belonging to that realm's host. `None` for a value that is not
+    /// a genuine reflector, for one minted in another realm (whose data indexes
+    /// another arena), and for one whose native provenance is gone. Locality is
+    /// read from immutable native provenance, not from a raw id or a public
+    /// prototype, so neither is forgeable from script.
+    ///
+    /// [`reflector_data`](Self::reflector_data) stays agent-wide and is the
+    /// deliberate cross-arena read: it says *which node*, never *which arena may
+    /// dereference it*. A caller that wants an arena-local id wants this method.
+    ///
+    /// Single-realm backends have one realm and one arena, so the default
+    /// answers exactly `reflector_data`.
+    fn local_reflector_data(&mut self, value: &Self::Value) -> Option<ReflectorData> {
+        self.reflector_data(value)
     }
 
     /// Mint a reflector carrying `data`, the in-callback mirror of

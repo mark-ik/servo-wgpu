@@ -6,7 +6,7 @@
 
 //! Browsing contexts belonging to the runtime's single script agent.
 
-use crate::LocalReflectorCx as _;
+use crate::OwnerResolvedCx as _;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -266,10 +266,10 @@ struct FrameWindow;
 impl<E: ScriptEngine> NativeFn<E> for FrameWindow {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let value = cx.arg(0);
-        let Some(raw) = cx.local_reflector_data(&value)? else {
+        let Some(raw) = cx.owned_node(&value)? else {
             return Ok(cx.make_null());
         };
-        let node = NodeId::from_raw(raw);
+        let node = raw.id();
         let parent = cx.current_realm();
         let Some(parent_host) = host::<E>(cx) else {
             return Ok(cx.make_null());
@@ -358,7 +358,7 @@ impl<E: ScriptEngine> NativeFn<E> for FrameWindow {
             let parent_context = a.frames.contexts[&parent];
             let tree = a.frames.tree.as_mut().expect("initialized");
             let context = tree
-                .create_child(parent_context, raw, &attrs)
+                .create_child(parent_context, raw.raw(), &attrs)
                 .expect("live parent");
             let flags = tree.get(context).expect("new child").sandbox();
             let origin = if flags.contains(SandboxFlags::ORIGIN) {
@@ -398,7 +398,7 @@ impl<E: ScriptEngine> NativeFn<E> for FrameWindow {
         let dimension = |name: &str, fallback: f32| {
             style
                 .as_ref()
-                .and_then(|handler| handler.computed_value(raw, name))
+                .and_then(|handler| handler.computed_value(raw.raw(), name))
                 .and_then(|value| {
                     value
                         .trim()

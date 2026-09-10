@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use genet_scripted_dom::{NodeId, ScriptedDom};
+use genet_scripted_dom::{CapturedNodeId, NodeId, NodeIdentityError, ScriptedDom};
 use layout_dom_api::{CapturedQualName, DomMutation, LayoutDom, LayoutDomMut};
 use serde::{Deserialize, Serialize};
 
@@ -76,37 +76,37 @@ pub(crate) struct DomCaptureRecorder {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) enum RecordedMutation {
     Inserted {
-        node: u64,
-        parent: u64,
-        next_sibling: Option<u64>,
+        node: CapturedNodeId,
+        parent: CapturedNodeId,
+        next_sibling: Option<CapturedNodeId>,
         outer_html: String,
     },
     Removed {
-        node: u64,
-        former_parent: u64,
+        node: CapturedNodeId,
+        former_parent: CapturedNodeId,
         still_live: bool,
     },
     AttributeChanged {
-        node: u64,
+        node: CapturedNodeId,
         name: CapturedQualName,
         old_value: Option<String>,
         new_value: Option<String>,
     },
     CharacterDataChanged {
-        node: u64,
+        node: CapturedNodeId,
         new_data: String,
     },
     SubtreeReplaced {
-        node: u64,
+        node: CapturedNodeId,
         new_inner_html: String,
     },
     /// An atomic in-tree move (`move_before`): the subtree survives, so no
     /// serialized HTML rides along — replay re-parents the live node.
     Moved {
-        node: u64,
-        from_parent: u64,
-        to_parent: u64,
-        next_sibling: Option<u64>,
+        node: CapturedNodeId,
+        from_parent: CapturedNodeId,
+        to_parent: CapturedNodeId,
+        next_sibling: Option<CapturedNodeId>,
     },
 }
 
@@ -137,7 +137,7 @@ pub(crate) struct RecordedLayoutBatch {
 impl RecordedMutation {
     fn capture(dom: &ScriptedDom, mutation: &DomMutation<NodeId>) -> io::Result<Self> {
         let capture_id = |id| {
-            dom.try_capture_node_id(id)
+            dom.try_capture_node_identity(id)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
         };
         // Retained source journals may name an exported node. Its birth-arena
@@ -206,6 +206,99 @@ impl RecordedMutation {
     }
 }
 
+/// Why a captured identity could not be translated into the replaying arena.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ReplayError {
+    /// The record names an arena this document never imported from, so no
+    /// serial in it can be resolved here. Reminting the bare serial would pick
+    /// whichever node this arena happens to have allocated at that index.
+    UnknownOrigin(CapturedNodeId),
+    /// The origin is known but the identity is not usable here (never
+    /// allocated, retired, or out of range).
+    Unresolvable(CapturedNodeId, NodeIdentityError),
+}
+
+impl std::fmt::Display for ReplayError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownOrigin(id) => write!(
+                f,
+                "captured node {}:{} names an arena this document never imported from",
+                id.arena, id.serial
+            ),
+            Self::Unresolvable(id, error) => {
+                write!(f, "captured node {}:{}: {error}", id.arena, id.serial)
+            },
+        }
+    }
+}
+impl std::error::Error for ReplayError {}
+
+impl RecordedMutation {
+    /// Translate one captured identity through the replaying arena's import
+    /// registry. Local origins resolve by serial; an imported origin resolves
+    /// only when this arena actually recorded the adoption that brought it in.
+    fn translate(dom: &ScriptedDom, captured: CapturedNodeId) -> Result<NodeId, ReplayError> {
+        dom.try_remint_node_identity(captured)
+            .map_err(|error| match error {
+                NodeIdentityError::UnknownOriginArena => ReplayError::UnknownOrigin(captured),
+                other => ReplayError::Unresolvable(captured, other),
+            })
+    }
+
+    /// The node this record is about, in the replaying arena's identity space.
+    pub(crate) fn replay_node(&self, dom: &ScriptedDom) -> Result<NodeId, ReplayError> {
+        let node = match self {
+            Self::Inserted { node, .. }
+            | Self::Removed { node, .. }
+            | Self::AttributeChanged { node, .. }
+            | Self::CharacterDataChanged { node, .. }
+            | Self::SubtreeReplaced { node, .. }
+            | Self::Moved { node, .. } => *node,
+        };
+        Self::translate(dom, node)
+    }
+
+    /// Every identity this record names, in record order. A replayer needs all
+    /// of them resolved before it touches the document, so one unknown origin
+    /// refuses the record rather than half-applying it.
+    pub(crate) fn replay_ids(&self, dom: &ScriptedDom) -> Result<Vec<NodeId>, ReplayError> {
+        let captured: Vec<CapturedNodeId> = match self {
+            Self::Inserted {
+                node,
+                parent,
+                next_sibling,
+                ..
+            } => std::iter::once(*node)
+                .chain(std::iter::once(*parent))
+                .chain(*next_sibling)
+                .collect(),
+            Self::Removed {
+                node,
+                former_parent,
+                ..
+            } => vec![*node, *former_parent],
+            Self::AttributeChanged { node, .. }
+            | Self::CharacterDataChanged { node, .. }
+            | Self::SubtreeReplaced { node, .. } => vec![*node],
+            Self::Moved {
+                node,
+                from_parent,
+                to_parent,
+                next_sibling,
+            } => std::iter::once(*node)
+                .chain(std::iter::once(*from_parent))
+                .chain(std::iter::once(*to_parent))
+                .chain(*next_sibling)
+                .collect(),
+        };
+        captured
+            .into_iter()
+            .map(|id| Self::translate(dom, id))
+            .collect()
+    }
+}
+
 impl DomCaptureRecorder {
     pub(crate) fn from_env(
         dom: &mut ScriptedDom,
@@ -223,7 +316,7 @@ impl DomCaptureRecorder {
         Self::open_at_path(&path, dom, stylesheets)
     }
 
-    fn open_at_path(
+    pub(crate) fn open_at_path(
         path: &Path,
         dom: &mut ScriptedDom,
         stylesheets: &[String],
@@ -288,7 +381,7 @@ impl DomCaptureRecorder {
 }
 
 #[cfg(test)]
-fn read_capture_records(path: &Path) -> io::Result<Vec<DomCaptureRecord>> {
+pub(crate) fn read_capture_records(path: &Path) -> io::Result<Vec<DomCaptureRecord>> {
     use std::io::Read;
     let mut file = File::open(path)?;
     let mut out = Vec::new();
@@ -337,8 +430,12 @@ mod tests {
     }
 
     #[test]
-    fn recorder_refuses_imported_batch_without_consuming_live_mutations() {
+    fn recorder_records_an_adopted_node_and_replay_resolves_the_same_live_node() {
+        // An imported node's serial belongs to the arena that minted it, so the
+        // record names that arena and replay translates through the importing
+        // store's registry. This case used to be refused outright.
         let mut source = ScriptedDom::new();
+        let source_arena = source.arena_id();
         let imported = source.create_element(qual("p"));
         let text = source.create_text("retained");
         source.append_child(imported, text);
@@ -347,31 +444,70 @@ mod tests {
         let root = dom.document();
         let local = dom.create_element(qual("main"));
         dom.append_child(root, local);
-        let path = temp_capture_path();
-        let mut recorder = DomCaptureRecorder::open_at_path(&path, &mut dom, &[]).unwrap();
-        // A valid leading mutation must not be written as a partial batch.
-        dom.set_attribute(local, qual("id"), "local");
         source
             .transfer_detached_subtree_to(&mut dom, imported)
             .unwrap();
+        assert!(dom.imported_arenas().any(|arena| arena == source_arena));
+        let path = temp_capture_path();
+        let mut recorder = DomCaptureRecorder::open_at_path(&path, &mut dom, &[]).unwrap();
         dom.append_child(local, imported);
-        let before = dom.pending_mutations().1.len();
-        let error = recorder.record_pending(&mut dom).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert!(error.to_string().contains("capture translation"));
-        assert_eq!(read_capture_records(&path).unwrap().len(), 1);
-        assert_eq!(dom.pending_mutations().1.len(), before);
-        assert_eq!(dom.parent(imported), Some(local));
+        dom.set_attribute(imported, qual("id"), "adopted");
+        assert_eq!(recorder.record_pending(&mut dom).unwrap(), 2);
+        let records = read_capture_records(&path).unwrap();
+        let DomCaptureRecord::MutationBatch { mutations, .. } = &records[1] else {
+            panic!("unexpected record: {:?}", records[1]);
+        };
+        let RecordedMutation::AttributeChanged { node, .. } = &mutations[1] else {
+            panic!("unexpected mutation: {:?}", mutations[1]);
+        };
+        assert_eq!(
+            node.arena, source_arena,
+            "the record names its origin arena"
+        );
+        assert_ne!(node.arena, dom.arena_id());
+        for mutation in mutations {
+            assert_eq!(mutation.replay_node(&dom).unwrap(), imported);
+            assert!(
+                mutation
+                    .replay_ids(&dom)
+                    .unwrap()
+                    .iter()
+                    .all(|id| dom.is_live(*id))
+            );
+        }
         assert_eq!(dom.text(text), Some("retained"));
-        dom.set_text_content(text, "still usable");
-        assert!(dom.inner_html(root).contains("still usable"));
-        let mut layout_mutations = Vec::new();
-        dom.drain_mutations(&mut layout_mutations);
-        assert!(layout_mutations.iter().any(|mutation| matches!(
-            mutation, DomMutation::Inserted { node, .. } if *node == imported
-        )));
         drop(recorder);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn replay_refuses_a_serial_from_an_unregistered_arena() {
+        // Both stores independently allocate the same low serials, which is the
+        // silent-corruption case: reminting the bare serial here would resolve
+        // to this arena's own unrelated node.
+        let mut source = ScriptedDom::new();
+        let node = source.create_element(qual("p"));
+        source.append_child(source.document(), node);
+        let mut muts = Vec::new();
+        source.drain_mutations(&mut muts);
+        let record = RecordedMutation::capture(&source, &muts[0]).unwrap();
+        let RecordedMutation::Inserted { node: captured, .. } = &record else {
+            panic!("unexpected mutation: {record:?}");
+        };
+        let mut elsewhere = ScriptedDom::new();
+        let decoy = elsewhere.create_element(qual("div"));
+        elsewhere.append_child(elsewhere.document(), decoy);
+        assert_eq!(decoy.local_index(), node.local_index(), "serials collide");
+        assert_eq!(
+            record.replay_node(&elsewhere),
+            Err(ReplayError::UnknownOrigin(*captured))
+        );
+        assert!(matches!(
+            record.replay_ids(&elsewhere),
+            Err(ReplayError::UnknownOrigin(_))
+        ));
+        // The same record replays correctly in the arena that minted it.
+        assert_eq!(record.replay_node(&source).unwrap(), node);
     }
 
     #[test]
@@ -455,7 +591,7 @@ mod tests {
                 assert_eq!(
                     mutations,
                     &vec![RecordedMutation::AttributeChanged {
-                        node: dom.capture_node_id(body),
+                        node: dom.try_capture_node_identity(body).unwrap(),
                         name: (&qual("id")).into(),
                         old_value: None,
                         new_value: Some("main".to_string()),
@@ -500,9 +636,9 @@ mod tests {
                 assert_eq!(
                     mutations,
                     &vec![RecordedMutation::Inserted {
-                        node: dom.capture_node_id(b),
-                        parent: dom.capture_node_id(root),
-                        next_sibling: Some(dom.capture_node_id(c)),
+                        node: dom.try_capture_node_identity(b).unwrap(),
+                        parent: dom.try_capture_node_identity(root).unwrap(),
+                        next_sibling: Some(dom.try_capture_node_identity(c).unwrap()),
                         outer_html: "<b></b>".to_string(),
                     }]
                 );
@@ -515,13 +651,13 @@ mod tests {
                     mutations,
                     &vec![
                         RecordedMutation::Removed {
-                            node: dom.capture_node_id(b),
-                            former_parent: dom.capture_node_id(root),
+                            node: dom.try_capture_node_identity(b).unwrap(),
+                            former_parent: dom.try_capture_node_identity(root).unwrap(),
                             still_live: true,
                         },
                         RecordedMutation::Removed {
-                            node: dom.capture_node_id(c),
-                            former_parent: dom.capture_node_id(root),
+                            node: dom.try_capture_node_identity(c).unwrap(),
+                            former_parent: dom.try_capture_node_identity(root).unwrap(),
                             still_live: false,
                         },
                     ]

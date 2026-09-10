@@ -333,6 +333,72 @@ fn mutated_range_retains_then_releases_detached_text<E: ScriptEngine>() {
     );
 }
 
+/// The owner-resolved accessor's own contract: after adoption every native sink
+/// reached from the *creation* realm answers from the arena that now stores the
+/// node, and the creation arena no longer holds it. Before the accessor this was
+/// a convention each sink had to remember.
+fn native_reads_follow_the_owning_arena<E: ScriptEngine>() {
+    let mut rt = runtime::<E>();
+    run(
+        &mut rt,
+        r#"
+        var node = document.createElement('section');
+        node.id = 'moved';
+        node.appendChild(document.createTextNode('body text'));
+        child.document.body.appendChild(node);
+        node.setAttribute('data-probe', 'set-from-source-realm');
+        node.textContent = 'rewritten from the source realm';
+        node.innerHTML = '<i id=deep>inner</i>';
+    "#,
+    );
+    let id = {
+        let host = rt.host().borrow();
+        assert!(
+            find_id(&host.dom, LayoutDom::document(&host.dom), "moved").is_none(),
+            "the creation arena still holds the adopted node"
+        );
+        None::<NodeId>
+    };
+    assert!(id.is_none());
+    let child = rt.frame_realms(MAIN_REALM)[0].1;
+    let host = rt.host_in_realm(child).expect("child host");
+    let host = host.borrow();
+    let node = find_id(&host.dom, LayoutDom::document(&host.dom), "moved")
+        .expect("the destination arena stores the adopted node");
+    assert_eq!(
+        host.dom
+            .attribute(
+                node,
+                &layout_dom_api::Namespace::from(""),
+                &layout_dom_api::LocalName::from("data-probe")
+            )
+            .map(str::to_string),
+        Some("set-from-source-realm".to_string()),
+        "the attribute sink wrote the owning arena"
+    );
+    assert!(
+        find_id(&host.dom, node, "deep").is_some(),
+        "the innerHTML sink parsed into the owning arena"
+    );
+}
+
+fn find_id(dom: &genet_scripted_dom::ScriptedDom, node: NodeId, id: &str) -> Option<NodeId> {
+    let matched = dom
+        .attribute(
+            node,
+            &layout_dom_api::Namespace::from(""),
+            &layout_dom_api::LocalName::from("id"),
+        )
+        .is_some_and(|value| value == id);
+    if matched {
+        return Some(node);
+    }
+    dom.dom_children(node)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .find_map(|child| find_id(dom, child, id))
+}
+
 macro_rules! backend {
     ($module:ident, $engine:ty) => {
         mod $module {
@@ -367,6 +433,10 @@ macro_rules! backend {
             #[test]
             fn collection() {
                 super::collection_tracks_owner_separately_from_wrapper_realm::<$engine>();
+            }
+            #[test]
+            fn owner_resolved_native_reads() {
+                super::native_reads_follow_the_owning_arena::<$engine>();
             }
             #[test]
             fn opaque_origin() {

@@ -43,21 +43,35 @@ use script_engine_api::{
     ScriptEngineSnapshot,
 };
 
-/// Reject a foreign realm's arena identity before entering the current DOM.
-/// Reflector data itself stays agent-wide on the engine contract.
-trait LocalReflectorCx: script_engine_api::CallCx {
-    fn local_reflector_data(
+/// The owner-resolved accessor every native sink reads nodes through.
+///
+/// A reflector names a node agent-wide; it does not name an arena. This
+/// resolves the two together and hands back an [`OwnedNode`], which is the only
+/// way to dereference the id — so "decode now, remember to check the arena
+/// later" is not expressible. `Ok(None)` means the value was not a reflector at
+/// all; a dead node or a cross-origin owner throws, as it did before.
+///
+/// The arena-local case is answered by the engine contract's
+/// [`CallCx::local_reflector_data`], which returns nothing for another realm's
+/// reflector. A same-origin reflector from another realm is a deliberate
+/// cross-arena read, so it falls through to the agent-wide `reflector_data` and
+/// is resolved to *its* owner rather than silently read in this one.
+trait OwnerResolvedCx: script_engine_api::CallCx {
+    fn owned_node(
         &mut self,
         value: &Self::Value,
-    ) -> Result<Option<script_engine_api::ReflectorData>, Self::Error> {
-        let Some(data) = self.reflector_data(value) else {
-            return Ok(None);
+    ) -> Result<Option<dom::adoption::OwnedNode>, Self::Error> {
+        let data = match self.local_reflector_data(value) {
+            Some(data) => data,
+            None => match self.reflector_data(value) {
+                Some(data) => data,
+                None => return Ok(None),
+            },
         };
-        dom::adoption::validate(self, data)?;
-        Ok(Some(data))
+        dom::adoption::resolve_owner(self, data).map(Some)
     }
 }
-impl<T: script_engine_api::CallCx + ?Sized> LocalReflectorCx for T {}
+impl<T: script_engine_api::CallCx + ?Sized> OwnerResolvedCx for T {}
 
 mod crypto;
 mod dom;
@@ -2628,13 +2642,8 @@ struct ScrollIntoView;
 impl<E: ScriptEngine> NativeFn<E> for ScrollIntoView {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let el = cx.arg(0);
-        if let Some(raw) = cx.local_reflector_data(&el)? {
-            let node = NodeId::from_raw(raw);
-            if let Some(host) = dom::adoption::current_host(cx) {
-                if let Some((_, owner)) = dom::adoption::owner_host(&host, node) {
-                    owner.borrow_mut().scroll_into_view = Some(node);
-                }
-            }
+        if let Some(node) = cx.owned_node(&el)? {
+            node.with_host(|host| host.scroll_into_view = Some(node.id()));
         }
         Ok(cx.undefined())
     }

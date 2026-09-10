@@ -85,15 +85,10 @@ impl<E: ScriptEngine> NativeFn<E> for AppendChild {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let parent = cx.arg(0);
         let child = cx.arg(1);
-        if let (Some(p), Some(c)) = (
-            cx.local_reflector_data(&parent)?,
-            cx.local_reflector_data(&child)?,
-        ) {
-            super::adoption::require_same_owner(cx, &[p, c])?;
-            with_dom::<E, _>(cx, |dom| {
-                dom.append_child(NodeId::from_raw(p), NodeId::from_raw(c))
-            });
-            super::root_connected_subtree::<E>(cx, NodeId::from_raw(c));
+        if let (Some(p), Some(c)) = (cx.owned_node(&parent)?, cx.owned_node(&child)?) {
+            super::adoption::require_same_owner(cx, &[&p, &c])?;
+            with_dom::<E, _>(cx, |dom| dom.append_child(p.id(), c.id()));
+            super::root_connected_subtree::<E>(cx, c.id());
         }
         Ok(cx.undefined())
     }
@@ -104,16 +99,14 @@ pub(crate) struct SetAttribute;
 impl<E: ScriptEngine> NativeFn<E> for SetAttribute {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let el = cx.arg(0);
-        let Some(id) = cx.local_reflector_data(&el)? else {
+        let Some(id) = cx.owned_node(&el)? else {
             return Ok(cx.undefined());
         };
         let name_v = cx.arg(1);
         let value_v = cx.arg(2);
         let name = cx.value_to_string(&name_v)?;
         let value = cx.value_to_string(&value_v)?;
-        with_dom::<E, _>(cx, |dom| {
-            dom.set_attribute(NodeId::from_raw(id), attr_qual(&name), &value)
-        });
+        id.with_dom(|dom| dom.set_attribute(id.id(), attr_qual(&name), &value));
         Ok(cx.undefined())
     }
 }
@@ -123,12 +116,12 @@ pub(crate) struct SetTextContent;
 impl<E: ScriptEngine> NativeFn<E> for SetTextContent {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let node = cx.arg(0);
-        let Some(id) = cx.local_reflector_data(&node)? else {
+        let Some(id) = cx.owned_node(&node)? else {
             return Ok(cx.undefined());
         };
         let text_v = cx.arg(1);
         let text = cx.value_to_string(&text_v)?;
-        with_dom::<E, _>(cx, |dom| dom.set_text_content(NodeId::from_raw(id), &text));
+        id.with_dom(|dom| dom.set_text_content(id.id(), &text));
         Ok(cx.undefined())
     }
 }
@@ -138,11 +131,10 @@ pub(crate) struct GetInnerHtml;
 impl<E: ScriptEngine> NativeFn<E> for GetInnerHtml {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let node = cx.arg(0);
-        let Some(id) = cx.local_reflector_data(&node)? else {
+        let Some(id) = cx.owned_node(&node)? else {
             return cx.make_string("");
         };
-        let html =
-            with_dom::<E, _>(cx, |dom| dom.inner_html(NodeId::from_raw(id))).unwrap_or_default();
+        let html = id.with_dom(|dom| dom.inner_html(id.id()));
         cx.make_string(&html)
     }
 }
@@ -160,13 +152,13 @@ pub(crate) struct SetInnerHtml;
 impl<E: ScriptEngine> NativeFn<E> for SetInnerHtml {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let node = cx.arg(0);
-        let Some(id) = cx.local_reflector_data(&node)? else {
+        let Some(id) = cx.owned_node(&node)? else {
             return Ok(cx.undefined());
         };
         let html_value = cx.arg(1);
         let html = cx.value_to_string(&html_value)?;
-        with_host_state::<E, _>(cx, |host| {
-            let node = NodeId::from_raw(id);
+        id.with_host(|host| {
+            let node = id.id();
             host.dom.set_inner_html(node, &html);
             markup_insertion::mark_subtree_scripts_started(host, node);
         });
@@ -180,12 +172,12 @@ pub(crate) struct GetElementById;
 impl<E: ScriptEngine> NativeFn<E> for GetElementById {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let scope = cx.arg(0);
-        let Some(root) = cx.local_reflector_data(&scope)? else {
+        let Some(root) = cx.owned_node(&scope)? else {
             return Ok(cx.undefined());
         };
         let arg = cx.arg(1);
         let id = cx.value_to_string(&arg)?;
-        match with_dom::<E, _>(cx, |dom| find_by_id(dom, NodeId::from_raw(root), &id)).flatten() {
+        match with_dom::<E, _>(cx, |dom| find_by_id(dom, root.id(), &id)).flatten() {
             Some(node) => reflect_pinned::<E>(cx, node.raw() as u64),
             None => Ok(cx.undefined()),
         }
@@ -197,21 +189,20 @@ pub(crate) struct GetAttribute;
 impl<E: ScriptEngine> NativeFn<E> for GetAttribute {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let el = cx.arg(0);
-        let Some(id) = cx.local_reflector_data(&el)? else {
+        let Some(id) = cx.owned_node(&el)? else {
             return Ok(cx.make_null());
         };
         let name_v = cx.arg(1);
         let name = cx.value_to_string(&name_v)?;
-        let value = with_dom::<E, _>(cx, |dom| {
+        let value = id.with_dom(|dom| {
             // `getAttribute` matches on the **qualified** name (DOM "get an
             // attribute by name"), which for the common null-namespace case is
             // just the local name.
-            let node = NodeId::from_raw(id);
+            let node = id.id();
             let qual = dom.attribute_qual_name(node, &name)?;
             dom.attribute(node, &qual.ns, &qual.local)
                 .map(str::to_string)
-        })
-        .flatten();
+        });
         match value {
             Some(s) => cx.make_string(&s),
             None => Ok(cx.make_null()),
@@ -230,13 +221,10 @@ pub(crate) struct QualifiedName;
 impl<E: ScriptEngine> NativeFn<E> for QualifiedName {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let el = cx.arg(0);
-        let Some(id) = cx.local_reflector_data(&el)? else {
+        let Some(id) = cx.owned_node(&el)? else {
             return Ok(cx.make_null());
         };
-        let name = with_dom::<E, _>(cx, |dom| {
-            dom.element_name(NodeId::from_raw(id)).map(qualified_of)
-        })
-        .flatten();
+        let name = id.with_dom(|dom| dom.element_name(id.id()).map(qualified_of));
         match name {
             Some(s) => cx.make_string(&s),
             None => Ok(cx.make_null()),
@@ -273,11 +261,10 @@ pub(crate) struct GetTextContent;
 impl<E: ScriptEngine> NativeFn<E> for GetTextContent {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let node = cx.arg(0);
-        let Some(id) = cx.local_reflector_data(&node)? else {
+        let Some(id) = cx.owned_node(&node)? else {
             return Ok(cx.make_null());
         };
-        let text =
-            with_dom::<E, _>(cx, |dom| text_content(dom, NodeId::from_raw(id))).unwrap_or_default();
+        let text = id.with_dom(|dom| text_content(dom, id.id()));
         cx.make_string(&text)
     }
 }
@@ -310,15 +297,12 @@ pub(crate) struct ElementsByTagNameCount;
 impl<E: ScriptEngine> NativeFn<E> for ElementsByTagNameCount {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let scope = cx.arg(0);
-        let Some(root) = cx.local_reflector_data(&scope)? else {
+        let Some(root) = cx.owned_node(&scope)? else {
             return cx.make_string("0");
         };
         let tag_v = cx.arg(1);
         let tag = cx.value_to_string(&tag_v)?;
-        let n = with_dom::<E, _>(cx, |dom| {
-            collect_by_tag(dom, NodeId::from_raw(root), &tag).len()
-        })
-        .unwrap_or(0);
+        let n = with_dom::<E, _>(cx, |dom| collect_by_tag(dom, root.id(), &tag).len()).unwrap_or(0);
         cx.make_string(&n.to_string())
     }
 }
@@ -329,7 +313,7 @@ pub(crate) struct ElementsByTagNameItem;
 impl<E: ScriptEngine> NativeFn<E> for ElementsByTagNameItem {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let scope = cx.arg(0);
-        let Some(root) = cx.local_reflector_data(&scope)? else {
+        let Some(root) = cx.owned_node(&scope)? else {
             return Ok(cx.undefined());
         };
         let tag_v = cx.arg(1);
@@ -340,9 +324,7 @@ impl<E: ScriptEngine> NativeFn<E> for ElementsByTagNameItem {
             .parse::<usize>()
             .unwrap_or(usize::MAX);
         match with_dom::<E, _>(cx, |dom| {
-            collect_by_tag(dom, NodeId::from_raw(root), &tag)
-                .get(i)
-                .copied()
+            collect_by_tag(dom, root.id(), &tag).get(i).copied()
         })
         .flatten()
         {
@@ -358,10 +340,10 @@ pub(crate) struct ParentNode;
 impl<E: ScriptEngine> NativeFn<E> for ParentNode {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let node = cx.arg(0);
-        let Some(id) = cx.local_reflector_data(&node)? else {
+        let Some(id) = cx.owned_node(&node)? else {
             return Ok(cx.undefined());
         };
-        match with_dom::<E, _>(cx, |dom| dom.parent(NodeId::from_raw(id))).flatten() {
+        match id.with_dom(|dom| dom.parent(id.id())) {
             Some(p) => reflect_pinned::<E>(cx, p.raw() as u64),
             None => Ok(cx.undefined()),
         }
@@ -374,11 +356,10 @@ pub(crate) struct DocumentElement;
 impl<E: ScriptEngine> NativeFn<E> for DocumentElement {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let scope = cx.arg(0);
-        let Some(root) = cx.local_reflector_data(&scope)? else {
+        let Some(root) = cx.owned_node(&scope)? else {
             return Ok(cx.undefined());
         };
-        match with_dom::<E, _>(cx, |dom| first_element_child(dom, NodeId::from_raw(root))).flatten()
-        {
+        match with_dom::<E, _>(cx, |dom| first_element_child(dom, root.id())).flatten() {
             Some(node) => reflect_pinned::<E>(cx, node.raw() as u64),
             None => Ok(cx.undefined()),
         }
@@ -390,13 +371,11 @@ pub(crate) struct DocumentBody;
 impl<E: ScriptEngine> NativeFn<E> for DocumentBody {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let scope = cx.arg(0);
-        let Some(root) = cx.local_reflector_data(&scope)? else {
+        let Some(root) = cx.owned_node(&scope)? else {
             return Ok(cx.undefined());
         };
         match with_dom::<E, _>(cx, |dom| {
-            collect_by_tag(dom, NodeId::from_raw(root), "body")
-                .first()
-                .copied()
+            collect_by_tag(dom, root.id(), "body").first().copied()
         })
         .flatten()
         {
@@ -411,13 +390,11 @@ pub(crate) struct DocumentHead;
 impl<E: ScriptEngine> NativeFn<E> for DocumentHead {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let scope = cx.arg(0);
-        let Some(root) = cx.local_reflector_data(&scope)? else {
+        let Some(root) = cx.owned_node(&scope)? else {
             return Ok(cx.undefined());
         };
         match with_dom::<E, _>(cx, |dom| {
-            collect_by_tag(dom, NodeId::from_raw(root), "head")
-                .first()
-                .copied()
+            collect_by_tag(dom, root.id(), "head").first().copied()
         })
         .flatten()
         {
@@ -487,8 +464,8 @@ pub(crate) struct NodeRawId;
 impl<E: ScriptEngine> NativeFn<E> for NodeRawId {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let node = cx.arg(0);
-        match cx.local_reflector_data(&node)? {
-            Some(id) => cx.make_string(&id.to_string()),
+        match cx.owned_node(&node)? {
+            Some(id) => cx.make_string(&id.raw().to_string()),
             None => cx.make_string(""),
         }
     }
@@ -501,10 +478,10 @@ pub(crate) struct NodeType;
 impl<E: ScriptEngine> NativeFn<E> for NodeType {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let node = cx.arg(0);
-        let Some(id) = cx.local_reflector_data(&node)? else {
+        let Some(id) = cx.owned_node(&node)? else {
             return cx.make_string("0");
         };
-        let n = with_dom::<E, _>(cx, |dom| match dom.kind(NodeId::from_raw(id)) {
+        let n = id.with_dom(|dom| match dom.kind(id.id()) {
             NodeKind::Element => 1,
             NodeKind::Text => 3,
             NodeKind::CdataSection => 4,
@@ -514,8 +491,7 @@ impl<E: ScriptEngine> NativeFn<E> for NodeType {
             NodeKind::Doctype => 10,
             // A ShadowRoot is a DocumentFragment subtype: nodeType 11.
             NodeKind::DocumentFragment | NodeKind::ShadowRoot => 11,
-        })
-        .unwrap_or(0);
+        });
         cx.make_string(&n.to_string())
     }
 }
@@ -559,20 +535,18 @@ pub(crate) struct DoctypeField;
 impl<E: ScriptEngine> NativeFn<E> for DoctypeField {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let node = cx.arg(0);
-        let Some(id) = cx.local_reflector_data(&node)? else {
+        let Some(id) = cx.owned_node(&node)? else {
             return Ok(cx.make_null());
         };
         let which_v = cx.arg(1);
         let which = cx.value_to_string(&which_v)?;
-        let value = with_dom::<E, _>(cx, |dom| {
-            dom.doctype_data(NodeId::from_raw(id))
-                .map(|d| match which.as_str() {
-                    "publicId" => d.public_id.to_string(),
-                    "systemId" => d.system_id.to_string(),
-                    _ => d.name.to_string(),
-                })
-        })
-        .flatten();
+        let value = id.with_dom(|dom| {
+            dom.doctype_data(id.id()).map(|d| match which.as_str() {
+                "publicId" => d.public_id.to_string(),
+                "systemId" => d.system_id.to_string(),
+                _ => d.name.to_string(),
+            })
+        });
         match value {
             Some(s) => cx.make_string(&s),
             None => Ok(cx.make_null()),
@@ -585,11 +559,11 @@ pub(crate) struct DocumentDoctype;
 impl<E: ScriptEngine> NativeFn<E> for DocumentDoctype {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let scope = cx.arg(0);
-        let Some(root) = cx.local_reflector_data(&scope)? else {
+        let Some(root) = cx.owned_node(&scope)? else {
             return Ok(cx.undefined());
         };
         match with_dom::<E, _>(cx, |dom| {
-            dom.dom_children(NodeId::from_raw(root))
+            dom.dom_children(root.id())
                 .find(|&c| dom.kind(c) == NodeKind::Doctype)
         })
         .flatten()
@@ -605,11 +579,10 @@ pub(crate) struct GetOuterHtml;
 impl<E: ScriptEngine> NativeFn<E> for GetOuterHtml {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let node = cx.arg(0);
-        let Some(id) = cx.local_reflector_data(&node)? else {
+        let Some(id) = cx.owned_node(&node)? else {
             return cx.make_string("");
         };
-        let html =
-            with_dom::<E, _>(cx, |dom| dom.outer_html(NodeId::from_raw(id))).unwrap_or_default();
+        let html = id.with_dom(|dom| dom.outer_html(id.id()));
         cx.make_string(&html)
     }
 }

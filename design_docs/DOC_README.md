@@ -549,6 +549,24 @@ same session; links out of it are rewritten for its new depth.
 
 - **Cross-arena runtime mutation:** validate every participating operand before detachment; preserve pending layout records while consuming observer records at the semantic boundary. Group observer mutations by the physical owner, keep canonical wrappers in their creation realm, and re-register private hooks from the cloned heap after a runtime snapshot restore.
 
+- **Fuse the check with the decode, or the check is optional.** A native sink
+  got an agent-wide reflector id and a separate `reflector_is_local` to call
+  before dereferencing it in its own arena — 60 sinks, 72 call sites, and
+  nothing but the doc comment holding the order together. Returning the id
+  *only when* the check passes, and handing back a handle that carries the
+  owning store, makes "decode now, check later" unrepresentable rather than
+  discouraged. The same shape as the per-realm `HostData` decision one section
+  down: put the answer where the caller cannot get it wrong. See the realms
+  plan's accessor phase.
+- **A serial is not an identity once storage moves.** Adoption transfers nodes
+  between arenas with their ids intact, so two arenas can hold the same
+  allocation serial. A capture journal that recorded only the serial replayed
+  onto whichever node the replaying arena happened to have allocated at that
+  index — a live, wrong node, silently. The fix is not a better remint but a
+  wider record: name the origin arena, keep an import registry on the store
+  that received the adoption, and refuse an origin the registry does not know.
+  When identity is packed out of two fields, check whether every consumer
+  carries both before trusting a round trip.
 - **New docs go in `design_docs/`, never `docs/`.** See the policy's two-homes
   section for why both exist and what it would cost to merge them.
 - **The smolweb boundary is spec versus use.** What a protocol *is* belongs to
@@ -813,6 +831,21 @@ outlier. These are not headed scripted-realm or browser-hosted acceptance.
 Remaining code is uncommitted and requires the archived local Boa/Vano patches.
 The plan and continuation ledger hold exact source hashes, maps and named losses.
 
+
+### Owner-resolved accessor and imported-identity replay (2026-09-10)
+
+The [accessor and replay phase](2026-09-08_realms_plan.md#phase-owner-resolved-accessor-and-imported-identity-replay-2026-09-10)
+closes the two items the ordinary-adoption lane handed on. `CallCx` now answers
+arena-local reflector data in one step and the runtime resolves every reflector
+to its owning host before a sink can dereference it: 60 native sinks migrated,
+zero left decoding a bare id, seven deliberate cross-arena reads retained.
+Capture records name their origin arena and replay translates through the
+importing store's registry, refusing an unknown origin with a typed error
+instead of reminting onto a colliding serial. Release runtime 520 passed / 0
+failed / 2 ignored; four census subsets move nothing against a lockfile control
+differing by one dependency edge; twelve testharness slices, both reftest guards
+and both Ortet receipts unchanged. Broad `dom` and `dom/nodes` remain red at
+their inherited counts and were not repinned.
 
 ### Cross-arena adoption foundation (verified, 2026-09-09)
 

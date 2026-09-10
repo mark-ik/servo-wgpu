@@ -1,14 +1,17 @@
 # Realms: one agent, one realm per browsing context
 
-**Status:** ordinary cross-arena adoption verified; broad DOM guard remains red,
-2026-09-10. The release runtime suite passes 518 tests with two live-iframe
-fixtures ignored. Required Boa/Vano patches are published and pinned. The final
-DOM census gains 203 passing subtests and retains one historical iframe loss;
-that pass remains protected in the baseline. Twelve other canonical subsets and
-both reftest guards match. Full G5, browsing-context relocation, associated
-shadow/template transfers, and imported-ID capture/replay remain open. Earlier
-phases below retain their historical results; final acceptance is recorded at
-the end of this plan.
+**Status:** ordinary cross-arena adoption verified, with the owner-resolved
+accessor and imported-identity capture/replay landed on top of it; broad DOM
+guard remains red, 2026-09-10. The release runtime suite passes 520 tests with
+two live-iframe fixtures ignored. Required Boa/Vano patches are published and
+pinned. The ordinary-adoption DOM census gained 203 passing subtests and retains
+one historical iframe loss; that pass remains protected in the baseline. The
+accessor/replay phase's own census moves nothing in any of its four subsets.
+Twelve other canonical subsets and both reftest guards match. Imported-ID
+capture and replay now translate through the importing store's registry. Full
+G5, browsing-context relocation and associated shadow/template transfers remain
+open. Earlier phases below retain their historical results; final acceptance is
+recorded at the end of this plan.
 
 **Parent:** [iframes and nested browsing contexts](2026-09-08_iframes_plan.md),
 whose Â§4 named the realm decision as Mark's and left `contentWindow` a stub
@@ -1084,3 +1087,162 @@ Boa stale-wrapper case. Full headed G5 and frame teardown/navigation remain
 unaccepted. Final source/runner archives, publication identities and cache
 release status are under `testing/genet/wpt-ledger/2026-09-09_dom-adoption-runtime`
 in the shared Code workspace.
+
+## Phase: owner-resolved accessor and imported-identity replay, 2026-09-10
+
+**Genet commit at phase start:** `741bf726eb4`
+(`741bf726eb42283a11961d24dd0da14cb08d0f5b`), clean tree. This phase makes no
+commit. Receipts: `testing/genet/wpt-ledger/2026-09-10_accessor_replay` in the
+shared Code workspace.
+
+The ordinary-adoption handoff left two items: "the owner-resolved accessor
+refinement", and "capture now refuses unsupported imported identities before
+consuming the mutation journal; replay translation remains open". Both are the
+same fact seen twice. Adoption made a node's **creation realm** and its
+**owning store** independent, and two places still assumed they were one: a
+native sink that decoded an agent-wide reflector and then read "the current
+document", and a capture record that carried a bare serial with no arena.
+
+### 1. Owner-resolved accessor
+
+The engine contract gains `CallCx::local_reflector_data`, replacing
+`reflector_is_local`. It returns the reflector's data **only** when the
+reflector was minted in the callback's current realm, so the locality test and
+the decode cannot be separated — the previous pair invited "decode now, check
+the arena later", and its own doc line said so. Its doc names what it answers
+for: the realm `current_realm` reports, and that realm's host arena. Boa reads
+the immutable `Reflector { owner, data }` provenance in one downcast; Nova
+reads `EmbedderObject`'s owner and embedder data in one match; neither consults
+a raw id or a public prototype, so neither is forgeable from script.
+Single-realm backends keep the trait default, which is exactly `reflector_data`
+— true there, since one realm has one arena.
+
+`CallCx::reflector_data` stays agent-wide and unchanged. It says *which node*,
+never *which arena may dereference it*.
+
+Above it, `script-runtime-api` replaces the old `LocalReflectorCx` helper with
+`OwnerResolvedCx::owned_node`, which resolves a reflector to an `OwnedNode`:
+the host that **physically owns** the node, plus the `NodeId` that host's arena
+stores it under. `OwnedNode::with_dom` / `with_host` are the only way to
+dereference it, so the arena is not a separate choice a sink can get wrong. The
+arena-local case is answered by the engine accessor; a same-origin reflector
+from another realm is a deliberate cross-arena read and falls through to
+`reflector_data`, resolved to *its* owner rather than read in this one. A dead
+node or a cross-origin owner still throws exactly the errors it did before —
+`validate` is now that resolution with the result dropped, so there is one
+implementation of the rule instead of two.
+
+`require_same_owner` follows: the operands arrive already resolved, so it
+compares the stores they resolved to (`Rc::ptr_eq`) instead of resolving each
+one a second time.
+
+**Counts.** Before: **60 native sinks**, across 72 call sites in eight files,
+took a bare `ReflectorData` from the agent-wide accessor and then dereferenced
+it — safety by convention at every one. After: **0**. All 60 go through
+`owned_node`, at 71 call sites (two reference-node decodes merged, one added).
+The wide `reflector_data` remains at **7 call sites in three files**, all of
+them intended cross-arena reads: `dom/adoption.rs` (`host_for_call`, the
+`wrap`/`ownerDocument` hook, `prepareScripts`, `moGroup`, `transfer`),
+`dom/tree.rs` (`NodeRealmState`, the foreign/local report the bootstrap refuses
+adoption with), and the fallback inside `owned_node` itself. Structured clone,
+event retargeting and messaging decode no `NodeId` natively — they run through
+the bootstrap — so they needed no site here.
+
+The one sink that must *not* be owner-resolved is `stream_target`
+(`document.write` and friends): a stream belongs to the callback realm's own
+arena, so it resolves and then additionally requires local physical membership,
+refusing a same-origin foreign document rather than writing into it.
+
+### 2. Imported-identity capture and replay
+
+`genet-scripted-dom` gains `CapturedNodeId { arena, serial }` — an identity, as
+against a serial, which is not one. Once adoption moves nodes with their
+identity intact, two arenas can hold the same serial, so a journal carrying
+only the serial replays onto whichever node the replaying arena happens to have
+allocated at that index. That is the consumer audit's finding 2, and it is
+worse than the panic in finding 1 because it is silent.
+
+`ScriptedDom` now keeps an **import registry**: the set of arenas it has
+imported nodes from, written by `transfer_detached_subtree_to` as part of the
+transfer it already performs. `try_capture_node_identity` records the origin
+arena instead of refusing a foreign one it can account for;
+`try_remint_node_identity` translates a local origin through the existing
+serial check, translates a registered imported origin by packing the identity
+and checking physical membership, and refuses an unregistered origin with the
+new `NodeIdentityError::UnknownOriginArena` rather than reminting.
+
+`genet-scripted`'s `RecordedMutation` carries `CapturedNodeId` in every node
+field, and gains `replay_node` / `replay_ids`, which translate through the
+registry and return the typed `ReplayError::UnknownOrigin` / `Unresolvable`.
+Every identity in a record resolves before a replayer touches the document, so
+one unknown origin refuses the record rather than half-applying it. The
+fallible path is the only path in `capture.rs`, including its tests, which
+previously asserted against the panicking `capture_node_id`.
+
+The wire format changed rather than gaining a version shim, per the doc
+policy's §3. The retired `layout` field stays as it was.
+
+**What stopped refusing, deliberately.** The old
+`recorder_refuses_imported_batch_without_consuming_live_mutations` asserted the
+placeholder: an adopted node's first destination mutation refused the whole
+batch. That is now the supported case, and the test became
+`recorder_records_an_adopted_node_and_replay_resolves_the_same_live_node`. The
+exported-readback refusal, the historical-removal representability and the
+identity-space refusals are unchanged.
+
+### Named regression manifest
+
+| Regression | Where |
+|---|---|
+| `reflector_locality_uses_owner_not_raw_id` (Boa and Nova) | `script-engine-boa/lib.rs`, `script-engine-nova/tests/realms.rs` — now driving `local_reflector_data`; canonical and uncached equal raw ids, prototype changes, non-reflectors, forced GC |
+| `owner_resolved_native_reads` (Boa and Nova) | `script-runtime-api/tests/cross_arena_adoption.rs` — after adoption, the attribute, `textContent` and `innerHTML` sinks reached from the creation realm all write the owning arena, and the creation arena no longer holds the node |
+| `recorder_records_an_adopted_node_and_replay_resolves_the_same_live_node` | `genet-scripted/capture.rs` — the record names the origin arena, and every identity in it replays to the live imported node |
+| `replay_refuses_a_serial_from_an_unregistered_arena` | `genet-scripted/capture.rs` — two stores whose serials collide; replay refuses with `UnknownOrigin` instead of resolving the decoy, and the same record still replays in its own arena |
+| `adopted_node_capture_replays_to_the_same_live_node` (Boa and Nova) | `genet-scripted/document.rs` — a child-realm `<p>` adopted into the parent document, mutated there, recorded and replayed to the same live node through a real two-realm document |
+| `recorder_refuses_exported_readback_without_consuming_source_journal` | `genet-scripted/capture.rs` — retained unchanged |
+
+### Gates
+
+Runner SHA-256s: `pre`
+`81e63419d128b501e5ed71e278fbd5c956cbaf6a2c0708b530e5bf1e5c886ec0`, built from
+`741bf726eb4` **before the first edit**; `post`
+`60f5600817c9f900f174dea601dec89356d7fd98e7d704bf094513cb720f1a24`.
+`Cargo.lock` is git-ignored here, so both digests are recorded in the receipt;
+the whole difference between them is one added `serde` edge on
+`genet-scripted-dom`, with no revision movement — which is what makes the null
+census below readable rather than two effects cancelling.
+
+Census, disk mode, `--engine boa --renderer livery --jobs 8 --timeout 240`:
+
+| Subset | Files | Subtests passed (pre → post) | File moves | Subtest moves |
+|---|---|---|---|---|
+| `dom` | 698 | 46,593 → 46,593 | 0 | 0 |
+| `html/semantics/embedded-content/the-iframe-element` | 164 | 23 → 23 | 0 | 0 |
+| `shadow-dom` | 314 | 1,522 → 1,522 | 0 | 0 |
+| `webmessaging` | 160 | 169 → 169 | 0 | 0 |
+
+Zero pass-to-fail movements, so nothing needed explaining or fixing. Twelve of
+the fourteen canonical testharness slices report `unexpected=0`; broad `dom`
+reports 59 and `dom/nodes` 35, the same counts the ordinary-adoption lane
+recorded, and the census shows this phase moved neither. `dom` and `dom/nodes`
+were not repinned, and the protected loss `Node-isConnected.html: Test with
+iframes` was not touched. Both reftest guards report `unexpected=0`. Both Ortet
+receipts are unchanged — `article` `0x6377ba8a6bf4dbc9` and `frames`
+`0x97bdd4bd9e03ec02`, three consecutive matching captures each.
+
+Native: the release `script-runtime-api` suite passes **520 tests, zero failed,
+two ignored** (the two live-iframe relocation fixtures, which belong to the next
+lane) — 518 before this phase plus its two accessor regressions. The debug suite
+matches. `genet-scripted` with `scripted-nova` passes 115 library and 2
+integration tests; `genet-scripted-dom`, both engine adapters and the engine API
+pass. Clippy on all six touched crates with `--all-targets` exits clean
+(warnings retained in the log), rustfmt is clean on every touched file, and
+`cargo check --workspace --features genet-wpt/netfetch` passes.
+
+### What this phase does not do
+
+It does not widen the adoption boundary: associated template/shadow trees and
+browsing-context-bearing subtrees still refuse. It does not implement a capture
+*replayer* — it implements the identity translation a replayer needs, and proves
+it against real records. It does not touch full G5, headed acceptance, or frame
+teardown and navigation.

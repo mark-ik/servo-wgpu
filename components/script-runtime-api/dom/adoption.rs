@@ -31,6 +31,71 @@ impl AgentDomState {
     }
 }
 
+/// A reflector resolved to the host that **physically owns** its node, together
+/// with the `NodeId` that host's arena stores it under.
+///
+/// This is the only handle a native sink may dereference. It exists so the
+/// arena a node is read in cannot be chosen separately from the node itself:
+/// after adoption a node's creation realm and its owning store are independent,
+/// so an id decoded here and dereferenced in "the current document" is a
+/// different node, or none.
+pub(crate) struct OwnedNode {
+    host: SharedHost,
+    id: NodeId,
+}
+
+impl OwnedNode {
+    /// The identity, valid in [`Self::with_dom`]'s arena and nowhere else.
+    pub(crate) fn id(&self) -> NodeId {
+        self.id
+    }
+
+    /// The full opaque identity, for boundaries that carry a raw `u64`.
+    pub(crate) fn raw(&self) -> u64 {
+        self.id.raw()
+    }
+
+    pub(crate) fn host(&self) -> &SharedHost {
+        &self.host
+    }
+
+    /// Run `f` against the arena that actually stores this node.
+    pub(crate) fn with_dom<R>(&self, f: impl FnOnce(&mut ScriptedDom) -> R) -> R {
+        let mut host = self.host.borrow_mut();
+        f(&mut host.dom)
+    }
+
+    /// Run `f` against the owning host, for a native that must touch the arena
+    /// *and* something beside it (pins, the already-started flag).
+    pub(crate) fn with_host<R>(&self, f: impl FnOnce(&mut HostState) -> R) -> R {
+        let mut host = self.host.borrow_mut();
+        f(&mut host)
+    }
+}
+
+/// Resolve a genuine reflector's data to its owning host. `Err` for a node no
+/// live store holds and for a cross-origin owner; the caller has already
+/// established that `raw` came from a reflector.
+pub(crate) fn resolve_owner<C: CallCx + ?Sized>(
+    cx: &mut C,
+    raw: u64,
+) -> Result<OwnedNode, C::Error> {
+    let Some(start) = current_host(cx) else {
+        return Err(cx.error("DOM host is unavailable"));
+    };
+    let id = NodeId::from_raw(raw);
+    let Some((owner, host)) = owner_host(&start, id) else {
+        return Err(cx.error("DOM node is no longer live"));
+    };
+    let realm = cx.current_realm();
+    if let Some(agent) = start.borrow().agent.upgrade() {
+        if !agent.borrow().frames.same_origin(realm, owner) {
+            return Err(cx.error("SecurityError: cross-origin DOM access"));
+        }
+    }
+    Ok(OwnedNode { host, id })
+}
+
 pub(crate) fn current_host<C: CallCx + ?Sized>(cx: &C) -> Option<SharedHost> {
     cx.host_data()?.downcast::<RefCell<HostState>>().ok()
 }
@@ -122,35 +187,25 @@ pub(crate) fn host_for_call<E: ScriptEngine>(cx: &mut E::CallCx<'_>) -> Option<S
     Some(host)
 }
 
+/// Liveness and same-origin check only, for callers that do not go on to read
+/// the arena (the cross-arena reads: adoption itself, and the foreign/local
+/// report the bootstrap refuses adoption with).
 pub(crate) fn validate<C: CallCx + ?Sized>(cx: &mut C, raw: u64) -> Result<(), C::Error> {
-    let Some(host) = current_host(cx) else {
-        return Err(cx.error("DOM host is unavailable"));
-    };
-    let Some((owner, _)) = owner_host(&host, NodeId::from_raw(raw)) else {
-        return Err(cx.error("DOM node is no longer live"));
-    };
-    let realm = cx.current_realm();
-    if let Some(agent) = host.borrow().agent.upgrade() {
-        if !agent.borrow().frames.same_origin(realm, owner) {
-            return Err(cx.error("SecurityError: cross-origin DOM access"));
-        }
-    }
-    Ok(())
+    resolve_owner(cx, raw).map(|_| ())
 }
 
+/// A multi-node mutation must stay inside one arena: the operands are already
+/// owner-resolved, so this compares the stores they resolved to rather than
+/// resolving them a second time.
 pub(crate) fn require_same_owner<C: CallCx + ?Sized>(
     cx: &mut C,
-    ids: &[u64],
+    nodes: &[&OwnedNode],
 ) -> Result<(), C::Error> {
-    let host = current_host(cx).ok_or_else(|| cx.error("DOM host is unavailable"))?;
-    let mut first = None;
-    for &raw in ids {
-        let (realm, _) = owner_host(&host, NodeId::from_raw(raw))
-            .ok_or_else(|| cx.error("DOM node is no longer live"))?;
-        if first.is_some_and(|first| first != realm) {
-            return Err(cx.error("Cross-arena mutation requires an adoption transaction"));
-        }
-        first = Some(realm);
+    if nodes
+        .windows(2)
+        .any(|pair| !Rc::ptr_eq(&pair[0].host, &pair[1].host))
+    {
+        return Err(cx.error("Cross-arena mutation requires an adoption transaction"));
     }
     Ok(())
 }

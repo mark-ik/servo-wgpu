@@ -2481,6 +2481,105 @@ mod tests {
             assert_eq!(doc.rt.value_to_string(&value).unwrap(), "75px");
         }
 
+        /// A node created in the child realm, adopted into the parent document
+        /// and then mutated there: its identity still carries the child arena,
+        /// so the capture record must name that origin and replay must
+        /// translate it back to the same live node rather than remint a serial.
+        fn adopted_node_capture_replays_to_the_same_live_node<E: ScriptEngine>() {
+            use crate::capture::{
+                DomCaptureRecord, DomCaptureRecorder, RecordedMutation, read_capture_records,
+            };
+            let mut doc = LiveryScriptedDocument::<E>::parse(
+                r#"<body><iframe id="f" srcdoc='<body><p id="target">child</p></body>'></iframe></body>"#,
+            )
+            .expect("hosted document");
+            doc.pump(0.0);
+            let _ = doc.frame(400, 300);
+            let child_realm = doc.rt.frame_realms(script_engine_api::MAIN_REALM)[0].1;
+            let child_arena = doc
+                .rt
+                .host_in_realm(child_realm)
+                .expect("child host")
+                .borrow()
+                .dom
+                .arena_id();
+            doc.evaluate(
+                "var p = document.getElementById('f').contentWindow.document.getElementById('target');                 p.remove(); document.body.appendChild(document.adoptNode(p));",
+            )
+            .expect("cross-arena adoption");
+            let _ = doc.frame(400, 300);
+            let host = doc
+                .rt
+                .host_in_realm(script_engine_api::MAIN_REALM)
+                .expect("parent host");
+            let adopted = {
+                let h = host.borrow();
+                find_id(&h.dom, h.dom.document(), "target").expect("adopted into the parent arena")
+            };
+            assert_eq!(
+                adopted.origin_arena_id(),
+                child_arena,
+                "adoption preserves the child arena's identity"
+            );
+            assert_ne!(child_arena, host.borrow().dom.arena_id());
+            let path = std::env::temp_dir().join(format!(
+                "genet-adopted-capture-{}-{}.bin",
+                std::process::id(),
+                adopted.raw()
+            ));
+            let mut recorder = {
+                let mut h = host.borrow_mut();
+                DomCaptureRecorder::open_at_path(&path, &mut h.dom, &[]).expect("recorder")
+            };
+            doc.evaluate("p.setAttribute('data-adopted', '1');")
+                .expect("mutate the adopted node in its new document");
+            let recorded = {
+                let mut h = host.borrow_mut();
+                recorder
+                    .record_pending(&mut h.dom)
+                    .expect("record the batch")
+            };
+            assert!(recorded >= 1, "the mutation was recorded");
+            let records = read_capture_records(&path).expect("read back");
+            let mut attribute = None;
+            for record in &records {
+                if let DomCaptureRecord::MutationBatch { mutations, .. } = record {
+                    for mutation in mutations {
+                        if let RecordedMutation::AttributeChanged { node, name, .. } = mutation {
+                            if name.local == "data-adopted" {
+                                attribute = Some((*node, mutation.clone()));
+                            }
+                        }
+                    }
+                }
+            }
+            let (captured, mutation) = attribute.expect("the adopted node's attribute record");
+            assert_eq!(
+                captured.arena, child_arena,
+                "the record names the origin arena, not the recording one"
+            );
+            let h = host.borrow();
+            assert_eq!(
+                mutation.replay_node(&h.dom).expect("replay translation"),
+                adopted,
+                "replay resolves to the same live node"
+            );
+            assert!(h.dom.is_live(adopted));
+            drop(h);
+            drop(recorder);
+            let _ = std::fs::remove_file(path);
+        }
+
+        #[test]
+        fn adopted_node_capture_replays_to_the_same_live_node_on_boa() {
+            adopted_node_capture_replays_to_the_same_live_node::<BoaEngine>();
+        }
+        #[test]
+        #[cfg(all(target_pointer_width = "64", feature = "scripted-nova"))]
+        fn adopted_node_capture_replays_to_the_same_live_node_on_nova() {
+            adopted_node_capture_replays_to_the_same_live_node::<script_engine_nova::NovaEngine>();
+        }
+
         #[test]
         fn child_realm_mutations_render_on_boa() {
             child_realm_mutations_render::<BoaEngine>();

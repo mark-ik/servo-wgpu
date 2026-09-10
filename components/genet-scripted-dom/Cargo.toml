@@ -24,6 +24,11 @@ html5ever = { workspace = true }
 # Reused for `set_inner_html` fragment parsing: parse via StaticDocument (a LayoutDom),
 # then walk it into the mutable arena. Avoids a second TreeSink impl.
 genet-static-dom = { version = "0.1.0", path = "../genet-static-dom" }
+# Capture identities travel through a serialized journal. The `capture` feature
+# of layout-dom-api already puts serde in this crate's graph; a captured node
+# identity is this crate's own type, so it derives here rather than being
+# mirrored downstream.
+serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
 postcard = { workspace = true }

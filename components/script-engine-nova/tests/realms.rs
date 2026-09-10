@@ -485,7 +485,7 @@ fn reflector_locality_uses_owner_not_raw_id() {
             cx: &mut <E as ScriptEngine>::CallCx<'_>,
         ) -> Result<<E as ScriptEngine>::Value, <E as ScriptEngine>::Error> {
             let value = cx.arg(0);
-            let local = cx.reflector_is_local(&value);
+            let local = cx.local_reflector_data(&value).is_some();
             let raw = cx.reflector_data(&value);
             cx.make_string(&format!("{local}:{raw:?}"))
         }

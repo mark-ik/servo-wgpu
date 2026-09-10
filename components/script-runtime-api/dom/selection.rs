@@ -43,17 +43,8 @@ fn handler<E: ScriptEngine>(cx: &mut E::CallCx<'_>) -> Option<Rc<dyn SelectionHa
 
 // Authored calls can pass independently valid nodes from different documents.
 // A layout handler must never receive a boundary owned by another arena.
-fn same_boundary_owner<E: ScriptEngine>(cx: &mut E::CallCx<'_>, start: u64, end: u64) -> bool {
-    let Some(host) = adoption::current_host(cx) else {
-        return false;
-    };
-    let (Some((_, start_host)), Some((_, end_host))) = (
-        adoption::owner_host(&host, NodeId::from_raw(start)),
-        adoption::owner_host(&host, NodeId::from_raw(end)),
-    ) else {
-        return false;
-    };
-    Rc::ptr_eq(&start_host, &end_host)
+fn same_boundary_owner(start: &adoption::OwnedNode, end: &adoption::OwnedNode) -> bool {
+    Rc::ptr_eq(start.host(), end.host())
 }
 
 fn offset_arg<E: ScriptEngine>(cx: &mut E::CallCx<'_>, index: usize) -> Result<u32, E::Error> {
@@ -69,19 +60,17 @@ impl<E: ScriptEngine> NativeFn<E> for RangeRects {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let start_value = cx.arg(0);
         let end_value = cx.arg(2);
-        let (Some(start), Some(end)) = (
-            cx.local_reflector_data(&start_value)?,
-            cx.local_reflector_data(&end_value)?,
-        ) else {
+        let (Some(start), Some(end)) = (cx.owned_node(&start_value)?, cx.owned_node(&end_value)?)
+        else {
             return cx.make_string("");
         };
-        if !same_boundary_owner::<E>(cx, start, end) {
+        if !same_boundary_owner(&start, &end) {
             return cx.make_string("");
         }
         let start_offset = offset_arg::<E>(cx, 1)?;
         let end_offset = offset_arg::<E>(cx, 3)?;
         let rects = handler::<E>(cx)
-            .map(|h| h.range_rects(start, start_offset, end, end_offset))
+            .map(|h| h.range_rects(start.raw(), start_offset, end.raw(), end_offset))
             .unwrap_or_default();
         let encoded = rects
             .iter()
@@ -99,14 +88,11 @@ impl<E: ScriptEngine> NativeFn<E> for VisualSelection {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let start_value = cx.arg(0);
         let end_value = cx.arg(2);
-        let points = match (
-            cx.local_reflector_data(&start_value)?,
-            cx.local_reflector_data(&end_value)?,
-        ) {
-            (Some(start), Some(end)) if same_boundary_owner::<E>(cx, start, end) => {
+        let points = match (cx.owned_node(&start_value)?, cx.owned_node(&end_value)?) {
+            (Some(start), Some(end)) if same_boundary_owner(&start, &end) => {
                 let start_offset = offset_arg::<E>(cx, 1)?;
                 let end_offset = offset_arg::<E>(cx, 3)?;
-                Some((start, start_offset, end, end_offset))
+                Some((start.raw(), start_offset, end.raw(), end_offset))
             },
             _ => None,
         };

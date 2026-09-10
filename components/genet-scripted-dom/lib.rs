@@ -52,6 +52,7 @@ pub enum NodeIdentityError {
     InvalidLocalIndex,
     UnallocatedIdentity,
     CaptureRequiresTranslation,
+    UnknownOriginArena,
 }
 
 impl std::fmt::Display for NodeIdentityError {
@@ -65,10 +66,39 @@ impl std::fmt::Display for NodeIdentityError {
             Self::CaptureRequiresTranslation => {
                 "foreign-origin node requires explicit capture translation"
             },
+            Self::UnknownOriginArena => {
+                "captured node names an arena this document never imported from"
+            },
         })
     }
 }
 impl std::error::Error for NodeIdentityError {}
+
+/// A node identity as it travels through a capture journal: the arena that
+/// allocated the node, and that arena's allocation serial.
+///
+/// A bare serial is not an identity. Once adoption moves a node between stores
+/// with its identity intact, two arenas can hold the same serial, so a journal
+/// that recorded only the serial would replay onto whichever node the replaying
+/// arena happens to have allocated at that index. Naming the origin arena makes
+/// that unrepresentable: replay either finds the arena in the destination's
+/// import registry or refuses.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
+pub struct CapturedNodeId {
+    /// The allocating arena, matching [`NodeId::origin_arena_id`].
+    pub arena: u32,
+    /// The allocation serial inside `arena`, matching [`NodeId::local_index`].
+    pub serial: u64,
+}
+
+impl CapturedNodeId {
+    fn of(id: NodeId) -> Self {
+        Self {
+            arena: id.origin_arena_id(),
+            serial: id.local_index(),
+        }
+    }
+}
 
 impl NodeId {
     pub const LOCAL_BITS: u32 = 40;
@@ -180,6 +210,11 @@ impl Node {
 /// ever created.
 pub struct ScriptedDom {
     nodes: NodeStore,
+    /// Arenas this store has imported nodes from, in adoption order. The
+    /// capture/replay translation registry: an identity whose origin arena is
+    /// not this arena and not in here is not translatable here, and replay
+    /// refuses it rather than reminting it onto a local serial collision.
+    imported_arenas: std::collections::BTreeSet<u32>,
     /// Monotonic id counter. The next node's untagged value; never decremented,
     /// so ids are never reused even as the store is pruned.
     next_id: u64,
@@ -360,6 +395,7 @@ impl ScriptedDom {
         let arena_id = next_arena_id(&NEXT_ARENA_ID)?;
         let mut dom = Self {
             nodes: NodeStore::default(),
+            imported_arenas: std::collections::BTreeSet::new(),
             next_id: 0,
             // Placeholder; overwritten by the `push` below so the root id
             // carries this document's tag like every other node.
@@ -443,6 +479,63 @@ impl ScriptedDom {
     pub fn remint_node_id(&self, raw: u64) -> NodeId {
         self.try_remint_node_id(raw)
             .expect("captured node identity translation failed")
+    }
+
+    pub(crate) fn record_imported_arena(&mut self, arena: u32) {
+        self.imported_arenas.insert(arena);
+    }
+
+    /// The arenas this store has imported nodes from, its half of the capture
+    /// translation registry.
+    pub fn imported_arenas(&self) -> impl Iterator<Item = u32> + '_ {
+        self.imported_arenas.iter().copied()
+    }
+
+    /// Capture a full identity: the origin arena plus its serial.
+    ///
+    /// A locally allocated node needs only its serial to be in range. An
+    /// imported one must still be physically here, since its serial means
+    /// nothing without the arena that minted it; a node this store has never
+    /// held and never imported from is refused for explicit translation.
+    pub fn try_capture_node_identity(
+        &self,
+        id: NodeId,
+    ) -> Result<CapturedNodeId, NodeIdentityError> {
+        if id.origin_arena_id() == self.arena_id {
+            if id.local_index() >= self.next_id {
+                return Err(NodeIdentityError::UnallocatedIdentity);
+            }
+        } else if !self.imported_arenas.contains(&id.origin_arena_id()) {
+            return Err(NodeIdentityError::CaptureRequiresTranslation);
+        }
+        Ok(CapturedNodeId::of(id))
+    }
+
+    /// Translate a captured identity back into a `NodeId` this store can use.
+    ///
+    /// Local origins go through the ordinary serial check. An imported origin
+    /// is translated only when this store's registry actually records that
+    /// arena and still holds the node; an unknown origin refuses with
+    /// [`NodeIdentityError::UnknownOriginArena`] instead of reminting a serial
+    /// that would resolve to a different live node.
+    pub fn try_remint_node_identity(
+        &self,
+        captured: CapturedNodeId,
+    ) -> Result<NodeId, NodeIdentityError> {
+        if captured.arena == self.arena_id {
+            return self.try_remint_node_id(captured.serial);
+        }
+        if !self.imported_arenas.contains(&captured.arena) {
+            return Err(NodeIdentityError::UnknownOriginArena);
+        }
+        if captured.serial > NodeId::MAX_LOCAL_INDEX {
+            return Err(NodeIdentityError::InvalidLocalIndex);
+        }
+        let id = NodeId((u64::from(captured.arena) << NodeId::LOCAL_BITS) | captured.serial);
+        if !self.nodes.contains_key(&id.raw()) {
+            return Err(NodeIdentityError::UnallocatedIdentity);
+        }
+        Ok(id)
     }
 
     pub fn try_create_element(&mut self, name: QualName) -> Result<NodeId, NodeIdentityError> {

@@ -440,11 +440,13 @@ mod native {
             }
         }
 
-        fn reflector_is_local(&mut self, value: &Self::Value) -> bool {
+        fn local_reflector_data(&mut self, value: &Self::Value) -> Option<ReflectorData> {
             let current = u64::from(self.current_realm());
             match value.get(self.agent, self.gc.nogc()) {
-                Value::EmbedderObject(eo) => eo.embedder_owner(self.agent) == current,
-                _ => false,
+                Value::EmbedderObject(eo) => {
+                    (eo.embedder_owner(self.agent) == current).then(|| eo.embedder_data(self.agent))
+                },
+                _ => None,
             }
         }
 

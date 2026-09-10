@@ -6,7 +6,7 @@
 //! generic XPath 1.0 engine, then serialize the result for the JS `XPathResult`
 //! wrapper in `bootstrap.js`.
 
-use crate::LocalReflectorCx as _;
+use crate::OwnerResolvedCx as _;
 use std::cmp::Ordering;
 use std::rc::Rc;
 
@@ -507,19 +507,19 @@ impl<E: ScriptEngine> NativeFn<E> for EvaluateXPath {
         let expr_v = cx.arg(0);
         let expression = cx.value_to_string(&expr_v)?;
         let context_v = cx.arg(1);
-        let Some(context_raw) = cx.local_reflector_data(&context_v)? else {
+        let Some(context_raw) = cx.owned_node(&context_v)? else {
             return cx.make_string("error\nDocument.evaluate requires a context node");
         };
 
         // The expression is argument zero; route by the context reflector in
         // argument one rather than the native function's creation realm.
         let owner = adoption::current_host(cx)
-            .and_then(|host| adoption::owner_host(&host, NodeId::from_raw(context_raw)));
+            .and_then(|host| adoption::owner_host(&host, context_raw.id()));
         let record = owner
             .map(|(_, host)| {
                 let host = host.borrow();
                 let dom = &host.dom;
-                let context_id = NodeId::from_raw(context_raw);
+                let context_id = context_raw.id();
                 if !dom.is_live(context_id) {
                     return "error\nDocument.evaluate context node is not live".to_string();
                 }

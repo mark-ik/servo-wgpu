@@ -34,7 +34,7 @@
 //! reason: they are host facts a native reads, set by the parser driver at the
 //! spec's points rather than guessed by the bootstrap.
 
-use crate::LocalReflectorCx as _;
+use crate::OwnerResolvedCx as _;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
@@ -466,8 +466,11 @@ fn stream_target<E: ScriptEngine>(
     cx: &mut E::CallCx<'_>,
     value: &E::Value,
 ) -> Result<Option<NodeId>, E::Error> {
-    let target = cx.local_reflector_data(value)?.map(NodeId::from_raw);
+    let owned = cx.owned_node(value)?;
+    let target = owned.as_ref().map(super::adoption::OwnedNode::id);
     if let Some(node) = target {
+        // The stream's arena must be the callback realm's own, not merely some
+        // same-origin store the owner-resolved accessor would happily reach.
         let local = with_host::<E, _>(cx, |host| host.dom.is_live(node)).unwrap_or(false);
         if !local {
             return Err(cx.error("document stream requires its owning document realm"));
@@ -627,12 +630,12 @@ pub(crate) struct StageScripts;
 impl<E: ScriptEngine> NativeFn<E> for StageScripts {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let a0 = cx.arg(0);
-        let Some(id) = cx.local_reflector_data(&a0)? else {
+        let Some(id) = cx.owned_node(&a0)? else {
             return cx.make_string("0");
         };
         let a1 = cx.arg(1);
         let self_only = cx.value_to_string(&a1).unwrap_or_default() == "1";
-        let node = NodeId::from_raw(id);
+        let node = id.id();
         let staged = with_host::<E, _>(cx, |host| {
             if !host.dom.is_live(node) || !in_active_document(&host.dom, node) {
                 return 0;
@@ -701,11 +704,11 @@ impl<E: ScriptEngine> NativeFn<E> for CopyScriptStarted {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let a0 = cx.arg(0);
         let a1 = cx.arg(1);
-        let from = cx.local_reflector_data(&a0)?;
-        let to = cx.local_reflector_data(&a1)?;
+        let from = cx.owned_node(&a0)?;
+        let to = cx.owned_node(&a1)?;
         if let (Some(from), Some(to)) = (from, to) {
-            let from = NodeId::from_raw(from);
-            let to = NodeId::from_raw(to);
+            let from = from.id();
+            let to = to.id();
             with_host::<E, _>(cx, |host| {
                 if script_started(host, from) {
                     host.markup.already_started.insert(to);

@@ -160,8 +160,9 @@ impl ScriptedDom {
     /// by their owners, and parsing or an observer group must not be active. Insertion
     /// is a separate operation through the destination's ordinary mutation
     /// boundary; this function emits no invented DOM mutation record.
-    /// Imported IDs retain their birth namespace, so destination capture must
-    /// use an explicit import translation; `try_capture_node_id` refuses them.
+    /// Imported IDs retain their birth namespace, so destination capture goes
+    /// through the identity pair (`try_capture_node_identity`), which names the
+    /// origin arena this call registers on the destination.
     pub fn transfer_detached_subtree_to(
         &mut self,
         destination: &mut Self,
@@ -200,6 +201,13 @@ impl ScriptedDom {
                 .remove(&id.raw())
                 .expect("preflight checked every member");
             destination.nodes.insert(id.raw(), node);
+        }
+        // Register every foreign origin the destination now holds, so capture
+        // and replay can translate an imported identity instead of refusing it.
+        for id in &members {
+            if id.origin_arena_id() != destination.arena_id() {
+                destination.record_imported_arena(id.origin_arena_id());
+            }
         }
         self.structure_epoch = source_epoch;
         destination.structure_epoch = destination_epoch;
