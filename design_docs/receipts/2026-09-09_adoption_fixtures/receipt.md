@@ -21,7 +21,7 @@ commits its plan update, a line naming this fixture file belongs there.
 
 ## Manifest
 
-`components/script-runtime-api/tests/cross_arena_adoption.rs`, twinned on Boa
+`components/script-runtime-api/tests/cross_arena_adoption_fixtures.rs`, twinned on Boa
 and Nova via the repo's `both_engines!` macro convention (same shape as
 `mutation_observer.rs`). Two documents — a same-origin iframe (`srcdoc`, not a
 foreign `src`: cross-origin `contentDocument` is null by design, a different
@@ -120,4 +120,4 @@ transient, not a code defect.
   so no Rust-level rename is needed on this file.
 - Once `design_docs/2026-09-08_realms_plan.md` gains the sections this
   receipt currently points at instead of quoting, add a line there citing
-  `components/script-runtime-api/tests/cross_arena_adoption.rs` by path.
+  `components/script-runtime-api/tests/cross_arena_adoption_fixtures.rs` by path.
