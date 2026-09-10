@@ -11,11 +11,11 @@ UIAutomation receipt at source `28fee141665`. **2026-09-10:** the O2
 rejection gate is additionally closed natively at current source `f949210ca32`
 using `Action::Focus` (accept, stale-reject, unadvertised-reject all
 exercised through the real UIAutomation bridge); the 2026-09-05 receipt's
-`Action::Click`/Invoke leg does not reproduce at this source (AccessKit
-advertises no UIA patterns on `article.html`'s hyperlinks) and is an open
-residual scoped to `accessible_pointer_target` in
-`components/genet-documents/src/engines/livery.rs` -- see
-`design_docs/receipts/2026-09-09_o2_bridge_action/receipt.md`. Browser-hosted
+`Action::Click`/Invoke leg was first reported as not reproducing, then
+shown on 2026-09-10 to be a harness artefact (a 640x400 physical window on a
+2.0-scale display puts the links below the fold, where Click is correctly
+stripped), so that acceptance stands and no code residual remains -- see the
+correction in `design_docs/receipts/2026-09-09_o2_bridge_action/receipt.md`. Browser-hosted
 scripting remains open: the wasm host still constructs only
 `LiverySessionEngine`.
 Crates.io publication is a later packaging precondition: this workspace
@@ -886,6 +886,17 @@ is already accepted by O2's UIAutomation receipt below.
   AccessKit session-generation custody is implemented, and its Windows native
   bridge-action gate was accepted by the O2 UIAutomation receipt at
   `28fee141665`. Publication remains a later packaging decision.
+
+- 2026-09-10 (later): **The Invoke residual below is withdrawn.** An isolated
+  bisect by the web-platform lanes session found the symptom identical at
+  the earlier source and the suspected commits byte-identical on that path:
+  `ortet --size` is physical pixels, the display scale is 2.0, so the 640x400
+  receipt window is a 320x200 CSS viewport and `article.html`'s links sit
+  below the fold, where `accessible_pointer_target` returns None and the
+  projection strips Click by design. At 640x1200 both sources expose
+  `InvokePattern` for the two visible links. Harness fix, not code fix: pin
+  the scale or state a CSS viewport, and assert the link's bounds are inside
+  the window before querying. Correction recorded in the O2 receipt.
 
 - 2026-09-10: **O2's rejection gate is closed natively; the 2026-09-05 Invoke
   leg is an open residual, not invalidated.** At current source `f949210ca32`

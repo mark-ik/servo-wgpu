@@ -209,3 +209,28 @@ counterpart, left for the layout lane to bisect. Whether a scripted
 synthetic pointer click should independently confirm a healthy pointer
 pipeline is also open: this receipt's own attempt did not navigate (see
 above), which qualifies rather than confirms the brief's premise.
+
+## Correction, 2026-09-10: the Invoke gap is not a regression
+
+The web-platform lanes session bisected the "Invoke does not reproduce"
+residual above in isolated worktrees: `28fee141665` (a pre-rebase twin of
+`c3da8fba651`, not an ancestor of main) reproduces the symptom identically to
+`f949210ca32`, and the three suspected commits are byte-identical on the
+pointer-target path. Mechanism: `ortet --size` is in physical pixels and this
+display's scale factor is 2.0, not the 1.0 this receipt assumed, so the
+640x400 window is a 320x200 CSS viewport. `article.html`'s nav links lay out
+at CSS y 233..255, below the fold; `Document::accessible_pointer_target`
+(genet-livery `document/scrolling.rs`) returns None at its viewport
+intersection, `unrevisioned_accessibility_projection` strips the Click
+action for off-screen links, and accesskit_windows therefore exposes no
+`InvokePattern`. At 640x1200 both sources expose `InvokePattern` for exactly
+the two in-viewport links. This also explains the pointer-click diagnostic:
+its coordinates targeted a link that was not on screen.
+
+The residual section above is therefore withdrawn as a code defect and
+replaced by a harness requirement: state the receipt size as a CSS viewport
+or pin the scale factor, and assert the link's accessibility bounds fall
+inside the window before querying patterns. The 2026-09-05 Invoke acceptance
+stands. Findings and the three PowerShell probes:
+`C:/Users/mark_/Code/scratch/ortet-uia-bisect-20260910/FINDINGS.md`.
+
