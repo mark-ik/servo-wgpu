@@ -461,7 +461,18 @@ impl Ortet {
             .unwrap_or_default();
         for request in requests {
             match self.a11y.route(&mut *self.session, &request) {
-                RoutedAction::Rejected => {},
+                RoutedAction::Rejected => {
+                    // The fresh-ID publication policy (a11y.rs) refuses any
+                    // request whose host id, generation, revision, or
+                    // advertised action no longer matches the currently
+                    // published tree. Logging it lets a native receipt
+                    // observe the refusal the platform bridge just delivered,
+                    // not merely a unit test's simulated request.
+                    eprintln!(
+                        "ortet: receipt bridge-action rejected target={:?} action={:?}",
+                        request.target_node, request.action
+                    );
+                },
                 RoutedAction::Dispatched => self.request_redraw(),
                 RoutedAction::Click { x, y } => {
                     let _ = self.session.pointer_down(x, y);

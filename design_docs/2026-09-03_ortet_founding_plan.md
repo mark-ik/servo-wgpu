@@ -7,8 +7,17 @@ semantic/pixel output, and stale-session rejection. Browser http(s) resource
 provisioning landed structurally in `35efc1985bc` and its headed HTTP runtime
 gate is accepted in `247a52e612a`. AccessKit session-generation custody is
 landed, and the Windows native bridge-action gate is accepted by the O2
-UIAutomation receipt at source `28fee141665`. Browser-hosted scripting remains
-open: the wasm host still constructs only `LiverySessionEngine`.
+UIAutomation receipt at source `28fee141665`. **2026-09-10:** the O2
+rejection gate is additionally closed natively at current source `f949210ca32`
+using `Action::Focus` (accept, stale-reject, unadvertised-reject all
+exercised through the real UIAutomation bridge); the 2026-09-05 receipt's
+`Action::Click`/Invoke leg does not reproduce at this source (AccessKit
+advertises no UIA patterns on `article.html`'s hyperlinks) and is an open
+residual scoped to `accessible_pointer_target` in
+`components/genet-documents/src/engines/livery.rs` -- see
+`design_docs/receipts/2026-09-09_o2_bridge_action/receipt.md`. Browser-hosted
+scripting remains open: the wasm host still constructs only
+`LiverySessionEngine`.
 Crates.io publication is a later packaging precondition: this workspace
 inherits `publish = false`. The `fleece` carve-out is reconciled with the
 boundary plan's §9.1 (see Findings); the witness still names fleece on every
@@ -877,3 +886,50 @@ is already accepted by O2's UIAutomation receipt below.
   AccessKit session-generation custody is implemented, and its Windows native
   bridge-action gate was accepted by the O2 UIAutomation receipt at
   `28fee141665`. Publication remains a later packaging decision.
+
+- 2026-09-10: **O2's rejection gate is closed natively; the 2026-09-05 Invoke
+  leg is an open residual, not invalidated.** At current source `f949210ca32`
+  (`f949210ca324695bde59c80728933429a146492b`), a real Windows UIAutomation
+  client (`support/ci/run_ortet_o2_bridge_action_focus_receipt.ps1`) exercised
+  `a11y.rs`'s fresh-ID publication policy with `Action::Focus` instead of
+  Click/Invoke: `AutomationElement.SetFocus()` forwards `Action::Focus`
+  unconditionally through `accesskit_windows`, reaching the same `route()`
+  the O2 gate is about. Three cases against `article.html`, all under
+  `C:/Users/mark_/Code/testing/genet/ortet-o2-bridge-action-20260909/`:
+  a current `SetFocus()` on `Field notes` dispatches and the focused
+  projection reads back as `Field notes` through
+  `AutomationElement.FocusedElement` (`focus-accept/`); the same
+  client-cached `Field notes` element reused for a second `SetFocus()` after
+  its own republish is refused (`focus-stale-reject/`); and `SetFocus()` on
+  the non-interactive `Ortet` heading is refused (`focus-unadvertised-reject/`).
+  Both rejections land at the OS/UIAutomation layer itself -- an empty-message
+  HRESULT failure for the retired host id, and UI Automation's own
+  `IsKeyboardFocusable` gate for the unadvertised case -- before Ortet's
+  `drain_accessibility_actions` rejection log line fires; `route()`'s own
+  generation-mismatch and unadvertised-action branches remain verified by
+  `a11y.rs`'s four in-process unit tests, not by this native evidence.
+
+  Reproducing the 2026-09-05 receipt's `InvokePattern.Invoke()` positive path
+  at this source finds `AutomationElement.GetSupportedPatterns()` empty and
+  `InvokePattern` unavailable for every hyperlink in `article.html`, so it
+  does not reproduce; this does not invalidate the 2026-09-05 acceptance,
+  which recorded what it observed on `28fee14166580c19df464fa26845e2b998d9d75e`
+  at that time. Candidate range: 11 commits touched the pointer-target path
+  since that source, notably `9a994bb4193` (Shadow DOM/Livery flat tree),
+  `f2fb66aa1c9` (Livery hit-testing), and `cfb7cbc2e55` (nested browsing
+  contexts). The defining function is `accessible_pointer_target` in
+  `components/genet-documents/src/engines/livery.rs` (currently line 650) and
+  its Livery counterpart. Per ruling, this slice does not widen into
+  `components/genet-livery` or `components/genet-documents` to bisect it;
+  that is left to the layout lane. Full detail, reproduction commands, and
+  environment are in
+  `design_docs/receipts/2026-09-09_o2_bridge_action/receipt.md`, including an
+  open question: this receipt's own scripted synthetic-pointer-click attempt
+  at the link's screen coordinates did not navigate to `notes.html`, which
+  qualifies rather than confirms an earlier claim that the pointer pipeline
+  is independently healthy.
+
+  `cargo test -p ortet --offline` passed at this source (tested tree
+  `f949210ca32`; no scripted engine is exercised by this slice). No Rust
+  source changed beyond a rejection-path log line in
+  `ports/ortet/src/shell.rs`'s `drain_accessibility_actions`.
