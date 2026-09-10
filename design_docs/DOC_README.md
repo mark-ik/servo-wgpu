@@ -567,6 +567,19 @@ same session; links out of it are rewritten for its new depth.
   that received the adoption, and refuse an origin the registry does not know.
   When identity is packed out of two fields, check whether every consumer
   carries both before trusting a round trip.
+- **A removal that runs script is not a removal.** Destroying a nested browsing
+  context looked like one operation and is two: HTML takes the container's
+  content navigable away synchronously, then unloads the document in a queued
+  task, because the removing steps are forbidden from running script.
+  Dispatching `unload` inline passed every hand-written regression and lost
+  three named WPT subtests that exist to check exactly that. When a spec
+  algorithm says "queue a task", the queue is usually the observable part.
+- **Read the test before believing the brief about it.** This lane was handed a
+  premise that a discarded context reports `document` as null. WPT asserts the
+  opposite, twice, a hundred milliseconds apart — a Window's document is its
+  document, and it is the WindowProxy's `[[Window]]` that a discard replaces.
+  Implementing the premise cost two passes. A named expectation in the tree is
+  cheaper to consult than a plausible sentence about it.
 - **New docs go in `design_docs/`, never `docs/`.** See the policy's two-homes
   section for why both exist and what it would cost to merge them.
 - **The smolweb boundary is spec versus use.** What a protocol *is* belongs to
@@ -831,6 +844,26 @@ outlier. These are not headed scripted-realm or browser-hosted acceptance.
 Remaining code is uncommitted and requires the archived local Boa/Vano patches.
 The plan and continuation ledger hold exact source hashes, maps and named losses.
 
+
+### Browsing-context lifecycle (2026-09-10)
+
+The [browsing-context lifecycle phase](2026-09-08_realms_plan.md#phase-browsing-context-lifecycle-2026-09-10)
+implements HTML's iframe removing steps in their two halves — the container
+loses its content navigable synchronously, the document is unloaded and its
+realm discarded in a queued task — and that one mechanism carries live iframe
+relocation, browsing-context relocation and removed-frame teardown together.
+The engine contract gains `discard_realm_from_call` on both backends; the
+adoption refusal now asks whether an iframe still *holds* a context rather than
+matching its element name, and asks it differently either side of the removal
+steps. Release runtime 526 passed / 0 failed / **0 ignored**, the two live-iframe
+fixtures un-ignored. The census gains 8 named subtests across eight directories
+with zero pass-to-fail movements, including all four `move_iframe_in_dom` files;
+one forward-only repin (`dom_abort_boa`), twelve of fourteen testharness slices
+and both reftest guards at `unexpected=0`, both Ortet receipts unchanged. `dom`
+and `dom/nodes` stay red and unrepinned: `Node-isConnected.html: Test with
+iframes` is now isolated to the parsing-time cross-arena refusal, not to
+iframes. Navigation with a stable `WindowProxy` is open and waiting on a ruling
+from Mark rather than partially built.
 
 ### Owner-resolved accessor and imported-identity replay (2026-09-10)
 

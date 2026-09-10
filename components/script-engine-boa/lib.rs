@@ -912,6 +912,35 @@ impl ScriptEngine for BoaEngine {
         result
     }
 
+    fn discard_realm_from_call(
+        cx: &mut Self::CallCx<'_>,
+        realm: RealmId,
+    ) -> Result<(), RealmError> {
+        if realm == MAIN_REALM {
+            return Err(RealmError::Refused(
+                "the main realm is the agent's initial realm and cannot be discarded",
+            ));
+        }
+        if realm == realm_id_of(cx.ctx) {
+            return Err(RealmError::Refused(
+                "a realm cannot discard the realm it is executing in",
+            ));
+        }
+        let registry = cx
+            .ctx
+            .get_data::<HostCell>()
+            .expect("host cell")
+            .registry
+            .clone();
+        // The registry handle is the only strong root this engine keeps on a
+        // child realm; dropping it is the whole discard.
+        let removed = registry.realms.borrow_mut().remove(&realm);
+        match removed {
+            Some(_) => Ok(()),
+            None => Err(RealmError::NoSuchRealm(realm)),
+        }
+    }
+
     fn call_from_call(
         cx: &mut Self::CallCx<'_>,
         function: &Self::Value,
@@ -1141,6 +1170,68 @@ impl ScriptEngineLive for BoaEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The teardown half of the realm contract. The host discards a browsing
+    /// context from inside a native callback, so the release has to happen
+    /// without unwinding to the engine-level entry - and must refuse the two
+    /// realms it can never be right to free: the agent's initial realm, and the
+    /// one it is standing in.
+    #[test]
+    fn discard_realm_from_call_refuses_main_and_self_and_releases_the_target() {
+        use std::{cell::RefCell, rc::Rc};
+        struct Spawn;
+        impl<E: ScriptEngine> NativeFn<E> for Spawn {
+            fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+                let data = cx.host_data().unwrap();
+                let records = data.downcast_ref::<RefCell<Vec<RealmId>>>().unwrap();
+                let id = E::create_realm_from_call(cx, data.clone(), |child| {
+                    E::eval_from_call(child, "globalThis.marker = 'alive'").map(|_| ())
+                })
+                .unwrap();
+                records.borrow_mut().push(id);
+                cx.make_string(&id.to_string())
+            }
+        }
+        struct Discard;
+        impl<E: ScriptEngine> NativeFn<E> for Discard {
+            fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+                let target = cx.arg(0);
+                let target: RealmId = cx.value_to_string(&target)?.parse().unwrap();
+                assert!(matches!(
+                    E::discard_realm_from_call(cx, MAIN_REALM),
+                    Err(RealmError::Refused(_))
+                ));
+                let here = cx.current_realm();
+                assert!(matches!(
+                    E::discard_realm_from_call(cx, here),
+                    Err(RealmError::Refused(_))
+                ));
+                E::discard_realm_from_call(cx, target).unwrap();
+                assert!(matches!(
+                    E::discard_realm_from_call(cx, target),
+                    Err(RealmError::NoSuchRealm(_))
+                ));
+                Ok(cx.undefined())
+            }
+        }
+        let mut engine = BoaEngine::new().unwrap();
+        let records = Rc::new(RefCell::new(Vec::<RealmId>::new()));
+        engine.set_host_data(records.clone());
+        engine.set_function::<Spawn>("spawn", 0).unwrap();
+        engine.set_function::<Discard>("discard", 1).unwrap();
+        engine.eval("globalThis.id = spawn()").unwrap();
+        let id = records.borrow()[0];
+        let value = engine.eval_in_realm(id, "marker").unwrap();
+        assert_eq!(engine.value_to_string(&value).unwrap(), "alive");
+        engine.eval("discard(id)").unwrap();
+        assert!(matches!(
+            engine.eval_in_realm(id, "marker"),
+            Err(RealmError::NoSuchRealm(_))
+        ));
+        // The agent it was discarded from is untouched.
+        let value = engine.eval("typeof spawn").unwrap();
+        assert_eq!(engine.value_to_string(&value).unwrap(), "function");
+    }
 
     #[test]
     fn reflector_round_trip() {

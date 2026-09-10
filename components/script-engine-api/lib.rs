@@ -486,6 +486,20 @@ pub trait ScriptEngine: Sized {
         Err(RealmError::Unsupported)
     }
 
+    /// Discard a live realm from inside a native callback, making its global
+    /// and intrinsics collectable. This is the browsing-context teardown path:
+    /// the host has already unloaded the document and unregistered its state,
+    /// and asks the engine to release the realm without unwinding to the outer
+    /// [`discard_realm`](Self::discard_realm) entry. Refuses [`MAIN_REALM`] and
+    /// the callback's own current realm - a realm cannot free the frame it is
+    /// running in.
+    fn discard_realm_from_call(
+        _cx: &mut Self::CallCx<'_>,
+        _realm: RealmId,
+    ) -> Result<(), RealmError> {
+        Err(RealmError::Unsupported)
+    }
+
     /// Install a value in the current callback realm's global object.
     fn set_global_from_call(
         _cx: &mut Self::CallCx<'_>,

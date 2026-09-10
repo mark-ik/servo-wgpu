@@ -325,15 +325,17 @@ fn worker_terminate_and_close_work<E: ScriptEngine>() {
     );
 
     rt.eval(
-        "var closed = null; var c = new Worker('selfclose.js'); \
-         c.onmessage = function(e) { closed = e.data; };",
+        // Not `closed`: that is a readonly `Window` attribute, so a global
+        // `var closed = ...` silently keeps the attribute's value.
+        "var closeReply = null; var c = new Worker('selfclose.js'); \
+         c.onmessage = function(e) { closeReply = e.data; };",
     )
     .expect("close");
     assert!(
-        drive_until(&mut rt, "String(closed !== null)"),
+        drive_until(&mut rt, "String(closeReply !== null)"),
         "no close reply"
     );
-    assert_eq!(read(&mut rt, "closed"), "bye");
+    assert_eq!(read(&mut rt, "closeReply"), "bye");
 }
 
 fn module_worker_is_a_named_residual<E: ScriptEngine>() {

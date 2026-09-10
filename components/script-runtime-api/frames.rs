@@ -25,6 +25,11 @@ pub(crate) struct FrameState {
     pub(crate) tree: Option<BrowsingContextTree>,
     contexts: BTreeMap<RealmId, BrowsingContextId>,
     records: BTreeMap<RealmId, FrameRecord>,
+    /// Contexts detached from the tree but not yet unloaded. HTML's "destroy a
+    /// child navigable" splits exactly here: the container stops having a
+    /// content navigable synchronously, and the document is unloaded and the
+    /// context released in a later task, so no removal runs script.
+    pending_teardown: Vec<Vec<(RealmId, Option<BrowsingContextId>)>>,
     pending_main_load: bool,
 }
 
@@ -68,6 +73,61 @@ impl FrameState {
             (Some(tree), Some(from), Some(to)) => tree.is_same_origin(*from, *to),
             _ => false,
         }
+    }
+
+    /// The realm holding `owner`'s nested browsing context, wherever that
+    /// context's parent is. Owner ids are agent-wide identities, so this does
+    /// not assume the removing script runs in the frame's parent realm -
+    /// relocating a live iframe across arenas is exactly the case where it
+    /// does not.
+    fn realm_for_owner(&self, owner: NodeId) -> Option<RealmId> {
+        self.records
+            .iter()
+            .find_map(|(&realm, record)| (record.owner == owner).then_some(realm))
+    }
+
+    /// Whether `owner` still embeds a live nested browsing context.
+    pub(crate) fn holds_context(&self, owner: NodeId) -> bool {
+        self.realm_for_owner(owner).is_some()
+    }
+
+    /// `root` and every realm nested beneath it, ancestor before descendant -
+    /// HTML's order for "unload a document and its descendants", and the
+    /// reverse of the order their state is released in.
+    fn realm_tree(&self, root: RealmId) -> Vec<RealmId> {
+        let mut order = vec![root];
+        let mut index = 0;
+        while index < order.len() {
+            let parent = order[index];
+            for (&realm, record) in &self.records {
+                if record.parent == parent && !order.contains(&realm) {
+                    order.push(realm);
+                }
+            }
+            index += 1;
+        }
+        order
+    }
+
+    /// The synchronous half of destroying a child navigable: `root` and every
+    /// realm beneath it stop being anyone's content navigable. `contentWindow`,
+    /// `window.length` and the adoption preflight all answer from these maps, so
+    /// after this the element is context-free even though its document has not
+    /// been unloaded yet. Returns whether anything was queued.
+    fn detach_subtree(&mut self, root: RealmId) -> bool {
+        let group = self.realm_tree(root);
+        if group.is_empty() || !self.records.contains_key(&root) {
+            return false;
+        }
+        let detached = group
+            .into_iter()
+            .map(|realm| {
+                self.records.remove(&realm);
+                (realm, self.contexts.remove(&realm))
+            })
+            .collect();
+        self.pending_teardown.push(detached);
+        true
     }
 
     fn origin(&self, realm: RealmId) -> String {
@@ -262,6 +322,120 @@ impl<E: ScriptEngine> crate::Runtime<E> {
     }
 }
 
+/// The deferred half of HTML's "destroy a child navigable": unload each already
+/// detached document and release its runtime state. Ancestor documents are
+/// unloaded before their descendants, and state is released child-first, so a
+/// parent's registrations outlive its children's.
+///
+/// Every step is best-effort past the first: a realm whose global already threw
+/// must not leave its siblings half-torn-down, and this runs from a task with
+/// nobody left to report a failure to.
+fn run_pending_teardown<E: ScriptEngine>(
+    cx: &mut E::CallCx<'_>,
+    agent: &Rc<RefCell<crate::AgentState>>,
+) -> Result<(), E::Error> {
+    let cancel = agent.borrow().cancel_realm_tasks.clone();
+    loop {
+        let Some(group) = agent.borrow_mut().frames.pending_teardown.pop() else {
+            return Ok(());
+        };
+        for (realm, _) in &group {
+            let _ = realm_eval::<E>(
+                cx,
+                *realm,
+                "window.dispatchEvent(new Event('pagehide'));                 window.dispatchEvent(new Event('unload'))",
+            );
+        }
+        for (realm, context) in group.iter().rev() {
+            // A parent may still hold this global. Leave it reporting what HTML
+            // says a discarded context reports, before the realm goes.
+            let _ = realm_eval::<E>(cx, *realm, "__discardBrowsingContext()");
+            if let Some(cancel) = cancel
+                .as_ref()
+                .and_then(|value| value.downcast_ref::<E::Value>())
+            {
+                let id = cx.make_string(&realm.to_string())?;
+                let _ = invoke::<E>(cx, cancel, &[id]);
+            }
+            {
+                let mut a = agent.borrow_mut();
+                a.dom_adoption.remove_realm(*realm);
+                a.hosts.remove(realm);
+                a.opaque_roots.remove(realm);
+                a.fetch_realms.retain(|_, owner| owner != realm);
+            }
+            if let Some(context) = *context {
+                if let Some(tree) = agent.borrow_mut().frames.tree.as_mut() {
+                    tree.discard(context);
+                }
+            }
+            let _ = E::discard_realm_from_call(cx, *realm);
+        }
+    }
+}
+
+/// The removal half of the frame surface: the bootstrap's mutation funnel hands
+/// each iframe leaving a connected tree to this, before the tree moves. The
+/// context is detached here and unloaded in the queued task, because HTML's
+/// removing steps must not run script.
+struct DiscardFrame;
+impl<E: ScriptEngine> NativeFn<E> for DiscardFrame {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let value = cx.arg(0);
+        let Some(node) = cx.owned_node(&value)? else {
+            return Ok(cx.undefined());
+        };
+        let owner = node.id();
+        let container = node.owner_realm();
+        drop(node);
+        let Some(agent) = host::<E>(cx).and_then(|h| h.borrow().agent.upgrade()) else {
+            return Ok(cx.undefined());
+        };
+        let realm = agent.borrow().frames.realm_for_owner(owner);
+        let Some(realm) = realm else {
+            return Ok(cx.undefined());
+        };
+        if !agent.borrow_mut().frames.detach_subtree(realm) {
+            return Ok(cx.undefined());
+        }
+        // Queued on the container's realm, which by construction survives the
+        // subtree being destroyed - the same route the initial load takes.
+        realm_eval::<E>(
+            cx,
+            container,
+            "setTimeout(function(){ __runFrameTeardown(); },0)",
+        )?;
+        Ok(cx.undefined())
+    }
+}
+
+/// Drains whatever `__discardFrame` detached. Installed in every realm because
+/// any realm can be the one that removed a frame.
+struct RunFrameTeardown;
+impl<E: ScriptEngine> NativeFn<E> for RunFrameTeardown {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let Some(agent) = host::<E>(cx).and_then(|h| h.borrow().agent.upgrade()) else {
+            return Ok(cx.undefined());
+        };
+        run_pending_teardown::<E>(cx, &agent)?;
+        Ok(cx.undefined())
+    }
+}
+
+/// How many nested browsing contexts this agent currently holds. The funnel
+/// asks before walking a removed subtree, so a document with no frames pays one
+/// integer read per removal instead of a `querySelectorAll`.
+struct LiveFrameCount;
+impl<E: ScriptEngine> NativeFn<E> for LiveFrameCount {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let count = host::<E>(cx)
+            .and_then(|h| h.borrow().agent.upgrade())
+            .map(|agent| agent.borrow().frames.records.len())
+            .unwrap_or(0);
+        eval::<E>(cx, &count.to_string())
+    }
+}
+
 struct FrameWindow;
 impl<E: ScriptEngine> NativeFn<E> for FrameWindow {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
@@ -270,10 +444,12 @@ impl<E: ScriptEngine> NativeFn<E> for FrameWindow {
             return Ok(cx.make_null());
         };
         let node = raw.id();
-        let parent = cx.current_realm();
-        let Some(parent_host) = host::<E>(cx) else {
-            return Ok(cx.make_null());
-        };
+        // The frame's parent is its *container document's* realm, which is the
+        // realm that physically owns the element - not the realm whose script
+        // happened to read `contentWindow`, and not the realm its reflector was
+        // minted in. Relocating a live iframe across arenas separates all three.
+        let parent = raw.owner_realm();
+        let parent_host = raw.host().clone();
         let Some(agent) = parent_host.borrow().agent.upgrade() else {
             return Ok(cx.make_null());
         };
@@ -730,6 +906,9 @@ pub(crate) fn install_frame_surface<E: ScriptEngine>(
 ) -> Result<(), SurfaceError<E::Error>> {
     surface.set_function::<FrameWindow>("__frameWindow", 1)?;
     surface.set_function::<LoadFrameDocument>("__loadFrameDocument", 0)?;
+    surface.set_function::<DiscardFrame>("__discardFrame", 1)?;
+    surface.set_function::<RunFrameTeardown>("__runFrameTeardown", 0)?;
+    surface.set_function::<LiveFrameCount>("__liveFrameCount", 0)?;
     surface.set_function::<WindowRelation>("__windowRelation", 1)?;
     surface.set_function::<WindowProperty>("__windowProperty", 2)?;
     surface.set_function::<PostMessage>("__realmPostMessage", 2)?;

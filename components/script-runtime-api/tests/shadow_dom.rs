@@ -96,14 +96,17 @@ fn attach_shadow_and_modes<E: ScriptEngine>() {
     );
 
     // Closed: the handle the attacher holds works, `shadowRoot` does not.
+    // (The handle is not named `closed`: that is a readonly `Window` attribute,
+    // so a global `var closed = ...` silently keeps the attribute's value - here
+    // and in a browser.)
     rt.eval(
         "var d = document.createElement('div'); document.body.appendChild(d);\
-         var closed = d.attachShadow({ mode: 'closed' });",
+         var closedRoot = d.attachShadow({ mode: 'closed' });",
     )
     .expect("closed");
-    assert_eq!(read(&mut rt, "closed.mode"), "closed");
+    assert_eq!(read(&mut rt, "closedRoot.mode"), "closed");
     assert_eq!(read(&mut rt, "d.shadowRoot"), "null");
-    assert_eq!(read(&mut rt, "closed.host === d"), "true");
+    assert_eq!(read(&mut rt, "closedRoot.host === d"), "true");
 }
 
 /// Named assignment, the default slot, fallback content, reassignment after a

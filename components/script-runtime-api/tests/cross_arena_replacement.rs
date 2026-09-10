@@ -56,12 +56,18 @@ fn replace_children_fragment<E: ScriptEngine>() {
     );
 }
 
+/// The element standing in for "host-owned resource state" here used to be an
+/// `iframe`. It no longer is: HTML destroys a nested browsing context when the
+/// element leaves a connected tree and creates a fresh one on insertion, so a
+/// live iframe now relocates (see `cross_arena_adoption_fixtures.rs`). `object`
+/// still owns state with no ownership transaction, so it carries this test's
+/// actual subject, which is the atomicity of a refusal, not the refusal itself.
 fn unsupported_replacement_is_atomic<E: ScriptEngine>() {
     check::<E>(
         r#"
         var target = child.document.createElement('div'); child.document.body.appendChild(target);
         var old = child.document.createElement('i'); target.appendChild(old);
-        var first = document.createElement('b'), unsupported = document.createElement('iframe');
+        var first = document.createElement('b'), unsupported = document.createElement('object');
         document.body.appendChild(first); document.body.appendChild(unsupported);
         function refused(f) { try {f();} catch(e) {return;} throw new Error('unsupported transfer admitted'); }
         refused(function(){Element.prototype.replaceChildren.call(target,first,unsupported);});

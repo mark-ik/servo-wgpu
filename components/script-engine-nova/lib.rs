@@ -1619,6 +1619,38 @@ mod native {
             }
         }
 
+        fn discard_realm_from_call(
+            cx: &mut Self::CallCx<'_>,
+            realm: RealmId,
+        ) -> Result<(), RealmError> {
+            if realm == MAIN_REALM {
+                return Err(RealmError::Refused("the main realm cannot be discarded"));
+            }
+            if realm == cx.current_realm() {
+                return Err(RealmError::Refused(
+                    "a realm cannot discard the realm it is executing in",
+                ));
+            }
+            let hd = cx
+                .agent
+                .current_realm(cx.gc.nogc())
+                .host_defined(cx.agent)
+                .ok_or(RealmError::Refused("realm carries no host slot"))?;
+            let slot = hd
+                .downcast_ref::<NovaHostSlot>()
+                .ok_or(RealmError::Refused("realm carries no host slot"))?;
+            let root = slot
+                .registry
+                .realms
+                .borrow_mut()
+                .remove(&realm)
+                .ok_or(RealmError::NoSuchRealm(realm))?;
+            // Already inside the agent, so the outer `run_in_realm` entry the
+            // engine-level discard needs is neither available nor required.
+            root.take(cx.agent);
+            Ok(())
+        }
+
         fn call_from_call(
             cx: &mut Self::CallCx<'_>,
             function: &Self::Value,

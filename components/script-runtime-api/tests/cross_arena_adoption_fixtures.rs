@@ -536,13 +536,11 @@ both_engines! {
 }
 
 #[test]
-#[ignore = "live iframe adoption requires relocating browsing-context parentage, loading and host registration; ordinary DOM subtree lane refuses it"]
 fn wpt_window_length_nested_context_on_boa() {
     moving_an_iframe_element_relocates_its_browsing_context::<script_engine_boa::BoaEngine>();
 }
 #[cfg(target_pointer_width = "64")]
 #[test]
-#[ignore = "live iframe adoption requires relocating browsing-context parentage, loading and host registration; ordinary DOM subtree lane refuses it"]
 fn wpt_window_length_nested_context_on_nova() {
     moving_an_iframe_element_relocates_its_browsing_context::<script_engine_nova::NovaEngine>();
 }

@@ -168,14 +168,14 @@
       "subtests_total": 14
     },
     "dom/abort/abort-signal-timeout.html": {
-      "status": "fail",
+      "status": "pass",
       "subtests": [
         {
           "name": "Signal returned by AbortSignal.timeout() is not aborted after frame detach",
-          "status": "fail"
+          "status": "pass"
         }
       ],
-      "subtests_passed": 0,
+      "subtests_passed": 1,
       "subtests_total": 1
     },
     "dom/abort/crashtests/any-on-abort.html": {

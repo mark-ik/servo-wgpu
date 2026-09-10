@@ -3519,30 +3519,66 @@
   // boundaries), `rangeDidInsert` after (the index the node lands at is the
   // reference child's old index).
   function moAppendChild(p, c) {
-    rangeWillRemove(wrapNode(c)); __appendChild(p, c);
+    rangeWillRemove(wrapNode(c)); discardFrameSubtree(wrapNode(c), true); __appendChild(p, c);
     rangeDidInsert(wrapNode(c)); moAfterMutation(); syncFrameSubtree(wrapNode(c));
   }
   function moInsertBefore(p, n, r) {
-    rangeWillRemove(wrapNode(n)); __insertBefore(p, n, r);
+    rangeWillRemove(wrapNode(n)); discardFrameSubtree(wrapNode(n), true); __insertBefore(p, n, r);
     rangeDidInsert(wrapNode(n)); moAfterMutation(); syncFrameSubtree(wrapNode(n));
   }
+  // `moveBefore` is the one mutation that does not destroy a nested browsing
+  // context, which is the whole point of the method -- so no discard here.
   function moMoveBefore(p, n, r) {
     rangeWillRemove(wrapNode(n)); __moveBefore(p, n, r);
     rangeDidInsert(wrapNode(n)); moAfterMutation();
   }
   function moRemoveChild(p, c) {
-    rangeWillRemove(wrapNode(c)); __removeChild(p, c); moAfterMutation();
+    rangeWillRemove(wrapNode(c)); discardFrameSubtree(wrapNode(c), true); __removeChild(p, c);
+    moAfterMutation(); refreshFramesAfterRemoval();
   }
   function moSetAttribute(e, n, v) { __setAttribute(e, n, v); moAfterMutation(); }
   function moRemoveAttribute(e, n) { __removeAttribute(e, n); moAfterMutation(); }
   function moSetAttributeNS(e, ns, q, v) { __setAttributeNS(e, ns, q, v); moAfterMutation(); }
   function moRemoveAttributeNS(e, ns, l) { __removeAttributeNS(e, ns, l); moAfterMutation(); }
   function moSetTextContent(n, t) {
-    rangeWillReplaceAll(wrapNode(n)); __setTextContent(n, t); moAfterMutation();
+    rangeWillReplaceAll(wrapNode(n)); discardFrameSubtree(wrapNode(n), false);
+    __setTextContent(n, t); moAfterMutation(); refreshFramesAfterRemoval();
   }
   function moSetInnerHtml(n, h) {
-    rangeWillReplaceAll(wrapNode(n)); __setInnerHtml(n, h); moAfterMutation();
-    syncFrameSubtree(wrapNode(n));
+    rangeWillReplaceAll(wrapNode(n)); discardFrameSubtree(wrapNode(n), false);
+    __setInnerHtml(n, h); moAfterMutation();
+    syncFrameSubtree(wrapNode(n)); refreshFramesAfterRemoval();
+  }
+
+  // HTML's iframe removing steps: a nested browsing context is destroyed when
+  // its element leaves a connected tree, and a *fresh* one is created when the
+  // element is inserted again -- including when the two happen back to back, as
+  // in `appendChild` of a frame that is already in a document. `includeSelf` is
+  // false for the replace-all mutations, where the node keeps its own context
+  // and only its descendants' contexts go.
+  var framesWereDiscarded = false;
+  function discardFrameSubtree(node, includeSelf) {
+    framesWereDiscarded = false;
+    if (!node || typeof __discardFrame !== 'function' || !node.isConnected) return;
+    var type = node.nodeType;
+    if (type !== 1 && type !== 9 && type !== 11) return;
+    // Cheap guard first: a document with no nested contexts at all must not pay
+    // a subtree query, nor a named-property refresh, on every removal.
+    if (typeof __liveFrameCount !== 'function' || __liveFrameCount() === 0) return;
+    if (includeSelf && node.localName === 'iframe') {
+      __discardFrame(node.__ref); framesWereDiscarded = true; return;
+    }
+    var frames;
+    try { frames = node.querySelectorAll('iframe'); } catch (_) { return; }
+    for (var i = 0; i < frames.length; i++) __discardFrame(frames[i].__ref);
+    framesWereDiscarded = frames.length > 0;
+  }
+  // A destroyed context must stop answering at its old `window[i]` index and
+  // stop being counted by `window.length`; the named-property refresh is what
+  // takes those accessors back out. Only a removal that actually destroyed one
+  // pays for it.
+  function refreshFramesAfterRemoval() {
+    if (framesWereDiscarded) { framesWereDiscarded = false; __refreshNamedProperties(); }
   }
 
   function syncFrameSubtree(node) {
@@ -5098,6 +5134,11 @@
   // which is what lets the worker scope delete it — testharness.js selects its
   // environment on `'document' in global_scope`, a presence test.
   if (globalThis.window === globalThis) {
+    // Deliberately *not* cleared when the browsing context is destroyed:
+    // `html/browsers/the-window-object/document-attribute.window.js` asserts a
+    // removed frame's window keeps answering with the same document, then
+    // asserts it again a hundred milliseconds later. A Window's `document` is
+    // its document; it is the WindowProxy's [[Window]] that a discard replaces.
     Object.defineProperty(globalThis, 'document', {
       enumerable: true,
       configurable: false,

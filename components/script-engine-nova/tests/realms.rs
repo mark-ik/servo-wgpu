@@ -671,3 +671,65 @@ fn cross_realm_ephemeron_chains_keep_values_until_the_last_key_dies() {
     let value = engine.eval("weakPayload.deref() === undefined").unwrap();
     assert_eq!(engine.value_to_string(&value).unwrap(), "true");
 }
+
+/// The teardown half of the realm contract. The host discards a browsing
+/// context from inside a native callback, so the release has to happen without
+/// unwinding to the engine-level entry - and must refuse the two realms it can
+/// never be right to free: the agent's initial realm, and the one it is
+/// standing in.
+#[test]
+fn discard_realm_from_call_refuses_main_and_self_and_releases_the_target() {
+    use std::{cell::RefCell, rc::Rc};
+    struct Spawn;
+    impl<E: ScriptEngine> NativeFn<E> for Spawn {
+        fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+            let data = cx.host_data().unwrap();
+            let records = data.downcast_ref::<RefCell<Vec<RealmId>>>().unwrap();
+            let id = E::create_realm_from_call(cx, data.clone(), |child| {
+                E::eval_from_call(child, "globalThis.marker = 'alive'").map(|_| ())
+            })
+            .unwrap();
+            records.borrow_mut().push(id);
+            cx.make_string(&id.to_string())
+        }
+    }
+    struct Discard;
+    impl<E: ScriptEngine> NativeFn<E> for Discard {
+        fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+            let target = cx.arg(0);
+            let target: RealmId = cx.value_to_string(&target)?.parse().unwrap();
+            assert!(matches!(
+                E::discard_realm_from_call(cx, MAIN_REALM),
+                Err(RealmError::Refused(_))
+            ));
+            let here = cx.current_realm();
+            assert!(matches!(
+                E::discard_realm_from_call(cx, here),
+                Err(RealmError::Refused(_))
+            ));
+            E::discard_realm_from_call(cx, target).unwrap();
+            assert!(matches!(
+                E::discard_realm_from_call(cx, target),
+                Err(RealmError::NoSuchRealm(_))
+            ));
+            Ok(cx.undefined())
+        }
+    }
+    let mut engine = NovaEngine::new().unwrap();
+    let records = Rc::new(RefCell::new(Vec::<RealmId>::new()));
+    engine.set_host_data(records.clone());
+    engine.set_function::<Spawn>("spawn", 0).unwrap();
+    engine.set_function::<Discard>("discard", 1).unwrap();
+    engine.eval("globalThis.id = spawn()").unwrap();
+    let id = records.borrow()[0];
+    let value = engine.eval_in_realm(id, "marker").unwrap();
+    assert_eq!(engine.value_to_string(&value).unwrap(), "alive");
+    engine.eval("discard(id)").unwrap();
+    assert!(matches!(
+        engine.eval_in_realm(id, "marker"),
+        Err(RealmError::NoSuchRealm(_))
+    ));
+    // The agent it was discarded from is untouched.
+    let value = engine.eval("typeof spawn").unwrap();
+    assert_eq!(engine.value_to_string(&value).unwrap(), "function");
+}

@@ -171,5 +171,17 @@
     get: function () { return relation('frameElement'); }
   });
   globalThis.opener = null;
+  // A live browsing context; `__discardBrowsingContext` flips this when the
+  // context is destroyed and a parent is still holding this global.
+  define(globals, 'closed', { value: false, writable: false, enumerable: true, configurable: true });
+  // Browsing-context teardown, run in the realm being destroyed and only from
+  // the host. `closed` is the whole of what a discarded context reports
+  // differently: its `document` deliberately keeps answering (see the getter in
+  // bootstrap.js). Its timers and animation callbacks are cancelled separately,
+  // so nothing already scheduled in it runs afterwards either.
+  define(globals, '__discardBrowsingContext', { value: function () {
+    define(globals, 'closed', { value: true, writable: false, enumerable: true, configurable: true });
+    delete globals.__discardBrowsingContext;
+  }});
   globalThis.postMessage = __realmPostMessage;
 })();

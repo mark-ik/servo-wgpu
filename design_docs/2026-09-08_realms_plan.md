@@ -1,17 +1,26 @@
 # Realms: one agent, one realm per browsing context
 
-**Status:** ordinary cross-arena adoption verified, with the owner-resolved
-accessor and imported-identity capture/replay landed on top of it; broad DOM
-guard remains red, 2026-09-10. The release runtime suite passes 520 tests with
-two live-iframe fixtures ignored. Required Boa/Vano patches are published and
-pinned. The ordinary-adoption DOM census gained 203 passing subtests and retains
-one historical iframe loss; that pass remains protected in the baseline. The
-accessor/replay phase's own census moves nothing in any of its four subsets.
-Twelve other canonical subsets and both reftest guards match. Imported-ID
-capture and replay now translate through the importing store's registry. Full
-G5, browsing-context relocation and associated shadow/template transfers remain
-open. Earlier phases below retain their historical results; final acceptance is
-recorded at the end of this plan.
+**Status:** browsing-context lifecycle landed on top of ordinary cross-arena
+adoption and the owner-resolved accessor; broad DOM guard remains red,
+2026-09-10. HTML's iframe removing steps are implemented in their two halves -
+the container loses its content navigable synchronously, the document is
+unloaded and the realm discarded in a queued task - and that one mechanism
+carries live iframe relocation, browsing-context relocation and removed-frame
+teardown together. The release runtime suite passes 526 tests with **zero
+ignored**: the two live-iframe fixtures are un-ignored and passing on both
+engines. The lifecycle census gains 8 named subtests across eight directories
+with zero pass-to-fail movements, including all four `move_iframe_in_dom` files.
+One forward-only repin (`dom_abort_boa`, one entry); twelve of fourteen
+testharness slices and both reftest guards are `unexpected=0`, and both Ortet
+receipts are unchanged. `dom` and `dom/nodes` stay red and unrepinned for the
+one protected loss, `Node-isConnected.html: Test with iframes`, whose cause is
+now isolated to the parsing-time refusal in `preflight_subtree_transfer_to`
+rather than to iframes. **Navigation with a stable `WindowProxy` is open and
+waiting on Mark's ruling**, not partially built: there is no navigation
+algorithm in this stack at all, and the proxy changes object identity stack-wide.
+Full G5 and associated shadow/template transfers also remain open. Earlier
+phases below retain their historical results; final acceptance is recorded at
+the end of this plan.
 
 **Parent:** [iframes and nested browsing contexts](2026-09-08_iframes_plan.md),
 whose Â§4 named the realm decision as Mark's and left `contentWindow` a stub
@@ -1246,3 +1255,238 @@ browsing-context-bearing subtrees still refuse. It does not implement a capture
 *replayer* — it implements the identity translation a replayer needs, and proves
 it against real records. It does not touch full G5, headed acceptance, or frame
 teardown and navigation.
+
+## Phase: browsing-context lifecycle, 2026-09-10
+
+**Genet commit at phase start:** `1fbd90c6043`
+(`1fbd90c6043784e90f9a85bf9b967ff42224e591`), clean tree. This phase makes no
+commit. Receipts: `testing/genet/wpt-ledger/2026-09-10_iframe_lifecycle` in the
+shared Code workspace.
+
+The realms handoff left four items under one heading: live iframe relocation,
+browsing-context relocation, navigation with a stable `WindowProxy`, and
+removed-frame lifecycle cleanup. Three of them turn out to be one mechanism.
+The fourth does not, and is left open below with its cost named rather than
+approximated.
+
+The mechanism is HTML's iframe removing steps. A nested browsing context is
+destroyed when its element leaves a connected tree and a *fresh* one is created
+when it is inserted again — so `appendChild` of a live iframe elsewhere, and
+`adoptNode` across documents, are destroy-then-create, not a move. Once removal
+destroys the context, a relocated iframe reaches cross-arena adoption as an
+ordinary subtree, and the ordinary-adoption lane already handles it. The
+relocation item and the teardown item are the same edit seen from two ends.
+
+### 1. Teardown, in two halves
+
+`FrameState` gains `detach_subtree` and a `pending_teardown` queue, and the two
+halves are split exactly where HTML splits "destroy a child navigable":
+
+- **Synchronously**, on removal, the container stops having a content navigable.
+  The records and contexts for the realm and every realm nested beneath it are
+  dropped, so `contentWindow`, `window.length`, the indexed `window[i]`
+  accessors and the adoption preflight all stop seeing it in the same tick the
+  element left the tree.
+- **In a queued task**, each detached document is unloaded and released. HTML is
+  explicit that the removing steps run no script, and
+  `dom/nodes/insertion-removing-steps/insertion-removing-steps-iframe.window.html`
+  checks it three ways; a first implementation dispatched `unload` inline and
+  that census caught it as three named regressions.
+
+The queued half fires `pagehide` then `unload` in each document, ancestor before
+descendant, then releases child-first: the realm's timers and animation
+callbacks are cancelled, its host registration, opaque-root bookkeeping,
+adoption-registry entry and pending fetch routes are removed, its browsing
+context is discarded from the tree, and the realm itself is discarded through
+the engine contract.
+
+Cancelling the tasks needs the agent's private timer queue, which is
+deliberately not reachable from any global. `AgentState` retains a
+`cancel_realm_tasks` closure the same way and for the same reason it already
+retains `timer_state`.
+
+### 2. The engine contract gains a from-call discard
+
+`ScriptEngine::discard_realm_from_call` is the teardown counterpart to
+`create_realm_from_call`. The existing `discard_realm` is an outer entry, and
+the removal that triggers a teardown is a native callback; Nova's version in
+particular cannot reach the outer `run_in_realm` from inside the agent. Both
+implementations refuse `MAIN_REALM` and the callback's own current realm — a
+realm cannot free the frame it is executing in — and both are one operation:
+Boa drops the registry's `Gc<Realm>` handle, Nova additionally takes the
+`Global` root. Single-realm backends keep the `Unsupported` default.
+
+### 3. What the adoption refusal now asks
+
+`dom/adoption.rs` refused `iframe | object | embed | canvas` by element name.
+`object`, `embed` and `canvas` still own host state with no ownership
+transaction and are still refused. `iframe` is refused by *fact* instead — and
+the two transfer passes ask the question differently, which is the whole
+correction:
+
+- The **preflight** runs before the removal steps, so any context it sees is one
+  the very next step destroys. Reading it as an obstacle refuses every live
+  relocation, which is what the two ignored fixtures were ignored for.
+- The **mutating** pass runs after them, so a context still live at that point
+  belongs to an element the mutation funnel never saw, and moving it would
+  strand the context's realm. That is still refused.
+
+`moveBefore` is the exception HTML carves out and the one mutation with no
+discard: its regression asserts the same realm, and the same window object the
+parent already held, on the far side of the move.
+
+### 4. The frame's parent is its container's realm
+
+Finding, and the reason the relocation fixtures still failed after the teardown
+landed. `__frameWindow` derived the nested context's parent from
+`cx.current_realm()` and checked liveness against that realm's host. Adoption
+already made three things independent — the realm a script runs in, the realm a
+reflector was minted in, and the realm whose document physically holds the node —
+and relocating a live iframe separates all three at once. HTML parents a nested
+context in its *container document's* browsing context, so `OwnedNode` now
+carries `owner_realm()` and `__frameWindow` uses it for both.
+
+This also retires a refusal that was a limitation rather than a rule:
+`owner_native_boundaries.rs` asserted that a `contentWindow` getter borrowed
+across realms *threw*. It no longer does — a same-origin cross-arena read is
+legal, and the test now asserts the stronger fact, that the context it returns
+is parented in the container, not in the caller. The borrowed `document.open` /
+`write` / `close` refusal is unchanged: a stream belongs to the callback realm's
+own arena.
+
+### 5. What a discarded context reports, and what WPT says about it
+
+The handoff's premise was that a parent holding `contentWindow` afterwards sees
+`closed` true and `document` null. Half of that is wrong, and the census is
+where it was caught.
+`html/browsers/the-window-object/document-attribute.window.js` asserts that a
+removed frame's window keeps answering with the *same* document immediately
+after `remove()` and again a hundred milliseconds later. A Window's `document`
+is its document; it is the WindowProxy's `[[Window]]` that a discard replaces,
+and this stack hands out the Window. So `closed` flips — `Window.closed` did not
+exist at all before this phase — and `document` deliberately does not. The
+first implementation nulled it and lost two named passes for the trouble.
+
+### 6. Navigation with a stable WindowProxy: not implemented, and why
+
+This item is not approximated here, and the plan should not read as though it
+were. There is no navigation in this stack at all: `location.href =`,
+`location.assign`, `location.replace` and `history.pushState` / `go` update
+`HostState.base_url` and nothing else — no unload, no new realm, no document
+load, no `load` event on the container, no `popstate`. Building it means writing
+HTML's navigate algorithm, and the identity half of the requirement means
+introducing a real `WindowProxy` indirection.
+
+**This is a decision for Mark, not a gap to fill quietly**, because the proxy
+changes object identity across the whole stack. Today `contentWindow` returns
+the child's actual global. A WindowProxy that survives navigation cannot be that
+object, so `frame.contentWindow === childWindow` only stays true if the child's
+own `window`, `self`, `frames`, `parent` and `top` return the proxy too — and
+`globalThis` still cannot, because no engine here can make it. The choice is
+between a documented `globalThis !== window` deviation inside child realms and
+some larger engine-level change, and it wants a ruling before code. The bounded
+items above are landed and verified without it.
+
+### Named regression manifest
+
+| Regression | Where |
+|---|---|
+| `wpt_window_length_nested_context` (Boa and Nova) | `script-runtime-api/tests/cross_arena_adoption_fixtures.rs` — the two previously ignored live-iframe fixtures, un-ignored: a nested iframe relocated from a child document into the parent, `window.length` counting both, and the relocated context's `top` being the new document's window |
+| `teardown_releases_everything` (Boa and Nova) | `script-runtime-api/tests/frame_lifecycle.rs` — three attach/remove cycles over a child and its grandchild: no script runs synchronously, the container has no content navigable in the same tick, `pagehide`/`unload` arrive ancestor-first in the queued task, a cancelled timer never fires, `closed` is true and `document` unchanged, every host registration and realm is released, no realm id is reused, and the parent arena returns to its baseline node count after a collection tick |
+| `move_before_preserves_context` (Boa and Nova) | `script-runtime-api/tests/frame_lifecycle.rs` — `moveBefore` keeps the realm and the window object the parent already held |
+| `discard_realm_from_call_refuses_main_and_self_and_releases_the_target` | `script-engine-boa/lib.rs` and `script-engine-nova/tests/realms.rs` — the new contract method on both backends: both refusals, the release, and the agent left intact |
+| `borrowed_document_stream` (Boa and Nova) | `script-runtime-api/tests/owner_native_boundaries.rs` — retargeted: the stream still refuses, the borrowed `contentWindow` resolves to its container |
+| `atomic_refusal` (Boa and Nova) | `script-runtime-api/tests/cross_arena_replacement.rs` — retargeted from `iframe` to `object`; the subject was always the atomicity of a refusal, and `iframe` stopped being one |
+
+### Census
+
+Disk mode, `--engine boa --renderer livery --jobs 8 --timeout 240`. Pre runner
+`1ee89f43a2b45a6572102ceaa898a6d63c013fcf315dafbc737090b0b681cef9`, built from
+`1fbd90c6043` **before the first edit**; post runner
+`467556c18da52219ecab6ccb720c287b4f0218c9ba3425e50c20db4574796c88`. `Cargo.lock`
+is `eeb325f180bdcc9cb49c23322b0bac144cbfc84021ef269f142d4977760199b2` and
+unchanged — this phase adds no dependency, so nothing in the census is two
+effects cancelling.
+
+| Subset | Files | Subtests passed (pre → post) | File moves | Subtest moves |
+|---|---:|---:|---:|---:|
+| `dom` | 698 | 46,593 → 46,594 | +1 / −0 | +1 / −0 |
+| `html/dom` | 387 | 42,377 → 42,377 | 0 | 0 |
+| `html/semantics/embedded-content/the-iframe-element` | 164 | 23 → 27 | +4 / −0 | +4 / −0 |
+| `html/browsers/browsing-the-web` | 332 | 30 → 30 | 0 | 0 |
+| `html/browsers/history` | 140 | 94 → 94 | 0 | 0 |
+| `html/browsers/windows` | 60 | 7 → 8 | +1 / −0 | +1 / −0 |
+| `html/browsers/the-window-object` | 96 | 83 → 83 | 0 | 0 |
+| `webmessaging` | 160 | 169 → 171 | +1 / −0 | +2 / −0 |
+
+Total +8 named subtest passes and +8 files reaching all-pass, with **zero
+pass-to-fail movements**, so nothing needed explaining away. Every gain is on
+the lane:
+
+| Newly passing | What it is |
+|---|---|
+| `the-iframe-element/move_iframe_in_dom_01..04.html` | the four canonical "moving a modified IFRAME in the document" files, all four, across `about:blank` and served originals and across DOM and `document.write` modification |
+| `windows/nested-browsing-contexts/window-top.html`, "Two nested iframes" | the container-realm parentage correction |
+| `dom/abort/abort-signal-timeout.html`, "not aborted after frame detach" | teardown |
+| `webmessaging/broadcastchannel/detached-iframe.html`, both subtests | detached-frame lifecycle |
+
+Three named regressions were found by an interim census and fixed rather than
+recorded: the three `insertion-removing-steps-iframe` subtests, from dispatching
+`unload` synchronously, and `document-attribute.window.html`, from nulling a
+discarded context's document. The final census carries none of them.
+
+### Repins, and the one that is not made
+
+One forward-only repin, three lines:
+`ports/genet-wpt/expectations/testharness/dom_abort_boa.json`, only
+`dom/abort/abort-signal-timeout.html`, fail 0/1 to pass 1/1. Membership is
+unchanged at 13 files and no former pass moves; the subset re-checks at
+`unexpected=0` afterwards.
+
+`dom_boa.json` and `dom_nodes_boa.json` are **not** repinned, and both guards
+stay red, because the protected loss is not recovered:
+
+> `dom/nodes/Node-isConnected.html`, "Test with iframes" — still failing.
+
+Its cause is now precise, and it is not this lane's. The test appends an iframe
+into another frame's `contentDocument` from a `<script>` that runs **while the
+main document is still parsing**, and `ScriptedDom::preflight_subtree_transfer_to`
+refuses any cross-arena transfer whose source store has `parsing` set, with
+`PendingSourceWork`. A two-subtest probe run on the post runner isolates it: the
+identical adoption refuses during parsing and succeeds from a `step_timeout`
+after it, in the same file, in the same run — the positive control and the
+negative in one measurement. The equivalent fixture in
+`cross_arena_adoption_fixtures.rs` passes on both engines for the same reason.
+Lifting that guard means deciding whether a transferred subtree can intersect
+the parser's stack of open elements, which belongs to the parser/adoption lane.
+
+`dom_boa` reports 60 unexpected against the 59 it inherited; the one added is
+the `abort-signal-timeout` **gain**, the same one the repin above records for
+`dom/abort`. `dom_nodes_boa` is unchanged at 35. Neither guard's redness moved
+in the wrong direction, and no adoption loss was repinned away.
+
+### Gates
+
+| Gate | Result |
+|---|---|
+| Release `script-runtime-api` | **526 passed, 0 failed, 0 ignored** — the two live-iframe fixtures un-ignored, plus four new lifecycle cases; debug matches |
+| `genet-scripted` with `scripted-nova` | 117 passed, 0 failed |
+| `genet-documents` with `scripted` | 49 passed, 0 failed |
+| `genet-scripted-dom` and `browsing-context-api` | 81 passed, 0 failed |
+| Boa and Nova adapters | 67 passed, 0 failed, including the new discard-contract case on each |
+| Clippy, four touched crates, `--all-targets` | zero errors; 94 warnings retained in the log |
+| Rustfmt, every touched file | clean |
+| `cargo check --workspace --features genet-wpt/netfetch` | passed |
+| Canonical testharness slices | 12 of 14 `unexpected=0` after the `dom_abort` repin; `dom` 60 and `dom/nodes` 35, named above |
+| Reftest guards | both `unexpected=0` |
+| Ortet `article` | `0x6377ba8a6bf4dbc9`, three consecutive matching captures, unchanged |
+| Ortet `frames` | `0x97bdd4bd9e03ec02`, three consecutive matching captures, unchanged |
+
+### What this phase does not do
+
+It does not implement navigation, and therefore neither the stable `WindowProxy`
+nor `load` per navigation nor session-history traversal in a child; see §6, which
+records that as a decision rather than a task. It does not lift the parsing-time
+adoption refusal. It does not widen the adoption boundary for `object`, `embed`
+or `canvas`, or for associated template and shadow trees. It does not touch full
+G5 or headed acceptance.

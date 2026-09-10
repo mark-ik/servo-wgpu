@@ -385,6 +385,11 @@ pub(crate) struct AgentState {
     /// Engine value retained outside script reach; queued cross-origin callbacks
     /// must not expose their realm's Function constructor through a global.
     pub(crate) timer_state: Option<Rc<dyn std::any::Any>>,
+    /// The agent's task-cancelling closure, retained the same way and for the
+    /// same reason as `timer_state`: browsing-context teardown must drop a
+    /// discarded realm's timers and animation callbacks, and the queue holding
+    /// them is deliberately not reachable from any global.
+    pub(crate) cancel_realm_tasks: Option<Rc<dyn std::any::Any>>,
     pub(crate) hosts: std::collections::BTreeMap<RealmId, SharedHost>,
     pub(crate) fetch_realms: std::collections::HashMap<u64, RealmId>,
     pending_trace: Vec<PendingTraceEvent>,
@@ -499,8 +504,10 @@ impl<E: ScriptEngine> Runtime<E> {
         )
         .map_err(SurfaceError::main)?;
         let timer_state = engine.eval("globalThis.__agentTimers")?;
+        let cancel_realm_tasks = engine.eval("globalThis.__agentTimers.cancelRealm")?;
         engine.eval("delete globalThis.__agentTimers")?;
         agent.borrow_mut().timer_state = Some(Rc::new(timer_state));
+        agent.borrow_mut().cancel_realm_tasks = Some(Rc::new(cancel_realm_tasks));
         host.borrow_mut().worker_spawn = Some(worker::worker_main::<E> as fn(_));
         Ok(Self {
             engine,
@@ -1887,12 +1894,14 @@ impl<E: ScriptEngineSnapshot> Runtime<E> {
         let _ = self.engine.eval("delete globalThis.__agentTimers");
         let mut engine = snapshot?;
         let timer_state = engine.eval("globalThis.__agentTimers")?;
+        let cancel_realm_tasks = engine.eval("globalThis.__agentTimers.cancelRealm")?;
         engine.eval("delete globalThis.__agentTimers")?;
         let host: SharedHost = Rc::new(RefCell::new(HostState::default()));
         let agent = Rc::new(RefCell::new(AgentState::default()));
         host.borrow_mut().agent = Rc::downgrade(&agent);
         agent.borrow_mut().register(MAIN_REALM, host.clone());
         agent.borrow_mut().timer_state = Some(Rc::new(timer_state));
+        agent.borrow_mut().cancel_realm_tasks = Some(Rc::new(cancel_realm_tasks));
         engine.set_host_data(host.clone());
         // The cloned heap's `document` wrapper still holds the donor host's
         // root reflector; point it at this fresh host before any script runs.
@@ -2843,6 +2852,31 @@ const SHELL_GLOBALS_BOOTSTRAP: &str = r#"
   rafContext.global = globalThis;
   rafState.animationContexts[rafState.animationContexts.length++] = rafContext;
   if (rafState.animationPass === undefined) rafState.animationPass = null;
+  // Browsing-context teardown's task-cancelling half. The host retains this
+  // closure privately (see `AgentState::cancel_realm_tasks`) rather than
+  // leaving it on a global, for the same reason the queue itself is private:
+  // a discarded realm's callbacks are foreign functions, and nothing authored
+  // may reach them or the queue that held them.
+  if (rafState.cancelRealm === undefined) {
+    var cancelTimers = rafState.timers;
+    var cancelSplice = Array.prototype.splice;
+    rafState.cancelRealm = function(id) {
+      var target = Number(id);
+      for (var t = cancelTimers.length - 1; t >= 0; t--) {
+        if (cancelTimers[t].realm === target) rafApply(cancelSplice, cancelTimers, [t, 1]);
+      }
+      var contexts = rafState.animationContexts;
+      for (var c = contexts.length - 1; c >= 0; c--) {
+        if (contexts[c].realm !== target) continue;
+        for (var m = c; m < contexts.length - 1; m++) contexts[m] = contexts[m + 1];
+        delete contexts[contexts.length - 1];
+        contexts.length--;
+      }
+      // An in-flight pass holds direct references to the retired contexts, so
+      // it is rebuilt from the surviving ones rather than resumed.
+      rafState.animationPass = null;
+    };
+  }
   globalThis.requestAnimationFrame = function(callback) {
     if (typeof callback !== 'function') {
       throw new TypeError('requestAnimationFrame: callback is not callable');

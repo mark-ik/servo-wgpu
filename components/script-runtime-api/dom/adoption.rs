@@ -41,6 +41,7 @@ impl AgentDomState {
 /// different node, or none.
 pub(crate) struct OwnedNode {
     host: SharedHost,
+    realm: RealmId,
     id: NodeId,
 }
 
@@ -57,6 +58,13 @@ impl OwnedNode {
 
     pub(crate) fn host(&self) -> &SharedHost {
         &self.host
+    }
+
+    /// The realm whose document physically holds this node. This is the node's
+    /// *container* realm, which after adoption is not the realm the reading
+    /// script runs in, nor the realm its reflector was minted in.
+    pub(crate) fn owner_realm(&self) -> RealmId {
+        self.realm
     }
 
     /// Run `f` against the arena that actually stores this node.
@@ -93,7 +101,11 @@ pub(crate) fn resolve_owner<C: CallCx + ?Sized>(
             return Err(cx.error("SecurityError: cross-origin DOM access"));
         }
     }
-    Ok(OwnedNode { host, id })
+    Ok(OwnedNode {
+        host,
+        realm: owner,
+        id,
+    })
 }
 
 pub(crate) fn current_host<C: CallCx + ?Sized>(cx: &C) -> Option<SharedHost> {
@@ -462,13 +474,35 @@ fn transfer<E: ScriptEngine>(cx: &mut E::CallCx<'_>, mutate: bool) -> Result<E::
             .preflight_subtree_transfer_to(&destination.dom, node)
     }
     .map_err(|e| cx.error(&format!("NotSupportedError: cross-arena subtree {e:?}")))?;
-    // Contexts and active resource state need their own ownership transaction.
+    // Active host-owned resource state still needs its own ownership
+    // transaction. An `iframe` is no longer one of those: HTML destroys its
+    // nested browsing context when the element leaves a connected tree and
+    // creates a fresh one when it is inserted again, so a relocated frame
+    // arrives here as an ordinary subtree.
+    //
+    // The two passes ask different questions on purpose. The preflight runs
+    // *before* the removal steps, so the context it would see is one the very
+    // next step destroys - reading it as an obstacle would refuse every live
+    // relocation. The mutating pass runs after them, so a context still live at
+    // that point is one the mutation funnel never saw, and moving the element
+    // would strand its realm.
+    let agent = current_host(cx).and_then(|h| h.borrow().agent.upgrade());
     let unsupported = {
         let source = source.borrow();
         ids.iter().any(|&id| {
-            source.dom.element_name(id).is_some_and(|name| {
-                matches!(&*name.local, "iframe" | "object" | "embed" | "canvas")
-            })
+            source
+                .dom
+                .element_name(id)
+                .is_some_and(|name| match &*name.local {
+                    "object" | "embed" | "canvas" => true,
+                    "iframe" => {
+                        mutate
+                            && agent
+                                .as_ref()
+                                .is_some_and(|agent| agent.borrow().frames.holds_context(id))
+                    },
+                    _ => false,
+                })
         })
     };
     if unsupported {

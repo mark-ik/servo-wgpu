@@ -18,6 +18,12 @@ fn runtime<E: ScriptEngine>() -> Runtime<E> {
     rt
 }
 
+/// Two boundaries that used to answer the same way and no longer do. A borrowed
+/// *stream* (`document.open`/`write`/`close`) still refuses: a stream belongs to
+/// the callback realm's own arena. A borrowed `contentWindow` getter does not,
+/// because the owner-resolved accessor knows which document contains the
+/// element - and HTML parents the nested context in *that* document's browsing
+/// context, not in the realm whose script read the property.
 fn borrowed_document_stream_refuses_without_mutation<E: ScriptEngine>() {
     let mut rt = runtime::<E>();
     rt.eval(r#"
@@ -35,9 +41,10 @@ fn borrowed_document_stream_refuses_without_mutation<E: ScriptEngine>() {
         var frame=child.document.createElement('iframe');
         child.document.body.appendChild(frame);
         var getWindow=Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype,'contentWindow').get;
-        var refused=false;
-        try { getWindow.call(frame); } catch(e) { refused=String(e).indexOf('owning document realm')>=0; }
-        if(!refused) throw new Error('borrowed frame getter did not refuse');
+        var borrowed=getWindow.call(frame);
+        if(!borrowed) throw new Error('borrowed frame getter returned no window');
+        if(borrowed.parent!==child) throw new Error('borrowed frame getter parented the context in the caller');
+        if(child.length!==1||window.length!==1) throw new Error('borrowed frame getter miscounted a browsing context');
     "#).unwrap();
 }
 
