@@ -12,13 +12,13 @@ pub(crate) struct RemoveAttribute;
 impl<E: ScriptEngine> NativeFn<E> for RemoveAttribute {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let el = cx.arg(0);
-        let Some(id) = cx.reflector_data(&el) else {
+        let Some(id) = cx.local_reflector_data(&el)? else {
             return Ok(cx.undefined());
         };
         let name_v = cx.arg(1);
         let name = cx.value_to_string(&name_v)?;
         with_dom::<E, _>(cx, |dom| {
-            let node = NodeId::from_raw(id as usize);
+            let node = NodeId::from_raw(id);
             // `removeAttribute` matches on the **qualified** name, so a namespaced
             // attribute is reachable by `prefix:local` too.
             if let Some(qual) = dom.attribute_qual_name(node, &name) {
@@ -34,13 +34,13 @@ pub(crate) struct Matches;
 impl<E: ScriptEngine> NativeFn<E> for Matches {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let el = cx.arg(0);
-        let Some(id) = cx.reflector_data(&el) else {
+        let Some(id) = cx.local_reflector_data(&el)? else {
             return cx.make_string("false");
         };
         let sel_v = cx.arg(1);
         let sel = cx.value_to_string(&sel_v)?;
         let matched = with_dom::<E, _>(cx, |dom| {
-            crate::selector::parse(&sel).matches(dom, NodeId::from_raw(id as usize))
+            crate::selector::parse(&sel).matches(dom, NodeId::from_raw(id))
         })
         .unwrap_or(false);
         cx.make_string(if matched { "true" } else { "false" })
@@ -53,13 +53,13 @@ pub(crate) struct QuerySelector;
 impl<E: ScriptEngine> NativeFn<E> for QuerySelector {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let scope = cx.arg(0);
-        let Some(id) = cx.reflector_data(&scope) else {
+        let Some(id) = cx.local_reflector_data(&scope)? else {
             return Ok(cx.make_null());
         };
         let sel_v = cx.arg(1);
         let sel = cx.value_to_string(&sel_v)?;
         match with_dom::<E, _>(cx, |dom| {
-            crate::selector::parse(&sel).query_first(dom, NodeId::from_raw(id as usize))
+            crate::selector::parse(&sel).query_first(dom, NodeId::from_raw(id))
         })
         .flatten()
         {
@@ -75,14 +75,14 @@ pub(crate) struct QuerySelectorAllCount;
 impl<E: ScriptEngine> NativeFn<E> for QuerySelectorAllCount {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let scope = cx.arg(0);
-        let Some(id) = cx.reflector_data(&scope) else {
+        let Some(id) = cx.local_reflector_data(&scope)? else {
             return cx.make_string("0");
         };
         let sel_v = cx.arg(1);
         let sel = cx.value_to_string(&sel_v)?;
         let n = with_dom::<E, _>(cx, |dom| {
             crate::selector::parse(&sel)
-                .query_all(dom, NodeId::from_raw(id as usize))
+                .query_all(dom, NodeId::from_raw(id))
                 .len()
         })
         .unwrap_or(0);
@@ -96,7 +96,7 @@ pub(crate) struct QuerySelectorAllItem;
 impl<E: ScriptEngine> NativeFn<E> for QuerySelectorAllItem {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let scope = cx.arg(0);
-        let Some(id) = cx.reflector_data(&scope) else {
+        let Some(id) = cx.local_reflector_data(&scope)? else {
             return Ok(cx.undefined());
         };
         let sel_v = cx.arg(1);
@@ -108,7 +108,7 @@ impl<E: ScriptEngine> NativeFn<E> for QuerySelectorAllItem {
             .unwrap_or(usize::MAX);
         match with_dom::<E, _>(cx, |dom| {
             crate::selector::parse(&sel)
-                .query_all(dom, NodeId::from_raw(id as usize))
+                .query_all(dom, NodeId::from_raw(id))
                 .get(i)
                 .copied()
         })
@@ -159,10 +159,10 @@ fn child_at<E: ScriptEngine>(
     pick: impl FnOnce(&ScriptedDom, NodeId) -> Option<NodeId>,
 ) -> Result<E::Value, E::Error> {
     let node = cx.arg(0);
-    let Some(id) = cx.reflector_data(&node) else {
+    let Some(id) = cx.local_reflector_data(&node)? else {
         return Ok(cx.undefined());
     };
-    match with_dom::<E, _>(cx, |dom| pick(dom, NodeId::from_raw(id as usize))).flatten() {
+    match with_dom::<E, _>(cx, |dom| pick(dom, NodeId::from_raw(id))).flatten() {
         Some(n) => reflect_pinned::<E>(cx, n.raw() as u64),
         None => Ok(cx.undefined()),
     }
@@ -174,13 +174,11 @@ pub(crate) struct ChildNodesCount;
 impl<E: ScriptEngine> NativeFn<E> for ChildNodesCount {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let node = cx.arg(0);
-        let Some(id) = cx.reflector_data(&node) else {
+        let Some(id) = cx.local_reflector_data(&node)? else {
             return cx.make_string("0");
         };
-        let n = with_dom::<E, _>(cx, |dom| {
-            dom.dom_children(NodeId::from_raw(id as usize)).count()
-        })
-        .unwrap_or(0);
+        let n =
+            with_dom::<E, _>(cx, |dom| dom.dom_children(NodeId::from_raw(id)).count()).unwrap_or(0);
         cx.make_string(&n.to_string())
     }
 }
@@ -190,7 +188,7 @@ pub(crate) struct ChildNodesItem;
 impl<E: ScriptEngine> NativeFn<E> for ChildNodesItem {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let node = cx.arg(0);
-        let Some(id) = cx.reflector_data(&node) else {
+        let Some(id) = cx.local_reflector_data(&node)? else {
             return Ok(cx.undefined());
         };
         let i_v = cx.arg(1);
@@ -198,11 +196,7 @@ impl<E: ScriptEngine> NativeFn<E> for ChildNodesItem {
             .value_to_string(&i_v)?
             .parse::<usize>()
             .unwrap_or(usize::MAX);
-        match with_dom::<E, _>(cx, |dom| {
-            dom.dom_children(NodeId::from_raw(id as usize)).nth(i)
-        })
-        .flatten()
-        {
+        match with_dom::<E, _>(cx, |dom| dom.dom_children(NodeId::from_raw(id)).nth(i)).flatten() {
             Some(n) => reflect_pinned::<E>(cx, n.raw() as u64),
             None => Ok(cx.undefined()),
         }
@@ -217,11 +211,11 @@ pub(crate) struct NodeName;
 impl<E: ScriptEngine> NativeFn<E> for NodeName {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let node = cx.arg(0);
-        let Some(id) = cx.reflector_data(&node) else {
+        let Some(id) = cx.local_reflector_data(&node)? else {
             return cx.make_string("");
         };
         let name = with_dom::<E, _>(cx, |dom| {
-            let n = NodeId::from_raw(id as usize);
+            let n = NodeId::from_raw(id);
             match dom.kind(n) {
                 NodeKind::Element => dom.element_name(n).map(qualified_of).unwrap_or_default(),
                 NodeKind::Text => "#text".to_string(),
@@ -251,11 +245,11 @@ pub(crate) struct NodeValue;
 impl<E: ScriptEngine> NativeFn<E> for NodeValue {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let node = cx.arg(0);
-        let Some(id) = cx.reflector_data(&node) else {
+        let Some(id) = cx.local_reflector_data(&node)? else {
             return Ok(cx.make_null());
         };
         let value = with_dom::<E, _>(cx, |dom| {
-            let n = NodeId::from_raw(id as usize);
+            let n = NodeId::from_raw(id);
             match dom.kind(n) {
                 NodeKind::Text
                 | NodeKind::Comment
@@ -277,10 +271,15 @@ impl<E: ScriptEngine> NativeFn<E> for NodeValue {
 pub(crate) struct RemoveChild;
 impl<E: ScriptEngine> NativeFn<E> for RemoveChild {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let parent = cx.arg(0);
         let child = cx.arg(1);
-        if let Some(c) = cx.reflector_data(&child) {
+        if let (Some(p), Some(c)) = (
+            cx.local_reflector_data(&parent)?,
+            cx.local_reflector_data(&child)?,
+        ) {
+            super::adoption::require_same_owner(cx, &[p, c])?;
             // Orphan (keep alive + re-insertable), not drop — DOM `removeChild`.
-            with_dom::<E, _>(cx, |dom| dom.remove_child(NodeId::from_raw(c as usize)));
+            with_dom::<E, _>(cx, |dom| dom.remove_child(NodeId::from_raw(c)));
         }
         Ok(cx.undefined())
     }
@@ -294,18 +293,22 @@ impl<E: ScriptEngine> NativeFn<E> for InsertBefore {
         let parent = cx.arg(0);
         let node = cx.arg(1);
         let reference = cx.arg(2);
-        if let (Some(p), Some(n)) = (cx.reflector_data(&parent), cx.reflector_data(&node)) {
+        if let (Some(p), Some(n)) = (
+            cx.local_reflector_data(&parent)?,
+            cx.local_reflector_data(&node)?,
+        ) {
             let r = cx
-                .reflector_data(&reference)
-                .map(|r| NodeId::from_raw(r as usize));
+                .local_reflector_data(&reference)?
+                .map(|r| NodeId::from_raw(r));
+            let mut ids = vec![p, n];
+            if let Some(reference) = r {
+                ids.push(reference.raw());
+            }
+            super::adoption::require_same_owner(cx, &ids)?;
             with_dom::<E, _>(cx, |dom| {
-                dom.insert_before(
-                    NodeId::from_raw(p as usize),
-                    NodeId::from_raw(n as usize),
-                    r,
-                )
+                dom.insert_before(NodeId::from_raw(p), NodeId::from_raw(n), r)
             });
-            super::root_connected_subtree::<E>(cx, NodeId::from_raw(n as usize));
+            super::root_connected_subtree::<E>(cx, NodeId::from_raw(n));
         }
         Ok(cx.undefined())
     }
@@ -323,18 +326,22 @@ impl<E: ScriptEngine> NativeFn<E> for MoveBefore {
         let parent = cx.arg(0);
         let node = cx.arg(1);
         let reference = cx.arg(2);
-        if let (Some(p), Some(n)) = (cx.reflector_data(&parent), cx.reflector_data(&node)) {
+        if let (Some(p), Some(n)) = (
+            cx.local_reflector_data(&parent)?,
+            cx.local_reflector_data(&node)?,
+        ) {
             let r = cx
-                .reflector_data(&reference)
-                .map(|r| NodeId::from_raw(r as usize));
+                .local_reflector_data(&reference)?
+                .map(|r| NodeId::from_raw(r));
+            let mut ids = vec![p, n];
+            if let Some(reference) = r {
+                ids.push(reference.raw());
+            }
+            super::adoption::require_same_owner(cx, &ids)?;
             with_dom::<E, _>(cx, |dom| {
-                dom.move_before(
-                    NodeId::from_raw(p as usize),
-                    NodeId::from_raw(n as usize),
-                    r,
-                )
+                dom.move_before(NodeId::from_raw(p), NodeId::from_raw(n), r)
             });
-            super::root_connected_subtree::<E>(cx, NodeId::from_raw(n as usize));
+            super::root_connected_subtree::<E>(cx, NodeId::from_raw(n));
         }
         Ok(cx.undefined())
     }
@@ -346,11 +353,11 @@ pub(crate) struct LocalNameOf;
 impl<E: ScriptEngine> NativeFn<E> for LocalNameOf {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let el = cx.arg(0);
-        let Some(id) = cx.reflector_data(&el) else {
+        let Some(id) = cx.local_reflector_data(&el)? else {
             return Ok(cx.make_null());
         };
         let name = with_dom::<E, _>(cx, |dom| {
-            dom.element_name(NodeId::from_raw(id as usize))
+            dom.element_name(NodeId::from_raw(id))
                 .map(|q| q.local.as_ref().to_string())
         })
         .flatten();
@@ -366,11 +373,11 @@ pub(crate) struct NamespaceUri;
 impl<E: ScriptEngine> NativeFn<E> for NamespaceUri {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let el = cx.arg(0);
-        let Some(id) = cx.reflector_data(&el) else {
+        let Some(id) = cx.local_reflector_data(&el)? else {
             return Ok(cx.make_null());
         };
         let ns = with_dom::<E, _>(cx, |dom| {
-            dom.element_name(NodeId::from_raw(id as usize))
+            dom.element_name(NodeId::from_raw(id))
                 .map(|q| q.ns.as_ref().to_string())
         })
         .flatten();
@@ -386,11 +393,11 @@ pub(crate) struct PrefixOf;
 impl<E: ScriptEngine> NativeFn<E> for PrefixOf {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let el = cx.arg(0);
-        let Some(id) = cx.reflector_data(&el) else {
+        let Some(id) = cx.local_reflector_data(&el)? else {
             return Ok(cx.make_null());
         };
         let prefix = with_dom::<E, _>(cx, |dom| {
-            dom.element_name(NodeId::from_raw(id as usize))
+            dom.element_name(NodeId::from_raw(id))
                 .and_then(|q| q.prefix.as_ref().map(|p| p.as_ref().to_string()))
         })
         .flatten();
@@ -433,11 +440,11 @@ pub(crate) struct AttributeNames;
 impl<E: ScriptEngine> NativeFn<E> for AttributeNames {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let el = cx.arg(0);
-        let Some(id) = cx.reflector_data(&el) else {
+        let Some(id) = cx.local_reflector_data(&el)? else {
             return cx.make_string("");
         };
         let names = with_dom::<E, _>(cx, |dom| {
-            dom.attributes(NodeId::from_raw(id as usize))
+            dom.attributes(NodeId::from_raw(id))
                 .map(|a| a.name.local.as_ref().to_string())
                 .collect::<Vec<_>>()
                 .join(" ")
@@ -456,11 +463,11 @@ pub(crate) struct AttributeRecords;
 impl<E: ScriptEngine> NativeFn<E> for AttributeRecords {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let el = cx.arg(0);
-        let Some(id) = cx.reflector_data(&el) else {
+        let Some(id) = cx.local_reflector_data(&el)? else {
             return cx.make_string("");
         };
         let records = with_dom::<E, _>(cx, |dom| {
-            dom.attribute_names(NodeId::from_raw(id as usize))
+            dom.attribute_names(NodeId::from_raw(id))
                 .into_iter()
                 .map(|(ns, prefix, local)| format!("{ns}\u{1f}{prefix}\u{1f}{local}"))
                 .collect::<Vec<_>>()
@@ -477,7 +484,7 @@ pub(crate) struct SetAttributeNS;
 impl<E: ScriptEngine> NativeFn<E> for SetAttributeNS {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let el = cx.arg(0);
-        let Some(id) = cx.reflector_data(&el) else {
+        let Some(id) = cx.local_reflector_data(&el)? else {
             return Ok(cx.undefined());
         };
         let ns_v = cx.arg(1);
@@ -487,11 +494,7 @@ impl<E: ScriptEngine> NativeFn<E> for SetAttributeNS {
         let qname = cx.value_to_string(&qname_v)?;
         let value = cx.value_to_string(&value_v)?;
         with_dom::<E, _>(cx, |dom| {
-            dom.set_attribute(
-                NodeId::from_raw(id as usize),
-                ns_attr_qual(&ns, &qname),
-                &value,
-            )
+            dom.set_attribute(NodeId::from_raw(id), ns_attr_qual(&ns, &qname), &value)
         });
         Ok(cx.undefined())
     }
@@ -502,7 +505,7 @@ pub(crate) struct GetAttributeNS;
 impl<E: ScriptEngine> NativeFn<E> for GetAttributeNS {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let el = cx.arg(0);
-        let Some(id) = cx.reflector_data(&el) else {
+        let Some(id) = cx.local_reflector_data(&el)? else {
             return Ok(cx.make_null());
         };
         let ns_v = cx.arg(1);
@@ -511,7 +514,7 @@ impl<E: ScriptEngine> NativeFn<E> for GetAttributeNS {
         let local = cx.value_to_string(&local_v)?;
         let value = with_dom::<E, _>(cx, |dom| {
             dom.attribute(
-                NodeId::from_raw(id as usize),
+                NodeId::from_raw(id),
                 &Namespace::from(ns.as_str()),
                 &LocalName::from(local.as_str()),
             )
@@ -530,7 +533,7 @@ pub(crate) struct RemoveAttributeNS;
 impl<E: ScriptEngine> NativeFn<E> for RemoveAttributeNS {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let el = cx.arg(0);
-        let Some(id) = cx.reflector_data(&el) else {
+        let Some(id) = cx.local_reflector_data(&el)? else {
             return Ok(cx.undefined());
         };
         let ns_v = cx.arg(1);
@@ -539,7 +542,7 @@ impl<E: ScriptEngine> NativeFn<E> for RemoveAttributeNS {
         let local = cx.value_to_string(&local_v)?;
         with_dom::<E, _>(cx, |dom| {
             dom.remove_attribute(
-                NodeId::from_raw(id as usize),
+                NodeId::from_raw(id),
                 QualName::new(
                     None,
                     Namespace::from(ns.as_str()),

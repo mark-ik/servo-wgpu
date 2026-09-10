@@ -44,6 +44,7 @@ const STRUCTURED_CLONE_BOOTSTRAP: &str = r#"
   var NativeArray = Array, isArray = Array.isArray, NativeMap = Map;
   var mapGet = Map.prototype.get, mapSet = Map.prototype.set;
   var NativeSet = Set, setAdd = Set.prototype.add;
+  var domNodes = globalThis.__agentTimers.domNodes, hasDOMNode = WeakSet.prototype.has;
   var NativeBoolean = Boolean, NativeNumber = Number, NativeString = String;
   var NativeObject = Object, NativeDate = Date, NativeRegExp = RegExp;
   var NativeDataView = DataView, NativeUint8Array = Uint8Array;
@@ -226,8 +227,7 @@ const STRUCTURED_CLONE_BOOTSTRAP: &str = r#"
   // beyond Blob / File, which are handled above.
   function isPlatformObject(v) {
     if (v === globalThis) return true;
-    if (globalThis.Node && v instanceof globalThis.Node) return true;
-    if (typeof v.nodeType === 'number' && typeof v.nodeName === 'string') return true;
+    if (apply(hasDOMNode, domNodes, [v])) return true;
     if (globalThis.Event && v instanceof globalThis.Event) return true;
     if (globalThis.EventTarget && v instanceof globalThis.EventTarget) return true;
     if (globalThis.Promise && v instanceof globalThis.Promise) return true;

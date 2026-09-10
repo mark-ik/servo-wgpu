@@ -6,6 +6,7 @@
 //! generic XPath 1.0 engine, then serialize the result for the JS `XPathResult`
 //! wrapper in `bootstrap.js`.
 
+use crate::LocalReflectorCx as _;
 use std::cmp::Ordering;
 use std::rc::Rc;
 
@@ -32,7 +33,7 @@ struct XPathNodeData {
     text: Option<String>,
     parent: Option<usize>,
     children: Vec<usize>,
-    raw: usize,
+    raw: u64,
     order: usize,
 }
 
@@ -216,7 +217,7 @@ impl XPathNode {
         self.tree.node(self.tree.root)
     }
 
-    fn raw_node(&self) -> Option<usize> {
+    fn raw_node(&self) -> Option<u64> {
         self.node_data().map(|d| d.raw)
     }
 
@@ -506,45 +507,52 @@ impl<E: ScriptEngine> NativeFn<E> for EvaluateXPath {
         let expr_v = cx.arg(0);
         let expression = cx.value_to_string(&expr_v)?;
         let context_v = cx.arg(1);
-        let Some(context_raw) = cx.reflector_data(&context_v) else {
+        let Some(context_raw) = cx.local_reflector_data(&context_v)? else {
             return cx.make_string("error\nDocument.evaluate requires a context node");
         };
 
-        let record = with_dom::<E, _>(cx, |dom| {
-            let context_id = NodeId::from_raw(context_raw as usize);
-            if !dom.is_live(context_id) {
-                return "error\nDocument.evaluate context node is not live".to_string();
-            }
-            let tree = XPathTree::from_dom(dom, dom.document());
-            let Some(context_idx) = tree
-                .nodes
-                .iter()
-                .position(|node| node.raw == context_id.raw())
-            else {
-                return "error\nDocument.evaluate context node is outside this document"
-                    .to_string();
-            };
-            let parsed = match xpath::parse(&expression, None::<NoNamespaces>, true) {
-                Ok(parsed) => parsed,
-                Err(err) => return format!("error\n{err:?}"),
-            };
-            match xpath::evaluate_parsed_xpath::<XPathDom>(&parsed, tree.node(context_idx)) {
-                Ok(xpath::Value::Boolean(value)) => format!("boolean\n{value}"),
-                Ok(xpath::Value::Number(value)) => format!("number\n{value}"),
-                Ok(xpath::Value::String(value)) => format!("string\n{value}"),
-                Ok(xpath::Value::NodeSet(nodes)) => {
-                    let ids = nodes
-                        .into_iter()
-                        .filter_map(|node| node.raw_node())
-                        .map(|raw| raw.to_string())
-                        .collect::<Vec<_>>()
-                        .join(",");
-                    format!("nodes\n{ids}")
-                },
-                Err(err) => format!("error\n{err:?}"),
-            }
-        })
-        .unwrap_or_else(|| "error\nDocument.evaluate has no host DOM".to_string());
+        // The expression is argument zero; route by the context reflector in
+        // argument one rather than the native function's creation realm.
+        let owner = adoption::current_host(cx)
+            .and_then(|host| adoption::owner_host(&host, NodeId::from_raw(context_raw)));
+        let record = owner
+            .map(|(_, host)| {
+                let host = host.borrow();
+                let dom = &host.dom;
+                let context_id = NodeId::from_raw(context_raw);
+                if !dom.is_live(context_id) {
+                    return "error\nDocument.evaluate context node is not live".to_string();
+                }
+                let tree = XPathTree::from_dom(dom, dom.document());
+                let Some(context_idx) = tree
+                    .nodes
+                    .iter()
+                    .position(|node| node.raw == context_id.raw())
+                else {
+                    return "error\nDocument.evaluate context node is outside this document"
+                        .to_string();
+                };
+                let parsed = match xpath::parse(&expression, None::<NoNamespaces>, true) {
+                    Ok(parsed) => parsed,
+                    Err(err) => return format!("error\n{err:?}"),
+                };
+                match xpath::evaluate_parsed_xpath::<XPathDom>(&parsed, tree.node(context_idx)) {
+                    Ok(xpath::Value::Boolean(value)) => format!("boolean\n{value}"),
+                    Ok(xpath::Value::Number(value)) => format!("number\n{value}"),
+                    Ok(xpath::Value::String(value)) => format!("string\n{value}"),
+                    Ok(xpath::Value::NodeSet(nodes)) => {
+                        let ids = nodes
+                            .into_iter()
+                            .filter_map(|node| node.raw_node())
+                            .map(|raw| raw.to_string())
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        format!("nodes\n{ids}")
+                    },
+                    Err(err) => format!("error\n{err:?}"),
+                }
+            })
+            .unwrap_or_else(|| "error\nDocument.evaluate has no host DOM".to_string());
 
         cx.make_string(&record)
     }

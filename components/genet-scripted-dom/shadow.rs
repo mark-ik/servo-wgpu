@@ -201,9 +201,9 @@ impl ScriptedDom {
     /// Every shadow root in this document, in creation order (the store key is
     /// the monotonic mint order), so the enumeration is stable across runs.
     pub fn shadow_root_ids(&self) -> Vec<NodeId> {
-        let mut keys: Vec<usize> = self.shadow_roots.keys().copied().collect();
+        let mut keys: Vec<u64> = self.shadow_roots.keys().copied().collect();
         keys.sort_unstable();
-        keys.into_iter().map(|key| self.pack(key)).collect()
+        keys.into_iter().map(NodeId::from_raw).collect()
     }
 
     /// The number of live shadow roots (a diagnostic and a test signal).
@@ -536,7 +536,7 @@ impl ScriptedDom {
         if self.shadow_roots.is_empty() && self.assigned_slots.is_empty() {
             return;
         }
-        let dead_roots: Vec<usize> = self
+        let dead_roots: Vec<u64> = self
             .shadow_roots
             .iter()
             .filter(|(key, data)| {

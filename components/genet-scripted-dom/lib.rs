@@ -25,6 +25,9 @@ use layout_dom_api::{
     NodeKind, QualName,
 };
 
+mod adoption;
+pub use adoption::SubtreeTransferError;
+
 mod forms;
 pub mod parser;
 mod serialize;
@@ -34,61 +37,88 @@ pub use shadow::{
     AttachShadowError, ShadowRootInit, ShadowRootMode, SlotAssignmentMode, may_host_shadow_tree,
 };
 
-/// Opaque node identity: a stable index into the arena (slots are never reused, so
-/// ids stay valid for the document's lifetime).
-// `usize`-backed (pointer-sized) for the reflector bridge's raw identity. The
-// retired Stylo adapter also required this shape; keeping it avoids an ABI-like
-// identity migration without retaining that adapter.
+/// Stable node identity, independent of pointer width and current storage owner.
+/// The high 24 bits name its allocation arena; the low 40 bits are a monotonic
+/// serial within that arena. Moving storage must preserve this whole identity.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct NodeId(usize);
+pub struct NodeId(u64);
+
+/// Identity allocation or capture translation failed before any id was reused.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NodeIdentityError {
+    ArenaExhausted,
+    NodeExhausted,
+    InvalidRawId,
+    InvalidLocalIndex,
+    UnallocatedIdentity,
+    CaptureRequiresTranslation,
+}
+
+impl std::fmt::Display for NodeIdentityError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::ArenaExhausted => "scripted-dom arena identity space exhausted",
+            Self::NodeExhausted => "scripted-dom node identity space exhausted",
+            Self::InvalidRawId => "node identity has no allocation arena",
+            Self::InvalidLocalIndex => "captured node index exceeds the identity field",
+            Self::UnallocatedIdentity => "node identity was never allocated by this arena",
+            Self::CaptureRequiresTranslation => {
+                "foreign-origin node requires explicit capture translation"
+            },
+        })
+    }
+}
+impl std::error::Error for NodeIdentityError {}
 
 impl NodeId {
-    /// The raw arena index. The reflector bridge packs this into a
-    /// `script_engine_api::ReflectorData` (`u64`) so JS can carry it opaquely.
-    pub fn raw(self) -> usize {
+    pub const LOCAL_BITS: u32 = 40;
+    pub const MAX_LOCAL_INDEX: u64 = (1u64 << Self::LOCAL_BITS) - 1;
+    pub const MAX_ARENA_ID: u32 = (1u32 << (64 - Self::LOCAL_BITS)) - 1;
+
+    /// Full opaque identity for layout and native reflectors. Never truncate to usize.
+    pub fn raw(self) -> u64 {
         self.0
     }
 
-    /// Rebuild a `NodeId` from a raw index recovered from a reflector.
-    pub fn from_raw(raw: usize) -> Self {
+    /// Allocation provenance, not the arena currently storing the node.
+    pub fn origin_arena_id(self) -> u32 {
+        (self.0 >> Self::LOCAL_BITS) as u32
+    }
+
+    /// Allocation serial. This is not independently a node identity.
+    pub fn local_index(self) -> u64 {
+        self.0 & Self::MAX_LOCAL_INDEX
+    }
+
+    pub fn try_from_raw(raw: u64) -> Result<Self, NodeIdentityError> {
+        let id = Self(raw);
+        if id.origin_arena_id() == 0 {
+            Err(NodeIdentityError::InvalidRawId)
+        } else {
+            Ok(id)
+        }
+    }
+
+    /// Reconstruct an opaque candidate identity. This does not assert liveness
+    /// or provenance: input boundaries must validate storage membership before
+    /// use. Malformed candidates remain inert under `ScriptedDom::is_live`.
+    pub fn from_raw(raw: u64) -> Self {
         Self(raw)
     }
 }
 
-// --- G0: the document fence -------------------------------------------------
-//
-// Live `ScriptedDom`s are multiplying (chrome, workbench, roster, panes,
-// cards, windows). A `NodeId` minted by one document and used against another
-// is a silent wrong-node bug. To catch it, each document carries a
-// process-unique `doc_tag`; on 64-bit *debug* builds the tag is packed into a
-// `NodeId`'s high bits and every accessor `debug_assert`s ownership.
-//
-// On release and on wasm32 the packing and the asserts compile out entirely,
-// so ids are the bare arena index exactly as before and behavior is
-// byte-identical. wasm32 has no room to pack (a `usize` is 32 bits there, all
-// of it spoken for by the index), and native debug runs already exercise the
-// bug class. The packed value rides opaquely through `LayoutDom::opaque_id` and
-// the reflector bridge's `raw()`/`from_raw()` u64 round-trip, so the tag survives
-// both paths and the assert fires on reconstructed ids too.
-
-#[cfg(all(debug_assertions, target_pointer_width = "64"))]
-mod fence {
-    /// Low bits of a `NodeId` carrying the arena index. 2^48 nodes per
-    /// document is ample; the remaining 16 high bits carry the `doc_tag`.
-    pub const INDEX_BITS: u32 = 48;
-    pub const INDEX_MASK: usize = (1usize << INDEX_BITS) - 1;
-    /// 16-bit tag space. On wraparound (65k+ documents in one process) tags
-    /// may alias and the assert weakens to a heuristic; it never miscompares a
-    /// same-tag id, so correctness is unaffected.
-    pub const TAG_MASK: u64 = (1u64 << (64 - INDEX_BITS)) - 1;
-
-    /// Mint a process-unique tag. Starts at 1 so the first document is nonzero.
-    pub fn next_doc_tag() -> u64 {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static COUNTER: AtomicU64 = AtomicU64::new(1);
-        COUNTER.fetch_add(1, Ordering::Relaxed) & TAG_MASK
-    }
+// AtomicU32 is available on native and wasm32; neither pointer width nor debug
+// assertions change the identity. The exhausted sentinel is never minted.
+fn next_arena_id(counter: &std::sync::atomic::AtomicU32) -> Result<u32, NodeIdentityError> {
+    use std::sync::atomic::Ordering;
+    counter
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+            (next != 0 && next <= NodeId::MAX_ARENA_ID).then(|| next + 1)
+        })
+        .map_err(|_| NodeIdentityError::ArenaExhausted)
 }
+
+static NEXT_ARENA_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
 
 /// A tiny deterministic FNV-1a hasher for the node store (G3). std `HashMap`'s
 /// `RandomState` is seed-dependent (and its seed is an entropy question on
@@ -117,10 +147,10 @@ impl std::hash::Hasher for FnvHasher {
 }
 
 /// The node store: a *prunable* map from a monotonic node value to its [`Node`].
-/// Keyed by the untagged id value (the low bits the fence's `index` returns), so
-/// the G0 doc-tag never reaches the key. Pruning dead entries is what bounds
-/// memory to live nodes (G3); the deterministic hasher keeps it order-stable.
-type NodeStore = std::collections::HashMap<usize, Node, std::hash::BuildHasherDefault<FnvHasher>>;
+/// Keys retain the full birth identity even after storage ownership changes.
+/// Pruning dead entries bounds memory to live nodes (G3). The fixed hasher avoids
+/// randomized hashing; callers must not treat map iteration as document order.
+type NodeStore = std::collections::HashMap<u64, Node, std::hash::BuildHasherDefault<FnvHasher>>;
 
 struct Node {
     kind: NodeKind,
@@ -152,7 +182,7 @@ pub struct ScriptedDom {
     nodes: NodeStore,
     /// Monotonic id counter. The next node's untagged value; never decremented,
     /// so ids are never reused even as the store is pruned.
-    next_id: usize,
+    next_id: u64,
     /// The primary document root (returned by `document()`) — the sole permanent
     /// mark root for `collect`. Everything else (secondary documents, fragments,
     /// detached subtrees) survives only via reachability from here or the host's
@@ -189,35 +219,33 @@ pub struct ScriptedDom {
     /// Shadow-root records, keyed by the shadow root's store key. Empty for
     /// every document that never attaches one, which is what lets the flat-tree
     /// and assignment hooks cost a `HashMap::is_empty` there.
-    shadow_roots: std::collections::HashMap<usize, shadow::ShadowRootData>,
+    shadow_roots: std::collections::HashMap<u64, shadow::ShadowRootData>,
     /// Host store key -> its shadow root. The reverse of
     /// [`shadow::ShadowRootData::host`], kept because `shadowRoot` and
     /// `flat_children` both ask host-first.
-    shadow_hosts: std::collections::HashMap<usize, NodeId>,
+    shadow_hosts: std::collections::HashMap<u64, NodeId>,
     /// Slottable store key -> the slot it is assigned to (`assignedSlot`).
-    assigned_slots: std::collections::HashMap<usize, NodeId>,
+    assigned_slots: std::collections::HashMap<u64, NodeId>,
     /// Slot store key -> its assigned nodes, in tree order. The flat tree's hot
     /// read; the per-root table in `ShadowRootData` is the diffing copy.
-    slot_assignments: std::collections::HashMap<usize, Vec<NodeId>>,
+    slot_assignments: std::collections::HashMap<u64, Vec<NodeId>>,
     /// Slots whose assignment changed since the last drain. The bootstrap fires
     /// one `slotchange` per entry at the end of the microtask checkpoint.
     slot_changes: Vec<NodeId>,
     /// Template element store key -> its contents `DocumentFragment`. The
     /// fragment is parentless and is **not** in the main tree, so no ordinary
     /// walk reaches it; that is exactly what makes template contents inert.
-    template_contents: std::collections::HashMap<usize, NodeId>,
+    template_contents: std::collections::HashMap<u64, NodeId>,
     /// Contents fragment store key -> inert owner document. This is a directed
     /// retention edge, not a DOM parent link or a back-reference to the template.
-    template_content_owners: std::collections::HashMap<usize, NodeId>,
+    template_content_owners: std::collections::HashMap<u64, NodeId>,
     /// The one inert `Document` that owns every template's contents fragment,
     /// minted on the first `<template>` and shared by all of them — HTML's
     /// "appropriate template contents owner document", which is what makes
     /// `a.content.ownerDocument === b.content.ownerDocument` true.
     template_document: Option<NodeId>,
-    /// Process-unique document tag (G0 fence). Only present where the fence is
-    /// active; elsewhere ids are untagged and this field would be dead weight.
-    #[cfg(all(debug_assertions, target_pointer_width = "64"))]
-    doc_tag: u64,
+    /// Unique allocation namespace. Storage may later accept identities born elsewhere.
+    arena_id: u32,
 }
 
 impl Default for ScriptedDom {
@@ -325,6 +353,11 @@ impl Pins {
 impl ScriptedDom {
     /// A fresh document with an empty `Document` root.
     pub fn new() -> Self {
+        Self::try_new().expect("scripted-dom arena identity allocation failed")
+    }
+
+    pub fn try_new() -> Result<Self, NodeIdentityError> {
+        let arena_id = next_arena_id(&NEXT_ARENA_ID)?;
         let mut dom = Self {
             nodes: NodeStore::default(),
             next_id: 0,
@@ -346,71 +379,90 @@ impl ScriptedDom {
             template_contents: std::collections::HashMap::new(),
             template_content_owners: std::collections::HashMap::new(),
             template_document: None,
-            #[cfg(all(debug_assertions, target_pointer_width = "64"))]
-            doc_tag: fence::next_doc_tag(),
+            arena_id,
         };
-        dom.root = dom.push(Node::new(NodeKind::Document));
-        dom
+        dom.root = dom.try_push(Node::new(NodeKind::Document))?;
+        Ok(dom)
     }
 
-    /// Pack a monotonic id value into a `NodeId`, tagging it with this document
-    /// on a fenced build. Off the fence this is the bare value (today's behavior).
-    #[cfg(all(debug_assertions, target_pointer_width = "64"))]
-    fn pack(&self, value: usize) -> NodeId {
-        debug_assert!(value <= fence::INDEX_MASK, "scripted-dom node id overflow");
-        NodeId((((self.doc_tag & fence::TAG_MASK) << fence::INDEX_BITS) as usize) | value)
-    }
-    #[cfg(not(all(debug_assertions, target_pointer_width = "64")))]
-    fn pack(&self, value: usize) -> NodeId {
-        NodeId(value)
+    /// The namespace used for new allocations, not an ownership query for a node.
+    pub fn arena_id(&self) -> u32 {
+        self.arena_id
     }
 
-    /// Resolve a `NodeId` to its store key (the untagged id value), asserting it
-    /// belongs to this document first. Every accessor that reads the store goes
-    /// through here.
-    #[cfg(all(debug_assertions, target_pointer_width = "64"))]
-    fn index(&self, id: NodeId) -> usize {
-        debug_assert!(
-            (id.0 >> fence::INDEX_BITS) as u64 == (self.doc_tag & fence::TAG_MASK),
-            "NodeId from a different document (id tag {}, this doc {})",
-            (id.0 >> fence::INDEX_BITS) as u64,
-            self.doc_tag & fence::TAG_MASK,
+    fn pack(&self, value: u64) -> NodeId {
+        assert!(
+            value <= NodeId::MAX_LOCAL_INDEX,
+            "scripted-dom node id overflow"
         );
-        id.0 & fence::INDEX_MASK
-    }
-    #[cfg(not(all(debug_assertions, target_pointer_width = "64")))]
-    #[inline]
-    fn index(&self, id: NodeId) -> usize {
-        id.0
+        NodeId((u64::from(self.arena_id) << NodeId::LOCAL_BITS) | value)
     }
 
-    /// Like [`index`](Self::index) but **non-asserting**: returns `None` for an
-    /// id minted by a different document (on a fenced build) instead of
-    /// panicking, so [`is_live`](Self::is_live) can answer for any id.
-    #[cfg(all(debug_assertions, target_pointer_width = "64"))]
-    fn try_index(&self, id: NodeId) -> Option<usize> {
-        if (id.0 >> fence::INDEX_BITS) as u64 == (self.doc_tag & fence::TAG_MASK) {
-            Some(id.0 & fence::INDEX_MASK)
-        } else {
-            None
+    /// Resolve a stable identity only if this store physically contains it.
+    /// Birth provenance does not become a permanent storage-owner restriction.
+    #[inline]
+    fn index(&self, id: NodeId) -> u64 {
+        self.try_index(id)
+            .expect("NodeId is not stored in this document (foreign or retired)")
+    }
+
+    #[inline]
+    fn try_index(&self, id: NodeId) -> Option<u64> {
+        self.nodes.contains_key(&id.raw()).then_some(id.raw())
+    }
+
+    /// Capture this arena's allocation serial, including retired mutation ids.
+    /// Imported identities need an explicit capture translation table.
+    pub fn try_capture_node_id(&self, id: NodeId) -> Result<u64, NodeIdentityError> {
+        if id.origin_arena_id() != self.arena_id {
+            return Err(NodeIdentityError::CaptureRequiresTranslation);
         }
-    }
-    #[cfg(not(all(debug_assertions, target_pointer_width = "64")))]
-    #[inline]
-    fn try_index(&self, id: NodeId) -> Option<usize> {
-        Some(id.0)
+        if id.local_index() >= self.next_id {
+            return Err(NodeIdentityError::UnallocatedIdentity);
+        }
+        Ok(id.local_index())
     }
 
-    /// Normalize `id` for capture/replay: strip any debug doc-tag fence and return
-    /// the bare arena index the recorder writes.
     pub fn capture_node_id(&self, id: NodeId) -> u64 {
-        self.index(id) as u64
+        self.try_capture_node_id(id)
+            .expect("node capture identity translation failed")
     }
 
-    /// Re-mint a captured bare arena index against this document, restoring this
-    /// document's tag on a fenced build.
+    /// Translate a captured serial into this arena's allocation namespace.
+    /// Reconstruction does not imply that the node is still live.
+    pub fn try_remint_node_id(&self, raw: u64) -> Result<NodeId, NodeIdentityError> {
+        if raw > NodeId::MAX_LOCAL_INDEX {
+            return Err(NodeIdentityError::InvalidLocalIndex);
+        }
+        if raw >= self.next_id {
+            return Err(NodeIdentityError::UnallocatedIdentity);
+        }
+        Ok(self.pack(raw))
+    }
+
     pub fn remint_node_id(&self, raw: u64) -> NodeId {
-        self.pack(usize::try_from(raw).expect("captured node id must fit in usize"))
+        self.try_remint_node_id(raw)
+            .expect("captured node identity translation failed")
+    }
+
+    pub fn try_create_element(&mut self, name: QualName) -> Result<NodeId, NodeIdentityError> {
+        let mut node = Node::new(NodeKind::Element);
+        node.name = Some(name);
+        self.try_push(node)
+    }
+
+    pub fn try_create_text(&mut self, data: &str) -> Result<NodeId, NodeIdentityError> {
+        let mut node = Node::new(NodeKind::Text);
+        node.text = Some(data.to_owned());
+        self.try_push(node)
+    }
+
+    pub fn try_create_document(&mut self) -> Result<NodeId, NodeIdentityError> {
+        self.try_push(Node::new(NodeKind::Document))
+    }
+
+    pub fn try_create_fragment(&mut self) -> Result<NodeId, NodeIdentityError> {
+        self.try_push(Node::new(NodeKind::DocumentFragment))
     }
 
     /// Non-consuming view of the pending mutation batch. The returned base is
@@ -784,22 +836,32 @@ impl ScriptedDom {
 
     fn node(&self, id: NodeId) -> &Node {
         self.nodes
-            .get(&self.index(id))
-            .expect("NodeId refers to a live node")
+            .get(&id.raw())
+            .expect("NodeId is not stored in this document (foreign or retired)")
     }
 
     fn node_mut(&mut self, id: NodeId) -> &mut Node {
-        let i = self.index(id);
         self.nodes
-            .get_mut(&i)
-            .expect("NodeId refers to a live node")
+            .get_mut(&id.raw())
+            .expect("NodeId is not stored in this document (foreign or retired)")
+    }
+
+    fn try_push(&mut self, node: Node) -> Result<NodeId, NodeIdentityError> {
+        if self.next_id > NodeId::MAX_LOCAL_INDEX {
+            return Err(NodeIdentityError::NodeExhausted);
+        }
+        let id = self.pack(self.next_id);
+        self.next_id += 1;
+        assert!(
+            self.nodes.insert(id.raw(), node).is_none(),
+            "node identity reuse"
+        );
+        Ok(id)
     }
 
     fn push(&mut self, node: Node) -> NodeId {
-        let value = self.next_id;
-        self.next_id += 1;
-        self.nodes.insert(value, node);
-        self.pack(value)
+        self.try_push(node)
+            .expect("scripted-dom node identity allocation failed")
     }
 
     fn sibling(&self, id: NodeId, delta: isize) -> Option<NodeId> {
@@ -867,8 +929,8 @@ impl ScriptedDom {
     pub fn collect(&mut self, extra_roots: impl IntoIterator<Item = NodeId>) -> usize {
         // Mark: undirected reachability from the primary document root + extra
         // roots (secondary documents and fragments survive only via the pins).
-        let mut marked: std::collections::HashSet<usize> = std::collections::HashSet::new();
-        let mut stack: Vec<usize> = Vec::new();
+        let mut marked: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let mut stack: Vec<u64> = Vec::new();
         self.seed_mark(self.root, &mut marked, &mut stack);
         for r in extra_roots {
             self.seed_mark(r, &mut marked, &mut stack);
@@ -962,7 +1024,7 @@ impl ScriptedDom {
         let mut node_kinds = DomNodeKindStats::default();
         let mut attribute_count = 0usize;
         let mut estimated_bytes = std::mem::size_of::<Self>()
-            + self.nodes.capacity() * (std::mem::size_of::<usize>() + std::mem::size_of::<Node>())
+            + self.nodes.capacity() * (std::mem::size_of::<u64>() + std::mem::size_of::<Node>())
             + self.mutations.capacity() * std::mem::size_of::<DomMutation<NodeId>>();
 
         for node in self.nodes.values() {
@@ -1006,11 +1068,11 @@ impl ScriptedDom {
     fn seed_mark(
         &self,
         id: NodeId,
-        marked: &mut std::collections::HashSet<usize>,
-        stack: &mut Vec<usize>,
+        marked: &mut std::collections::HashSet<u64>,
+        stack: &mut Vec<u64>,
     ) {
         if let Some(v) = self.try_index(id) {
-            if self.nodes.contains_key(&v) && marked.insert(v) {
+            if marked.insert(v) {
                 stack.push(v);
             }
         }
@@ -1128,8 +1190,7 @@ impl LayoutDom for ScriptedDom {
     /// (attached or orphaned-but-kept); a dropped or collected node has no entry.
     /// Never panics, unlike the read accessors.
     fn is_live(&self, id: NodeId) -> bool {
-        self.try_index(id)
-            .is_some_and(|v| self.nodes.contains_key(&v))
+        self.try_index(id).is_some()
     }
 
     fn parent(&self, id: NodeId) -> Option<NodeId> {
@@ -1194,11 +1255,9 @@ impl LayoutDom for ScriptedDom {
     }
 
     fn opaque_id(&self, id: NodeId) -> u64 {
-        // Assert ownership (the fence), then return the full packed id through
-        // the render-neutral `LayoutDom` identity seam. Off the fence this is
-        // just `id.0`, identical to before.
+        // Layout consumes the full identity after validating live storage membership.
         let _ = self.index(id);
-        id.0 as u64
+        id.raw()
     }
 
     fn element_name(&self, id: NodeId) -> Option<&QualName> {
@@ -1248,15 +1307,13 @@ impl LayoutDom for ScriptedDom {
 
 impl LayoutDomMut for ScriptedDom {
     fn create_element(&mut self, name: QualName) -> NodeId {
-        let mut node = Node::new(NodeKind::Element);
-        node.name = Some(name);
-        self.push(node)
+        self.try_create_element(name)
+            .expect("scripted-dom node identity allocation failed")
     }
 
     fn create_text(&mut self, data: &str) -> NodeId {
-        let mut node = Node::new(NodeKind::Text);
-        node.text = Some(data.to_owned());
-        self.push(node)
+        self.try_create_text(data)
+            .expect("scripted-dom node identity allocation failed")
     }
 
     fn append_child(&mut self, parent: NodeId, child: NodeId) {
@@ -1946,12 +2003,9 @@ mod tests {
         assert_eq!(dom.kind(secondary), NodeKind::Document);
     }
 
-    /// On a fenced build (64-bit debug) a `NodeId` minted by one document used
-    /// against another panics. On release/wasm the fence compiles out, so this
-    /// test only exists where the assert is live.
-    #[cfg(all(debug_assertions, target_pointer_width = "64"))]
+    /// Storage membership is enforced on release and wasm as well as debug.
     #[test]
-    #[should_panic(expected = "different document")]
+    #[should_panic(expected = "not stored in this document")]
     fn cross_document_node_id_panics() {
         let mut a = ScriptedDom::new();
         let b = ScriptedDom::new();
@@ -1960,7 +2014,6 @@ mod tests {
         let _ = b.kind(id_in_a);
     }
 
-    #[cfg(all(debug_assertions, target_pointer_width = "64"))]
     #[test]
     fn distinct_documents_get_distinct_tags() {
         let a = ScriptedDom::new();
@@ -1976,11 +2029,116 @@ mod tests {
         let captured = a.capture_node_id(a.document());
         let reminted = b.remint_node_id(captured);
         assert!(b.is_live(reminted));
-        #[cfg(all(debug_assertions, target_pointer_width = "64"))]
-        {
-            assert!(!b.is_live(a.document()));
-            assert_ne!(a.document(), reminted);
+        assert!(!b.is_live(a.document()));
+        assert_ne!(a.document(), reminted);
+    }
+
+    #[test]
+    fn identity_keeps_all_bits_independent_of_pointer_width() {
+        assert_eq!(std::mem::size_of::<NodeId>(), 8);
+        let mut dom = ScriptedDom::new();
+        dom.next_id = u64::from(u32::MAX) + 1;
+        let node = dom.try_create_text("wide").unwrap();
+        assert_eq!(node.local_index(), 1u64 << 32);
+        assert_eq!(node.origin_arena_id(), dom.arena_id());
+        assert_eq!(NodeId::try_from_raw(node.raw()), Ok(node));
+        assert_eq!(NodeId::try_from_raw(u64::MAX).unwrap().raw(), u64::MAX);
+        assert_eq!(
+            NodeId::try_from_raw(node.local_index()),
+            Err(NodeIdentityError::InvalidRawId)
+        );
+        assert_eq!(dom.kind(node), NodeKind::Text);
+        assert_eq!(dom.opaque_id(node), node.raw());
+    }
+
+    #[test]
+    fn arena_identity_exhaustion_never_wraps_or_reuses() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let counter = AtomicU32::new(NodeId::MAX_ARENA_ID);
+        assert_eq!(next_arena_id(&counter), Ok(NodeId::MAX_ARENA_ID));
+        for _ in 0..2 {
+            assert_eq!(
+                next_arena_id(&counter),
+                Err(NodeIdentityError::ArenaExhausted)
+            );
+            assert_eq!(counter.load(Ordering::Relaxed), NodeId::MAX_ARENA_ID + 1);
         }
+    }
+
+    #[test]
+    fn node_identity_exhaustion_is_fallible_without_mutating_store() {
+        let mut dom = ScriptedDom::new();
+        dom.next_id = NodeId::MAX_LOCAL_INDEX;
+        let last = dom.try_create_element(qual("last")).unwrap();
+        assert_eq!(last.local_index(), NodeId::MAX_LOCAL_INDEX);
+        let count = dom.live_node_count();
+        assert_eq!(
+            dom.try_create_text("overflow"),
+            Err(NodeIdentityError::NodeExhausted)
+        );
+        assert_eq!(
+            dom.try_create_document(),
+            Err(NodeIdentityError::NodeExhausted)
+        );
+        assert_eq!(
+            dom.try_create_fragment(),
+            Err(NodeIdentityError::NodeExhausted)
+        );
+        assert_eq!(dom.live_node_count(), count);
+        assert_eq!(dom.next_id, NodeId::MAX_LOCAL_INDEX + 1);
+        assert!(dom.is_live(last));
+        assert_eq!(dom.kind(dom.document()), NodeKind::Document);
+    }
+
+    #[test]
+    #[should_panic(expected = "scripted-dom node identity allocation failed")]
+    fn infallible_layout_creation_fails_before_id_wrap() {
+        let mut dom = ScriptedDom::new();
+        dom.next_id = NodeId::MAX_LOCAL_INDEX + 1;
+        LayoutDomMut::create_text(&mut dom, "overflow");
+    }
+
+    #[test]
+    fn capture_validates_namespace_and_allocated_serial() {
+        let mut a = ScriptedDom::new();
+        let b = ScriptedDom::new();
+        assert_eq!(
+            a.try_capture_node_id(b.document()),
+            Err(NodeIdentityError::CaptureRequiresTranslation)
+        );
+        assert_eq!(
+            a.try_remint_node_id(NodeId::MAX_LOCAL_INDEX + 1),
+            Err(NodeIdentityError::InvalidLocalIndex)
+        );
+        assert_eq!(
+            a.try_remint_node_id(1),
+            Err(NodeIdentityError::UnallocatedIdentity)
+        );
+        let node = a.create_text("retired");
+        let capture = a.capture_node_id(node);
+        a.collect([]);
+        assert!(!a.is_live(node));
+        assert_eq!(a.try_capture_node_id(node), Ok(capture));
+        assert_eq!(a.try_remint_node_id(capture), Ok(node));
+    }
+
+    #[test]
+    fn storage_membership_is_distinct_from_birth_identity() {
+        let mut source = ScriptedDom::new();
+        let mut destination = ScriptedDom::new();
+        let node = source.create_text("retained identity");
+        // Direct fixture movement tests key semantics, not a DOM adoption API.
+        let stored = source.nodes.remove(&node.raw()).unwrap();
+        assert!(destination.nodes.insert(node.raw(), stored).is_none());
+        assert!(!source.is_live(node));
+        assert!(destination.is_live(node));
+        assert_eq!(destination.kind(node), NodeKind::Text);
+        assert_eq!(node.origin_arena_id(), source.arena_id());
+        assert_ne!(node.origin_arena_id(), destination.arena_id());
+        assert_eq!(
+            destination.try_capture_node_id(node),
+            Err(NodeIdentityError::CaptureRequiresTranslation)
+        );
     }
 
     // --- G2: the dangle contract (is_live) ----------------------------------

@@ -45,16 +45,7 @@ fn run<E: ScriptEngine>(runtime: &mut Runtime<E>, source: &str) {
 fn check<E: ScriptEngine>(runtime: &mut Runtime<E>, expression: &str) {
     let value = runtime.eval(expression).expect("frame assertion");
     let result = runtime.value_to_string(&value).expect("assertion result");
-    if result != "true" {
-        let detail = runtime.eval(r#"JSON.stringify((function(){var d={};function get(k,f){try{d[k]=f()}catch(e){d[k]=String(e)}}get('held',function(){return typeof frame.contentWindow.held});get('body',function(){return frame.contentDocument.body.innerHTML});get('identity',function(){return [node===win.held,node.ownerDocument===win.document,node instanceof win.Element,!(node instanceof Element),win.document.defaultView===win]});get('nested',function(){return [frames[0]===child,child.parent===window,child.top===window,child.frameElement===outer,child.frames[0]===grandchild,grandchild.parent===child,grandchild.top===window,grandchild.frameElement===inner]});get('messages',function(){return messages});get('readable',function(){return readable.contentDocument.body.innerHTML});get('correct',function(){return frame.contentWindow.correct});return d})())"#).expect("diagnostics");
-        eprintln!("{}",runtime.value_to_string(&detail).expect("diagnostic value"));
-        for (_,realm) in runtime.frame_realms(0) { eprintln!("realm {realm} console: {:?}", runtime.host_in_realm(realm).expect("host").borrow().console); }
-    }
-    assert_eq!(
-        result,
-        "true",
-        "{expression}"
-    );
+    assert_eq!(result, "true", "{expression}");
 }
 
 fn drain<E: ScriptEngine>(runtime: &mut Runtime<E>) {
@@ -259,24 +250,120 @@ fn cross_origin_default_target_rejects_and_star_delivers<E: ScriptEngine>() {
 
 fn borrowed_post_message_uses_receiver_and_authored_sender<E: ScriptEngine>() {
     let mut runtime = runtime::<E>();
-    run(&mut runtime, r#"
+    run(
+        &mut runtime,
+        r#"
         var frame = document.createElement('iframe');
         document.body.appendChild(frame);
         var received = [], fromParent = false;
         addEventListener('message', function(e) { received.push(e.data); fromParent = e.source === window; });
-    "#);
+    "#,
+    );
     drain(&mut runtime);
-    run(&mut runtime, r#"
+    run(
+        &mut runtime,
+        r#"
         frame.contentWindow.postMessage.call(window, 'call', '*');
         frame.contentWindow.postMessage.apply(window, ['apply', '*']);
-    "#);
+    "#,
+    );
     drain(&mut runtime);
-    check(&mut runtime, "received.join(',') === 'call,apply' && fromParent");
+    check(&mut runtime, "received.join(',') === 'call,apply'");
+    check(&mut runtime, "fromParent");
+}
+
+fn parser_only_frame_loads_without_window_access<E: ScriptEngine>() {
+    let mut runtime = runtime::<E>();
+    run(
+        &mut runtime,
+        "var parentLoads = 0, readyAtLoad = false; addEventListener('load', function() { parentLoads++; readyAtLoad = globalThis.childLoaded === true && document.readyState === 'complete'; });",
+    );
+    runtime.parse_document_interleaved(
+        r#"<body><iframe srcdoc='<script>parent.childLoaded = true;</script>'></iframe></body>"#,
+        &NoScriptLoader,
+    );
+    assert_eq!(runtime.frame_realms(script_engine_api::MAIN_REALM).len(), 1);
+    check(
+        &mut runtime,
+        "parentLoads === 0 && document.readyState === 'interactive'",
+    );
+    drain(&mut runtime);
+    check(
+        &mut runtime,
+        "globalThis.childLoaded === true && parentLoads === 1 && readyAtLoad",
+    );
+    drain(&mut runtime);
+    check(&mut runtime, "parentLoads === 1");
+}
+
+fn removed_pending_frame_releases_parent_load<E: ScriptEngine>() {
+    let mut runtime = runtime::<E>();
+    run(
+        &mut runtime,
+        "var parentLoads = 0, childLoads = 0; addEventListener('load', function() { parentLoads++; });",
+    );
+    runtime.parse_document_interleaved(
+        r#"<body><iframe id=f srcdoc='<script>parent.childRan = true;</script>'></iframe>
+        <script>
+          var removedFrame = document.getElementById('f');
+          var retainedWindow = removedFrame.contentWindow;
+          retainedWindow.addEventListener('load', function() { childLoads++; });
+          removedFrame.onload = function() { childLoads++; };
+          removedFrame.remove();
+        </script></body>"#,
+        &NoScriptLoader,
+    );
+    drain(&mut runtime);
+    check(
+        &mut runtime,
+        "parentLoads === 1 && childLoads === 0 && globalThis.childRan === undefined && document.readyState === 'complete' && retainedWindow.document !== undefined",
+    );
+    drain(&mut runtime);
+    check(&mut runtime, "parentLoads === 1 && childLoads === 0");
+}
+
+fn descendant_load_precedes_ancestor_load<E: ScriptEngine>() {
+    let mut runtime = runtime::<E>();
+    run(
+        &mut runtime,
+        r#"
+        var order = [], completeAtLoad = false;
+        var frame = document.createElement('iframe');
+        frame.srcdoc = '<body><iframe id="nested" srcdoc="&lt;p id=ready&gt;ready&lt;/p&gt;"></iframe><script>' +
+            'document.getElementById("nested").onload = function(){ parent.order.push("nested"); };' +
+            'addEventListener("load", function(){ parent.order.push("window"); });' +
+            '</scr' + 'ipt></body>';
+        frame.onload = function() {
+            order.push('outer');
+            completeAtLoad = !!frame.contentWindow.frames[0].document.getElementById('ready');
+        };
+        document.body.appendChild(frame);
+    "#,
+    );
+    drain(&mut runtime);
+    check(
+        &mut runtime,
+        "completeAtLoad && order.join(',') === 'nested,window,outer'",
+    );
+    drain(&mut runtime);
+    check(&mut runtime, "order.join(',') === 'nested,window,outer'");
 }
 
 macro_rules! backend {
     ($module:ident, $engine:ty) => {
         mod $module {
+            #[test]
+            fn removed_pending_frame_releases_parent_load() {
+                super::removed_pending_frame_releases_parent_load::<$engine>();
+            }
+            #[test]
+            fn parser_only_frame_loads_without_window_access() {
+                super::parser_only_frame_loads_without_window_access::<$engine>();
+            }
+            #[test]
+            fn descendant_load_precedes_ancestor_load() {
+                super::descendant_load_precedes_ancestor_load::<$engine>();
+            }
             #[test]
             fn borrowed_post_message_uses_receiver_and_authored_sender() {
                 super::borrowed_post_message_uses_receiver_and_authored_sender::<$engine>();

@@ -2,38 +2,15 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Cross-arena DOM adoption regression fixtures — support lane for the
-//! "ownership router" continuation named in
-//! `design_docs/2026-09-08_realms_plan.md`, "Next runtime boundary" and
-//! "Runtime coordination inventory, 2026-09-09" (as of this writing those
-//! sections exist only in the in-progress working tree at
-//! `C:/Users/mark_/Code/repos/genet`, not yet committed to this branch's
-//! `main`; see the receipt at
-//! `design_docs/receipts/2026-09-09_adoption_fixtures/receipt.md`).
-//!
-//! Every regression here is twinned on Boa and Nova and distinguishes
-//! **storage transfer** (moving a node's raw arena record) from **DOM
-//! adoption** (the full https://dom.spec.whatwg.org/#concept-node-adopt
-//! algorithm: wrapper identity, owner-document propagation to descendants and
-//! attributes, connectivity, event-propagation termination at the *current*
-//! root document's `defaultView`, live Range participation, MutationObserver
-//! delivery in both arenas, custom-element reaction ordering, and eventual
-//! collection with no dangling pin or death record in either arena).
-//!
-//! Two documents in two realms — an iframe's document and its parent's — are
-//! today backed by two independent `ScriptedDom` arenas (`HostState::dom`,
-//! one per `RealmId` in `Runtime::child_hosts`). `NodeId` is a plain arena
-//! index (`genet-scripted-dom/lib.rs`), untagged in release, so handing a
-//! `NodeId` minted by one arena to native bindings installed for another is
-//! exactly the foreign-handle aliasing G5 and the realms plan name as open.
-//! Every regression below is gated `#[ignore]` because it currently either
-//! panics on a foreign-index access, silently aliases an unrelated node, or
-//! — for the cases that only touch JS-side bookkeeping (`ownerDocuments`,
-//! which is a per-realm `WeakMap` in `dom/bootstrap.js`) — completes without
-//! error while leaving the node's *actual* storage in the origin arena. None
-//! of that is a defect in this file; it is the refusal the router work is
-//! landing against. Un-ignoring a case is the done-condition.
+//! Two-engine acceptance fixtures for ordinary same-origin cross-arena DOM
+//! adoption: wrapper/document identity, events, ranges, observers, reactions,
+//! and component reclamation. Native node identity is full-width and stable
+//! across arenas. Only live iframe relocation remains explicitly ignored;
+//! it requires a browsing-context ownership transaction beyond DOM adoption.
+//! See `design_docs/2026-09-08_realms_plan.md` for the current lane boundary.
 
+use genet_scripted_dom::NodeId;
+use layout_dom_api::LayoutDom;
 use script_engine_api::ScriptEngine;
 use script_runtime_api::{NoScriptLoader, Runtime};
 
@@ -63,15 +40,15 @@ fn drain<E: ScriptEngine>(runtime: &mut Runtime<E>) {
 }
 
 /// Every case starts here: a document B (the parent realm) and a document A
-/// living in a **same-origin** iframe (`srcdoc`, not a foreign `src` — a
+/// living in a **same-origin** iframe (`srcdoc`, not a foreign `src` â€” a
 /// cross-origin frame's `contentDocument` is null by design, per
 /// `frame_realms.rs`'s `cross_origin_window_rejects_non_whitelisted_reads`,
 /// and that is a different, already-covered refusal from the one this file
 /// tests). Same-origin is enough: each iframe document still gets its own
 /// `ScriptedDom` arena (one `HostState` per `RealmId`), which is the whole
-/// point — the arena boundary does not coincide with the origin boundary.
+/// point â€” the arena boundary does not coincide with the origin boundary.
 /// Wired up and drained so `frame.contentWindow` and `frame.contentDocument`
-/// are live. Setup alone must never be the thing that fails — only the
+/// are live. Setup alone must never be the thing that fails â€” only the
 /// cross-arena action that follows it.
 fn two_documents<E: ScriptEngine>() -> Runtime<E> {
     let mut runtime = runtime::<E>();
@@ -101,7 +78,10 @@ fn adopting_an_orphan_preserves_identity_and_owner_document<E: ScriptEngine>() {
          globalThis.orphanOwnerBefore = orphan.ownerDocument === childDoc;",
     );
     assert_eq!(read(&mut runtime, "String(orphanOwnerBefore)"), "true");
-    run(&mut runtime, "var appended = document.getElementById('hostb').appendChild(orphan);");
+    run(
+        &mut runtime,
+        "var appended = document.getElementById('hostb').appendChild(orphan);",
+    );
     assert_eq!(
         read(&mut runtime, "String(appended === orphan)"),
         "true",
@@ -113,12 +93,15 @@ fn adopting_an_orphan_preserves_identity_and_owner_document<E: ScriptEngine>() {
         "adopting steps must retarget ownerDocument to the destination document"
     );
     assert_eq!(
-        read(&mut runtime, "String(orphan.parentNode === document.getElementById('hostb'))"),
+        read(
+            &mut runtime,
+            "String(orphan.parentNode === document.getElementById('hostb'))"
+        ),
         "true"
     );
 }
 
-/// Same case, but proves descendant and attribute ownership move too — G5's
+/// Same case, but proves descendant and attribute ownership move too â€” G5's
 /// "Adopting steps additionally require descendant and attribute document
 /// ownership" and `docs/2026-06-11_gc_arena_dom_plan.md` G5's Mutation clause.
 fn adoption_updates_descendant_and_attribute_owner_documents<E: ScriptEngine>() {
@@ -129,8 +112,14 @@ fn adoption_updates_descendant_and_attribute_owner_documents<E: ScriptEngine>() 
          globalThis.subtree = childDoc.getElementById('target'); \
          subtree.setAttribute('data-tag', 'from-a');",
     );
-    run(&mut runtime, "document.getElementById('hostb').appendChild(subtree);");
-    assert_eq!(read(&mut runtime, "String(subtree.ownerDocument === document)"), "true");
+    run(
+        &mut runtime,
+        "document.getElementById('hostb').appendChild(subtree);",
+    );
+    assert_eq!(
+        read(&mut runtime, "String(subtree.ownerDocument === document)"),
+        "true"
+    );
     assert_eq!(
         read(
             &mut runtime,
@@ -151,7 +140,7 @@ fn adoption_updates_descendant_and_attribute_owner_documents<E: ScriptEngine>() 
 
 /// WPT `dom/nodes/Node-isConnected.html`, "Test with iframes": a node that was
 /// connected in its origin document, once appended under the destination
-/// document's connected tree, reports connected there — and disconnected in
+/// document's connected tree, reports connected there â€” and disconnected in
 /// its old tree if it was the last reference.
 fn isconnected_reflects_iframe_adoption<E: ScriptEngine>() {
     let mut runtime = two_documents::<E>();
@@ -162,14 +151,20 @@ fn isconnected_reflects_iframe_adoption<E: ScriptEngine>() {
          globalThis.wasConnectedInA = moved.isConnected;",
     );
     assert_eq!(read(&mut runtime, "String(wasConnectedInA)"), "true");
-    run(&mut runtime, "document.getElementById('hostb').appendChild(moved);");
+    run(
+        &mut runtime,
+        "document.getElementById('hostb').appendChild(moved);",
+    );
     assert_eq!(
         read(&mut runtime, "String(moved.isConnected)"),
         "true",
         "moved node must be connected through the destination document's tree"
     );
     assert_eq!(
-        read(&mut runtime, "String(frame.contentDocument.getElementById('target'))"),
+        read(
+            &mut runtime,
+            "String(frame.contentDocument.getElementById('target'))"
+        ),
         "null",
         "the source document must no longer contain the moved subtree"
     );
@@ -202,7 +197,10 @@ fn moving_an_iframe_element_relocates_its_browsing_context<E: ScriptEngine>() {
         "the top window now has both the original child iframe and the relocated nested one"
     );
     assert_eq!(
-        read(&mut runtime, "String(nestedFrame.contentWindow.top === window)"),
+        read(
+            &mut runtime,
+            "String(nestedFrame.contentWindow.top === window)"
+        ),
         "true",
         "the relocated nested browsing context's top must be the new document's window"
     );
@@ -227,7 +225,10 @@ fn contextual_fragment_does_not_patch_existing_target_in_foreign_head<E: ScriptE
          document.getElementById('hostb').appendChild(fragment);",
     );
     assert_eq!(
-        read(&mut runtime, "document.head.querySelectorAll('title').length + ''"),
+        read(
+            &mut runtime,
+            "document.head.querySelectorAll('title').length + ''"
+        ),
         "1",
         "a contextual fragment parsed against a foreign range must not mutate the \
          destination document's existing head content"
@@ -240,7 +241,7 @@ fn contextual_fragment_does_not_patch_existing_target_in_foreign_head<E: ScriptE
 // ---------------------------------------------------------------------------
 
 /// Event propagation on an adopted node must end at the *current* root
-/// document's `defaultView` — the realms plan's "Runtime coordination
+/// document's `defaultView` â€” the realms plan's "Runtime coordination
 /// inventory" finding that `dispatchEvent`'s creation-realm `globalThis.window`
 /// becomes wrong after adoption.
 fn dispatch_after_adoption_ends_at_destination_defaultview<E: ScriptEngine>() {
@@ -253,7 +254,10 @@ fn dispatch_after_adoption_ends_at_destination_defaultview<E: ScriptEngine>() {
          frame.contentWindow.addEventListener('bubbles-test', function(){ sourceHeard = true; }); \
          window.addEventListener('bubbles-test', function(){ destHeard = true; });",
     );
-    run(&mut runtime, "document.getElementById('hostb').appendChild(moved);");
+    run(
+        &mut runtime,
+        "document.getElementById('hostb').appendChild(moved);",
+    );
     run(
         &mut runtime,
         "moved.dispatchEvent(new Event('bubbles-test', { bubbles: true }));",
@@ -276,19 +280,27 @@ fn live_range_endpoints_follow_adopted_node<E: ScriptEngine>() {
     let mut runtime = two_documents::<E>();
     run(
         &mut runtime,
-        "var childDoc = frame.contentDocument; \
-         var target = childDoc.getElementById('target'); \
-         globalThis.range = childDoc.createRange(); \
-         range.selectNode(target.firstChild); \
-         globalThis.movedTarget = target;",
-    );
-    assert_eq!(read(&mut runtime, "range.collapsed + ''"), "false");
-    run(&mut runtime, "document.getElementById('hostb').appendChild(movedTarget);");
-    run(&mut runtime, "movedTarget.firstChild.textContent = 'changed';");
-    assert_eq!(
-        read(&mut runtime, "range.toString()"),
-        "changed",
-        "the range must still track its (now relocated) endpoint after the mutation"
+        r#"
+        var childDoc = frame.contentDocument;
+        var movedTarget = childDoc.getElementById('target');
+        var range = childDoc.createRange();
+        range.selectNode(movedTarget.firstChild);
+        document.getElementById('hostb').appendChild(movedTarget);
+        if (!range.collapsed || range.startContainer !== childDoc.body || range.startOffset !== 0 ||
+            range.endContainer !== childDoc.body || range.endOffset !== 0)
+            throw new Error('connected removal did not relocate source boundaries');
+        movedTarget.remove();
+        var detachedRange = document.createRange();
+        var originalLeaf = movedTarget.firstChild;
+        detachedRange.selectNode(originalLeaf);
+        childDoc.adoptNode(movedTarget);
+        if (detachedRange.startContainer !== movedTarget || detachedRange.endContainer !== movedTarget ||
+            detachedRange.startOffset !== 0 || detachedRange.endOffset !== 1 || movedTarget.firstChild !== originalLeaf)
+            throw new Error('detached adoption changed boundary identity');
+        originalLeaf.textContent = 'changed';
+        if (detachedRange.toString() !== 'changed' || movedTarget.ownerDocument !== childDoc)
+            throw new Error('detached adopted range lost destination mutation');
+    "#,
     );
 }
 
@@ -311,19 +323,25 @@ fn mutation_observer_delivers_in_both_arenas<E: ScriptEngine>() {
     );
     drain(&mut runtime);
     assert_eq!(
-        read(&mut runtime, "String(sourceRecords.length === 1 && sourceRecords[0].removedNodes[0] === moved)"),
+        read(
+            &mut runtime,
+            "String(sourceRecords.length === 1 && sourceRecords[0].removedNodes[0] === moved)"
+        ),
         "true",
         "the source document's observer must see the removal"
     );
     assert_eq!(
-        read(&mut runtime, "String(destRecords.length === 1 && destRecords[0].addedNodes[0] === moved)"),
+        read(
+            &mut runtime,
+            "String(destRecords.length === 1 && destRecords[0].addedNodes[0] === moved)"
+        ),
         "true",
         "the destination document's observer must see the insertion"
     );
 }
 
 /// Custom-element reaction ordering across an adoption: disconnect in the
-/// source, `adoptedCallback`, then connect in the destination — DOM's
+/// source, `adoptedCallback`, then connect in the destination â€” DOM's
 /// adopting steps order, exercised through `appendChild`'s implicit adopt.
 fn custom_element_reactions_run_in_adoption_order<E: ScriptEngine>() {
     let mut runtime = two_documents::<E>();
@@ -334,7 +352,7 @@ fn custom_element_reactions_run_in_adoption_order<E: ScriptEngine>() {
            win.customElements.define('x-lane', class extends win.HTMLElement { \
              connectedCallback(){ order.push('connected:' + (this.ownerDocument === doc)); } \
              disconnectedCallback(){ order.push('disconnected'); } \
-             adoptedCallback(){ order.push('adopted'); } \
+             adoptedCallback(oldDoc,newDoc){ order.push('adopted:' + (oldDoc === doc && newDoc === document)); } \
            }); \
          } \
          define(frame.contentWindow, frame.contentDocument); \
@@ -343,13 +361,20 @@ fn custom_element_reactions_run_in_adoption_order<E: ScriptEngine>() {
          childDoc.body.appendChild(el);",
     );
     drain(&mut runtime);
-    run(&mut runtime, "order.length = 0; document.getElementById('hostb').appendChild(el);");
+    run(
+        &mut runtime,
+        "order.length = 0; document.getElementById('hostb').appendChild(el);",
+    );
     drain(&mut runtime);
     assert_eq!(
         read(&mut runtime, "order.join(',')"),
-        "disconnected,adopted,connected:true",
+        "disconnected,adopted:true,connected:false",
         "reactions must fire in adopting-steps order, and connectedCallback's \
-         ownerDocument must already be the destination document"
+         the callback captures the source document, so its owner comparison becomes false"
+    );
+    assert_eq!(
+        read(&mut runtime, "String(el.ownerDocument === document)"),
+        "true"
     );
 }
 
@@ -362,42 +387,71 @@ fn adopted_wrapper_reclaimed_with_no_dangling_pin_in_either_arena<E: ScriptEngin
     let mut runtime = two_documents::<E>();
     run(
         &mut runtime,
-        "var childDoc = frame.contentDocument; \
-         globalThis.held = childDoc.getElementById('target'); \
-         document.getElementById('hostb').appendChild(held);",
+        r#"
+        var childDoc = frame.contentDocument;
+        var held = childDoc.getElementById('target');
+        var componentIds = [__nodeRawId(held.__ref), __nodeRawId(held.firstChild.__ref)];
+        document.getElementById('hostb').appendChild(held);
+        held.remove();
+    "#,
     );
-    let source_realm = runtime
-        .frame_realms(0)
-        .into_iter()
-        .next()
-        .map(|(_, realm)| realm)
-        .expect("iframe realm");
-    let source_pins_before = {
-        let host = runtime.host_in_realm(source_realm).expect("source host");
-        let pins = host.borrow().pins.len();
-        pins
-    };
-    assert!(
-        source_pins_before > 0,
-        "the node must still be pinned in its origin arena before release"
+    let ids: Vec<NodeId> = read(&mut runtime, "componentIds.join(',')")
+        .split(',')
+        .map(|raw| NodeId::from_raw(raw.parse().unwrap()))
+        .collect();
+    let realm = runtime.frame_realms(0)[0].1;
+    let source = runtime.host_in_realm(realm).unwrap();
+    for id in &ids {
+        assert!(
+            !source.borrow().pins.is_pinned(*id),
+            "adopted component left a source pin"
+        );
+        assert!(
+            !source.borrow().dom.is_live(*id),
+            "adopted component stayed in source storage"
+        );
+    }
+    for _ in 0..3 {
+        runtime.collect_garbage();
+    }
+    for id in &ids {
+        assert!(
+            runtime.host().borrow().dom.is_live(*id),
+            "held wrapper lost detached component"
+        );
+        assert!(
+            runtime.host().borrow().pins.is_pinned(*id),
+            "held component lost destination pin"
+        );
+    }
+    run(
+        &mut runtime,
+        "held = null; Promise.resolve().then(function() {});",
     );
-    run(&mut runtime, "held = null; globalThis.held = undefined;");
-    runtime.collect_garbage();
-    let (dest_unpinned, dest_collected) = runtime.collect_garbage();
-    let source_pins_after = {
-        let host = runtime.host_in_realm(source_realm).expect("source host");
-        let pins = host.borrow().pins.len();
-        pins
-    };
-    assert_eq!(
-        source_pins_after, 0,
-        "no dangling pin may remain in the origin arena after the wrapper is released"
-    );
-    assert!(
-        dest_unpinned > 0 || dest_collected > 0,
-        "the destination arena's collector must actually observe and retire the release \
-         (dest_unpinned={dest_unpinned}, dest_collected={dest_collected})"
-    );
+    runtime.run_microtasks();
+    for _ in 0..8 {
+        runtime.collect_garbage();
+        if ids
+            .iter()
+            .all(|id| !runtime.host().borrow().dom.is_live(*id))
+        {
+            break;
+        }
+    }
+    for id in ids {
+        assert!(
+            !runtime.host().borrow().dom.is_live(id),
+            "released detached component was not reclaimed"
+        );
+        assert!(
+            !runtime.host().borrow().pins.is_pinned(id),
+            "component left destination pin"
+        );
+        assert!(
+            !source.borrow().pins.is_pinned(id),
+            "component left source pin"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -406,7 +460,7 @@ fn adopted_wrapper_reclaimed_with_no_dangling_pin_in_either_arena<E: ScriptEngin
 // single-document-model `adoptNode`/`appendChild` *is* exactly "JS-side
 // bookkeeping updated, arena storage never moved" when the node did not
 // originate in the destination document's own arena but the two happen to
-// share one arena (the non-iframe, same-realm case) — see below. If a future
+// share one arena (the non-iframe, same-realm case) â€” see below. If a future
 // change makes this assertion fail, that is a signal the control itself needs
 // updating alongside the router, not that adoption regressed.
 // ---------------------------------------------------------------------------
@@ -418,7 +472,7 @@ fn adopted_wrapper_reclaimed_with_no_dangling_pin_in_either_arena<E: ScriptEngin
 ///
 /// The stale state is forged with `Object.defineProperty`, which installs an
 /// own data property on `moved` that shadows `Node.prototype`'s
-/// `ownerDocument` accessor — simulating a transfer that moved the node's
+/// `ownerDocument` accessor â€” simulating a transfer that moved the node's
 /// storage without running the adopting steps' owner-document propagation.
 /// (Note for anyone editing the JS below: keep it free of `//` line comments.
 /// Rust's `\`-continued string literals strip the newline, so a `//` comment
@@ -442,25 +496,19 @@ fn storage_transfer_without_owner_document_update_trips_the_fixture<E: ScriptEng
     assert!(
         ok,
         "the shared ownerDocument assertion must trip on a node whose storage moved \
-         without the adopting steps' bookkeeping — otherwise the regression suite above \
+         without the adopting steps' bookkeeping â€” otherwise the regression suite above \
          could pass on storage transfer alone and this control exists to prevent that"
     );
 }
 
-/// Shared reason string for every pending case's `#[ignore]`, naming the
-/// realms plan boundary rather than "not yet implemented" alone (the
-/// convention already used by `k6_fragmentation_contracts.rs` and
-/// `contextual_color.rs`).
 macro_rules! both_engines {
     ($($body:ident => ($boa:ident, $nova:ident)),* $(,)?) => {
         $(
             #[test]
-            #[ignore = "realms plan 'Next runtime boundary' (design_docs/2026-09-08_realms_plan.md): cross-arena adoption router not yet implemented on main"]
             fn $boa() { $body::<script_engine_boa::BoaEngine>(); }
 
             #[cfg(target_pointer_width = "64")]
             #[test]
-            #[ignore = "realms plan 'Next runtime boundary' (design_docs/2026-09-08_realms_plan.md): cross-arena adoption router not yet implemented on main"]
             fn $nova() { $body::<script_engine_nova::NovaEngine>(); }
         )*
     };
@@ -473,8 +521,6 @@ both_engines! {
         (descendant_attribute_owner_on_boa, descendant_attribute_owner_on_nova),
     isconnected_reflects_iframe_adoption =>
         (wpt_isconnected_iframes_on_boa, wpt_isconnected_iframes_on_nova),
-    moving_an_iframe_element_relocates_its_browsing_context =>
-        (wpt_window_length_nested_context_on_boa, wpt_window_length_nested_context_on_nova),
     contextual_fragment_does_not_patch_existing_target_in_foreign_head =>
         (wpt_contextual_fragment_head_on_boa, wpt_contextual_fragment_head_on_nova),
     dispatch_after_adoption_ends_at_destination_defaultview =>
@@ -487,6 +533,18 @@ both_engines! {
         (custom_element_order_on_boa, custom_element_order_on_nova),
     adopted_wrapper_reclaimed_with_no_dangling_pin_in_either_arena =>
         (reclamation_no_dangling_pin_on_boa, reclamation_no_dangling_pin_on_nova),
+}
+
+#[test]
+#[ignore = "live iframe adoption requires relocating browsing-context parentage, loading and host registration; ordinary DOM subtree lane refuses it"]
+fn wpt_window_length_nested_context_on_boa() {
+    moving_an_iframe_element_relocates_its_browsing_context::<script_engine_boa::BoaEngine>();
+}
+#[cfg(target_pointer_width = "64")]
+#[test]
+#[ignore = "live iframe adoption requires relocating browsing-context parentage, loading and host registration; ordinary DOM subtree lane refuses it"]
+fn wpt_window_length_nested_context_on_nova() {
+    moving_an_iframe_element_relocates_its_browsing_context::<script_engine_nova::NovaEngine>();
 }
 
 macro_rules! control_both_engines {

@@ -602,10 +602,7 @@ impl LiveryDocumentSession {
     /// its composite tree and must reject stale session identities before
     /// calling here.
     pub fn replace_accessible_text_value(&mut self, local_node_id: u64, value: &str) -> bool {
-        let Ok(raw_node_id) = usize::try_from(local_node_id) else {
-            return false;
-        };
-        let node = genet_scripted_dom::NodeId::from_raw(raw_node_id);
+        let node = genet_scripted_dom::NodeId::from_raw(local_node_id);
         if !self.doc.dom().is_live(node) {
             return false;
         }
@@ -632,10 +629,7 @@ impl LiveryDocumentSession {
 
     /// Reveal a retained Livery node through its active nested scrollports.
     pub fn scroll_accessible_node_into_view(&mut self, local_node_id: u64) -> bool {
-        let Ok(raw_node_id) = usize::try_from(local_node_id) else {
-            return false;
-        };
-        let node = genet_scripted_dom::NodeId::from_raw(raw_node_id);
+        let node = genet_scripted_dom::NodeId::from_raw(local_node_id);
         self.doc.dom().is_live(node) && self.doc.scroll_accessible_node_into_view(node)
     }
 
@@ -648,8 +642,7 @@ impl LiveryDocumentSession {
     /// bounds. The host owns the CSS-to-presentation transform before it sends
     /// ordinary press and release input back through this session.
     pub fn accessible_pointer_target(&self, local_node_id: u64) -> Option<(f32, f32)> {
-        let raw_node_id = usize::try_from(local_node_id).ok()?;
-        let node = genet_scripted_dom::NodeId::from_raw(raw_node_id);
+        let node = genet_scripted_dom::NodeId::from_raw(local_node_id);
         self.doc
             .dom()
             .is_live(node)
@@ -734,9 +727,7 @@ impl LiveryDocumentSession {
                         )
                     })
                     .then(|| {
-                        usize::try_from(node.id.get())
-                            .ok()
-                            .map(genet_scripted_dom::NodeId::from_raw)
+                        Some(genet_scripted_dom::NodeId::from_raw(node.id.get()))
                             .filter(|node| self.doc.dom().is_live(*node))
                             .and_then(|node| self.doc.accessible_pointer_target(node))
                     })
@@ -1975,8 +1966,7 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
         if !node.actions.contains(&DocumentA11yAction::Click) {
             return None;
         }
-        let raw_node_id = usize::try_from(target.get()).ok()?;
-        let dom_node = genet_scripted_dom::NodeId::from_raw(raw_node_id);
+        let dom_node = genet_scripted_dom::NodeId::from_raw(target.get());
         let (x, y) = self.doc.accessible_pointer_target(dom_node)?;
         Some(DocumentA11yClickTarget {
             revision: projection.revision(),
@@ -1997,10 +1987,7 @@ impl DocumentSession<Scene> for LiveryDocumentSession {
         if projection.revision() != request.revision || !node.actions.contains(&request.action) {
             return false;
         }
-        let Ok(raw_node_id) = usize::try_from(request.target.get()) else {
-            return false;
-        };
-        let dom_node = genet_scripted_dom::NodeId::from_raw(raw_node_id);
+        let dom_node = genet_scripted_dom::NodeId::from_raw(request.target.get());
         if !self.doc.dom().is_live(dom_node) {
             return false;
         }

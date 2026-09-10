@@ -15,14 +15,9 @@ path = "lib.rs"
 
 [dependencies]
 script-engine-api = { path = "../script-engine-api" }
-boa_engine = { version = "=1.0.0-dev", git = "https://github.com/mark-ik/boa.git", branch = "genet" }
-boa_gc = { version = "=1.0.0-dev", git = "https://github.com/mark-ik/boa.git", branch = "genet" }
-# Both name the fork by git so a bare clone resolves; the gitignored
-# `Code/.cargo/config.toml` `[patch]` table redirects that git source to
-# `crates/boa` for local dev (2026-09-07; a crates-io name plus a root patch
-# cannot be redirected a second time from the config). crates/boa now
-# mirrors boa-upstream main verbatim (synced 2026-06-01) — no genet patch: the
-# old icu-family widen is obsolete because upstream itself moved to the icu 2.2.x
-# line that genet's graph (nova -> temporal_rs -> icu_calendar, parley 0.9)
-# already forces. Upstream is on the 1.0.0-dev line, hence the `=1.0.0-dev`
-# pre-release match. See ../../docs/2026-05-20_genet_script_engine_plan.md.
+boa_engine = { version = "=1.0.0-dev", git = "https://github.com/mark-ik/boa.git", rev = "5a58112579cecaba6ba59d3310901992003fbb31" }
+boa_gc = { version = "=1.0.0-dev", git = "https://github.com/mark-ik/boa.git", rev = "5a58112579cecaba6ba59d3310901992003fbb31" }
+# Pin the published caller-provenance patch so fresh clones use the same native
+# callback realm rules as local development. The gitignored local config may
+# redirect these sources to crates/boa; it is not part of the public contract.
+# Boa remains on the upstream 1.0.0-dev line, hence the exact prerelease version.

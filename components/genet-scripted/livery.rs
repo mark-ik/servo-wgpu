@@ -480,8 +480,33 @@ impl LiveryCssom {
         // children. Bind those arenas as well as future inserted frames.
         let mut parents = vec![script_engine_api::MAIN_REALM];
         while let Some(parent) = parents.pop() {
-            for (_, realm) in runtime.frame_realms(parent) {
+            let style = runtime
+                .host_in_realm(parent)
+                .ok()
+                .and_then(|host| host.borrow().computed_style.clone());
+            for (owner, realm) in runtime.frame_realms(parent) {
                 if let Ok(host) = runtime.host_in_realm(realm) {
+                    // Eager frame creation can precede installing this adapter.
+                    // Resolve the existing child's viewport against its parent's
+                    // newly installed provider before constructing its device.
+                    let dimension = |name: &str, fallback: f32| {
+                        style
+                            .as_ref()
+                            .and_then(|handler| handler.computed_value(owner, name))
+                            .and_then(|value| {
+                                value
+                                    .trim()
+                                    .strip_suffix("px")
+                                    .and_then(|value| value.parse::<f32>().ok())
+                            })
+                            .filter(|value| value.is_finite() && *value >= 0.0)
+                            .unwrap_or(fallback)
+                    };
+                    let viewport = host.borrow().viewport_size;
+                    host.borrow_mut().viewport_size = (
+                        dimension("width", viewport.0),
+                        dimension("height", viewport.1),
+                    );
                     initialize(realm, &host);
                 }
                 parents.push(realm);
@@ -1120,8 +1145,8 @@ impl LiverySelection {
     ) -> Option<TextRange<NodeId>> {
         let host = self.host.upgrade()?;
         let host = host.borrow();
-        let start = NodeId::from_raw(start as usize);
-        let end = NodeId::from_raw(end as usize);
+        let start = NodeId::from_raw(start);
+        let end = NodeId::from_raw(end);
         if !host.dom.is_live(start) || !host.dom.is_live(end) {
             return None;
         }
@@ -1382,7 +1407,7 @@ impl ComputedStyleHandler for LiveryComputedStyle {
             ..
         } = &mut *state;
         session.update(&host.dom, styles, device, interactions, &pending[start..]);
-        let node = NodeId::from_raw(node as usize);
+        let node = NodeId::from_raw(node);
         let container_resolved = resolve_container_query_styles(
             &host.dom,
             session.styles(),
@@ -1444,7 +1469,7 @@ impl ComputedStyleHandler for LiveryComputedStyle {
         )
         .ok();
         let primary = primary.as_ref().unwrap_or_else(|| session.styles());
-        let context = NodeId::from_raw(context as usize);
+        let context = NodeId::from_raw(context);
         let fragments = layout(
             &host.dom,
             primary,
@@ -1456,7 +1481,7 @@ impl ComputedStyleHandler for LiveryComputedStyle {
         let frame_fragment = fragments.get(context)?;
         let (width, height) = content_box_size(frame_style, frame_fragment);
 
-        let node = NodeId::from_raw(node as usize);
+        let node = NodeId::from_raw(node);
         let document = owning_document(&host.dom, node)?;
         if document == host.dom.document() {
             let used = needs_used_values(property)

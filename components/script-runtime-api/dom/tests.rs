@@ -1146,6 +1146,10 @@ fn iframe_initial_document_works<E: ScriptEngine>() {
     }
 
     let mut rt = Runtime::<E>::new().expect("runtime");
+    // Each browsing context has its own document arena and host providers.
+    rt.set_child_host_initializer(|_, host| {
+        host.borrow_mut().computed_style = Some(std::rc::Rc::new(Stub));
+    });
     rt.load_dom(&StaticDocument::parse(
         "<html><body><iframe id='frame'></iframe></body></html>",
     ));
@@ -2553,12 +2557,14 @@ fn custom_element_upgrade_is_not_repeated_on_nova() {
 fn gc_soak_bounds_reachable_touched_nodes<E: ScriptEngine>() {
     let mut rt = Runtime::<E>::new().expect("runtime");
     rt.eval(
-        "var host = document.createElement('div');\
+        "var container = document.createElement('main');\
+         document.appendChild(container);\
+         var host = document.createElement('div');\
          host.setAttribute('id','host');\
-         document.appendChild(host);\
+         container.appendChild(host);\
          var keeper = document.createElement('p');\
          keeper.setAttribute('id','keep');\
-         document.appendChild(keeper);\
+         container.appendChild(keeper);\
          keeper.__mark = 'k';\
          keeper.addEventListener('ping', function(){ globalThis.pings++; });\
          keeper = null;\

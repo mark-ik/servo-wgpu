@@ -49,6 +49,7 @@
 //! reflected kind remains. See
 //! `docs/2026-05-26_pluggable_engines_testharness_plan.md`.
 
+use crate::LocalReflectorCx as _;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -156,6 +157,7 @@ pub(crate) fn install_dom_surface<E: ScriptEngine>(
     shadow::install(engine)?;
     markup_insertion::install(engine)?;
     engine.set_function::<DocumentRoot>("__documentRoot", 0)?;
+    engine.set_function::<NodeRealmState>("__nodeRealmState", 1)?;
     engine.set_function::<ReflectNode>("__reflectNode", 1)?;
     engine.set_function::<CreateElement>("__createElement", 1)?;
     engine.set_function::<CreateTextNode>("__createTextNode", 1)?;
@@ -241,6 +243,8 @@ pub(crate) fn install_dom_surface<E: ScriptEngine>(
     engine.set_function::<DeleteRule>("__deleteRule", 2)?;
     engine.set_function::<MatchMedia>("__matchMedia", 1)?;
     engine.set_function::<EvaluateXPath>("__xpathEvaluate", 2)?;
+    engine.set_function::<adoption::RegisterHooks>("__domRegisterHooks", 1)?;
+    engine.set_function::<adoption::AgentDispatch>("__domAgentDispatch", 5)?;
     engine.set_function::<mutation_observer::SetObserving>("__moObserving", 1)?;
     engine.set_function::<mutation_observer::TakeRecords>("__moTake", 0)?;
     engine.set_function::<mutation_observer::SetGroup>("__moGroup", 1)?;
@@ -285,9 +289,8 @@ fn with_host_state<E: ScriptEngine, R>(
     cx: &mut E::CallCx<'_>,
     f: impl FnOnce(&mut HostState) -> R,
 ) -> Option<R> {
-    let data = cx.host_data()?;
-    let cell = data.downcast_ref::<RefCell<HostState>>()?;
-    let mut host = cell.borrow_mut();
+    let host = adoption::host_for_call::<E>(cx)?;
+    let mut host = host.borrow_mut();
     Some(f(&mut host))
 }
 
@@ -295,10 +298,7 @@ fn with_dom<E: ScriptEngine, R>(
     cx: &mut E::CallCx<'_>,
     f: impl FnOnce(&mut ScriptedDom) -> R,
 ) -> Option<R> {
-    let data = cx.host_data()?;
-    let cell = data.downcast_ref::<RefCell<HostState>>()?;
-    let mut host = cell.borrow_mut();
-    Some(f(&mut host.dom))
+    with_host_state::<E, R>(cx, |host| f(&mut host.dom))
 }
 
 /// The host's computed-style seam for `getComputedStyle`. Mirrors
@@ -370,9 +370,8 @@ pub trait InlineStyleHandler {
 fn host_inline_style<E: ScriptEngine>(
     cx: &mut E::CallCx<'_>,
 ) -> Option<Rc<dyn InlineStyleHandler>> {
-    let data = cx.host_data()?;
-    let cell = data.downcast_ref::<RefCell<HostState>>()?;
-    let handler = cell.borrow().inline_style.clone();
+    let host = adoption::host_for_call::<E>(cx)?;
+    let handler = host.borrow().inline_style.clone();
     handler
 }
 
@@ -561,9 +560,8 @@ impl<E: ScriptEngine> NativeFn<E> for SupportsStyleValue {
 fn host_computed_style<E: ScriptEngine>(
     cx: &mut E::CallCx<'_>,
 ) -> Option<Rc<dyn ComputedStyleHandler>> {
-    let data = cx.host_data()?;
-    let cell = data.downcast_ref::<RefCell<HostState>>()?;
-    let handler = cell.borrow().computed_style.clone();
+    let host = adoption::host_for_call::<E>(cx)?;
+    let handler = host.borrow().computed_style.clone();
     handler
 }
 
@@ -573,7 +571,7 @@ struct ComputedStyleValue;
 impl<E: ScriptEngine> NativeFn<E> for ComputedStyleValue {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let el = cx.arg(0);
-        let Some(node) = cx.reflector_data(&el) else {
+        let Some(node) = cx.local_reflector_data(&el)? else {
             return Ok(cx.make_null());
         };
         let a1 = cx.arg(1);
@@ -594,8 +592,8 @@ impl<E: ScriptEngine> NativeFn<E> for ComputedStyleValueInContext {
         let context_value = cx.arg(0);
         let node_value = cx.arg(1);
         let (Some(context), Some(node)) = (
-            cx.reflector_data(&context_value),
-            cx.reflector_data(&node_value),
+            cx.local_reflector_data(&context_value)?,
+            cx.local_reflector_data(&node_value)?,
         ) else {
             return Ok(cx.make_null());
         };
@@ -1150,12 +1148,14 @@ impl<E: ScriptEngine> NativeFn<E> for CookieSet {
 /// have a reflector, so the walk roots exactly those and skips freshly parsed
 /// subtrees entirely.
 pub(crate) fn root_connected_subtree<E: ScriptEngine>(cx: &mut E::CallCx<'_>, node: NodeId) {
-    let Some(data) = cx.host_data() else { return };
-    let Some(cell) = data.downcast_ref::<RefCell<HostState>>() else {
+    let Some(start) = adoption::current_host(cx) else {
+        return;
+    };
+    let Some((_, owner)) = adoption::owner_host(&start, node) else {
         return;
     };
     let ids: Vec<u64> = {
-        let mut host = cell.borrow_mut();
+        let mut host = owner.borrow_mut();
         if !host.is_connected_node(node) {
             return;
         }
@@ -1176,28 +1176,31 @@ pub(crate) fn root_connected_subtree<E: ScriptEngine>(cx: &mut E::CallCx<'_>, no
         out
     };
     for d in ids {
-        cx.root_reflector(d);
+        if let Some(realm) = adoption::creation_realm(&start, NodeId::from_raw(d)) {
+            let _ = cx.root_reflector_in_realm(realm, d);
+        }
     }
 }
 
 fn reflect_pinned<E: ScriptEngine>(cx: &mut E::CallCx<'_>, raw: u64) -> Result<E::Value, E::Error> {
-    let mut connected = false;
-    if let Some(data) = cx.host_data() {
-        if let Some(cell) = data.downcast_ref::<RefCell<HostState>>() {
-            let id = NodeId::from_raw(raw as usize);
-            let mut host = cell.borrow_mut();
-            host.pins.pin(id);
-            connected = host.is_connected_node(id);
-        }
-    }
-    let value = cx.reflector_for(raw)?;
+    let id = NodeId::from_raw(raw);
+    let Some(start) = adoption::current_host(cx) else {
+        return cx.reflector_for(raw);
+    };
+    let Some((_, owner)) = adoption::owner_host(&start, id) else {
+        return Ok(cx.make_null());
+    };
+    let realm = adoption::creation_realm(&start, id).unwrap_or_else(|| cx.current_realm());
+    let connected = owner.borrow_mut().is_connected_node(id);
+    let value = cx
+        .reflector_for_in_realm(realm, raw)
+        .map_err(|e| cx.error(&format!("{e:?}")))?;
     if connected {
-        // Root on the mint, not only at the next GC tick: Boa collects on its own
-        // allocation threshold, so a wrapper handed out and given listeners
-        // between two ticks would otherwise be collectable in that window. The
-        // tick releases the root again if the node has since left the document.
-        cx.root_reflector(raw);
+        cx.root_reflector_in_realm(realm, raw)
+            .map_err(|e| cx.error(&format!("{e:?}")))?;
     }
+    // Commit storage retention only after both fallible engine operations succeed.
+    owner.borrow_mut().pins.pin(id);
     Ok(value)
 }
 
@@ -1219,6 +1222,7 @@ fn find_by_id(dom: &ScriptedDom, root: NodeId, target: &str) -> Option<NodeId> {
     walk(dom, root, target)
 }
 
+pub(crate) mod adoption;
 mod html_interfaces;
 mod html_interfaces_generated;
 pub(crate) mod markup_insertion;

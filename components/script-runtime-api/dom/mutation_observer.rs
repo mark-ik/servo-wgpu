@@ -57,7 +57,7 @@ fn old_field(old: Option<&String>) -> String {
 /// - `C` target prev next added removed ancestors
 /// - `A` target localName namespace hasOld old ancestors
 /// - `D` target hasOld old ancestors
-fn encode(records: &[ObservedMutation], dom: &ScriptedDom) -> String {
+pub(super) fn encode(records: &[ObservedMutation], dom: &ScriptedDom) -> String {
     let mut out = String::new();
     for record in records {
         let line = match record {

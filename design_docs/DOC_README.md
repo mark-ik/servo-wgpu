@@ -547,6 +547,8 @@ same session; links out of it are rewritten for its new depth.
 
 ## Working principles
 
+- **Cross-arena runtime mutation:** validate every participating operand before detachment; preserve pending layout records while consuming observer records at the semantic boundary. Group observer mutations by the physical owner, keep canonical wrappers in their creation realm, and re-register private hooks from the cloned heap after a runtime snapshot restore.
+
 - **New docs go in `design_docs/`, never `docs/`.** See the policy's two-homes
   section for why both exist and what it would cost to merge them.
 - **The smolweb boundary is spec versus use.** What a protocol *is* belongs to
@@ -793,3 +795,46 @@ child integration are undergoing fresh gates against a frozen pre runner and
 nine pre census maps. Historical phase-one automated and native Ortet receipts
 do not validate the continuation. Continuation native Ortet verification is
 pending, and no browser-hosted realm receipt is recorded.
+
+### Realms continuation outcome (2026-09-09)
+
+The [realms continuation](2026-09-08_realms_plan.md#final-gates-repins-and-retained-failures)
+has measured per-realm host surfaces, real same-origin identity, cross-origin
+proxies, messaging and live child rendering. Aggregate suites passed 667 tests;
+the final localized exception correction passed its focused Boa/Nova cases.
+The final nine-directory census is +222 net subtest passes, with four valid
+cross-arena adoption assertions still regressing and one duplicate registration
+removed. Three baseline files were repinned forward-only; twelve of fourteen
+testharness slices and both reftest slices are unexpected=0. Broad dom/dom-nodes
+acceptance remains blocked. The guard's 30-second Range timeout also reproduces
+on the pre runner. Native default-route article captures match three times;
+frames matches three consecutive captures after a retained one-pixel caption
+outlier. These are not headed scripted-realm or browser-hosted acceptance.
+Remaining code is uncommitted and requires the archived local Boa/Vano patches.
+The plan and continuation ledger hold exact source hashes, maps and named losses.
+
+
+### Cross-arena adoption foundation (verified, 2026-09-09)
+
+The [realms adoption continuation](2026-09-08_realms_plan.md#cross-arena-adoption-foundation-verified-2026-09-09)
+now implements the G5 identity prerequisite and bounded detached storage
+transfer: complete u64 identities on all targets, explicit exhaustion and
+capture translation, and preflighted transfer without reminting. All
+674 distinct native tests pass, with all 65 store tests repeated in release;
+a wasm32 store probe executes with exact u64 identity. Workspace compilation,
+table drift, Clippy and formatting checks pass. This updates the earlier S3/S4
+boundary above. Authored cross-arena adoption remains refused while wrapper, owning-host, observer,
+Range and GC routing are coordinated. The four named adoption regressions
+and G5 headed acceptance remain open.
+
+
+### Runtime adoption continuation (in verification, 2026-09-09)
+
+The [runtime adoption phase](2026-09-08_realms_plan.md#runtime-cross-arena-adoption-in-verification-2026-09-09)
+implements ordinary-subtree authored adoption, canonical creation-realm wrappers,
+physical-owner routing, observer/Range coordination and mixed-realm GC groups.
+New regressions and crate gates are running; the phase carries no completed
+runtime acceptance claim yet. Associated trees and host-owned embedded contexts
+remain explicit unsupported transfer boundaries. This is the successor to the
+foundation-only refusal described above; full realms and headed G5 acceptance
+remain open.

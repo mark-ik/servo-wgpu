@@ -56,19 +56,33 @@ where
                 }
                 | DomMutation::SubtreeReplaced { node: parent }
                 | DomMutation::AttributeChanged { node: parent, .. } => {
-                    self.insert_damage_root(&mut roots, self.formatting_damage_root(parent));
+                    if self.dom.is_live(parent) {
+                        self.insert_damage_root(&mut roots, self.formatting_damage_root(parent));
+                    }
                 },
                 DomMutation::CharacterDataChanged { node } => {
+                    if !self.dom.is_live(node) {
+                        continue;
+                    }
                     let parent = self.dom.parent(node).unwrap_or(node);
-                    self.insert_damage_root(&mut roots, self.formatting_damage_root(parent));
+                    if self.dom.is_live(parent) {
+                        self.insert_damage_root(&mut roots, self.formatting_damage_root(parent));
+                    }
                 },
                 DomMutation::Moved {
                     from_parent,
                     to_parent,
                     ..
                 } => {
-                    self.insert_damage_root(&mut roots, self.formatting_damage_root(from_parent));
-                    self.insert_damage_root(&mut roots, self.formatting_damage_root(to_parent));
+                    if self.dom.is_live(from_parent) {
+                        self.insert_damage_root(
+                            &mut roots,
+                            self.formatting_damage_root(from_parent),
+                        );
+                    }
+                    if self.dom.is_live(to_parent) {
+                        self.insert_damage_root(&mut roots, self.formatting_damage_root(to_parent));
+                    }
                 },
             }
         }
@@ -80,6 +94,9 @@ where
     }
 
     pub(in crate::document) fn formatting_damage_root(&self, node: D::NodeId) -> D::NodeId {
+        if !self.dom.is_live(node) {
+            return self.dom.document();
+        }
         let Some(layout) = self.layout.as_ref() else {
             return self.dom.document();
         };

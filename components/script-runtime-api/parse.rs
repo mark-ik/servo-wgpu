@@ -261,7 +261,7 @@ impl<E: ScriptEngine> Runtime<E> {
             .engine
             .eval("globalThis.__rebindDocument(); globalThis.__refreshNamedProperties()");
 
-        let mut deferred: Vec<ScriptFacts> = Vec::new();
+        let mut deferred: Vec<(NodeId, ScriptFacts)> = Vec::new();
         // Async scripts do not block the parser, so they are not run here. See
         // `ScriptTiming::Async`.
         let mut async_pending: Vec<(NodeId, ScriptFacts)> = Vec::new();
@@ -298,7 +298,7 @@ impl<E: ScriptEngine> Runtime<E> {
             }
             match facts.timing {
                 ScriptTiming::Skipped => {},
-                ScriptTiming::Deferred => deferred.push(facts),
+                ScriptTiming::Deferred => deferred.push((node, facts)),
                 ScriptTiming::Async => async_pending.push((node, facts)),
                 ScriptTiming::Blocking => {
                     self.run_parser_script(node, &facts, loader);
@@ -320,15 +320,31 @@ impl<E: ScriptEngine> Runtime<E> {
         report.scripts_run +=
             self.run_foreign_scripts(&policy, loader, &mut deferred, &mut async_pending);
 
+        // The final tokenizer stretch may contain frames without a following
+        // blocking script. Discover their contexts and queue document loads
+        // before handing the completed parse back to the host event loop.
+        let _ = self
+            .engine
+            .eval("globalThis.__refreshNamedProperties && __refreshNamedProperties()");
+
         // HTML, "the end". Readiness first, then the tasks already queued (the
         // async scripts, whose fetches completed while the parser ran), then
         // the deferred list, then DOMContentLoaded, then the load event.
         self.set_ready_state(ReadyState::Interactive);
         for (node, facts) in &async_pending {
+            if !self.host.borrow().dom.is_live(*node) {
+                continue;
+            }
             self.run_parser_script(*node, facts, loader);
             report.scripts_run += 1;
         }
-        for facts in &deferred {
+        for (node, facts) in &deferred {
+            // A preceding queued script may have adopted this prepared node
+            // into another arena. Execution cannot follow it there or run in
+            // the old preparation realm after its document has changed.
+            if !self.host.borrow().dom.is_live(*node) {
+                continue;
+            }
             self.run_parser_script_deferred(facts, loader);
             report.deferred_run += 1;
         }
@@ -336,6 +352,10 @@ impl<E: ScriptEngine> Runtime<E> {
             .engine
             .eval("document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true }));");
         self.run_microtasks();
+        if dispatch_load && self.agent.borrow_mut().frames.defer_main_load() {
+            // The final child completion performs Complete/readystatechange/load.
+            return report;
+        }
         self.set_ready_state(ReadyState::Complete);
         if dispatch_load {
             let _ = self.engine.eval("window.dispatchEvent(new Event('load'));");
@@ -413,7 +433,7 @@ impl<E: ScriptEngine> Runtime<E> {
         &mut self,
         policy: &Rc<ParserPolicy>,
         loader: &dyn ParserScriptLoader,
-        deferred: &mut Vec<ScriptFacts>,
+        deferred: &mut Vec<(NodeId, ScriptFacts)>,
         async_pending: &mut Vec<(NodeId, ScriptFacts)>,
     ) -> usize {
         let nodes = policy.take_foreign_scripts();
@@ -434,7 +454,7 @@ impl<E: ScriptEngine> Runtime<E> {
                 ScriptTiming::Skipped => continue,
                 // A module in foreign content is deferred like any other, and
                 // must still run before the load event.
-                ScriptTiming::Deferred => deferred.push(facts),
+                ScriptTiming::Deferred => deferred.push((node, facts)),
                 ScriptTiming::Async => async_pending.push((node, facts)),
                 ScriptTiming::Blocking => {
                     self.run_parser_script(node, &facts, loader);

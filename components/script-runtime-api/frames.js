@@ -6,6 +6,8 @@
   var Port = MessagePort;
   var schedule = setTimeout;
   var dispatch = dispatchEvent;
+  var trace = __traceProtocol;
+  var nextMessage = 0;
   var parseURL = URL.parse;
   var globals = globalThis;
   var define = Object.defineProperty;
@@ -33,8 +35,13 @@
   }});
   define(globals, '__frameDeliver', { value: function(record, source, origin) {
     var envelope = deserializeRecord(record);
+    var id = ++nextMessage;
+    trace('post_message', 'enqueue', id);
     schedule(function() {
-      dispatch(new Message('message', {data:envelope.data, ports:envelope.ports, source:source, origin:origin}));
+      trace('post_message', 'deliver', id);
+      var event = new Message('message', {ports:envelope.ports, source:source, origin:origin});
+      define(event, 'data', {value:envelope.data, writable:true, enumerable:true, configurable:true});
+      dispatch(event);
     }, 0);
   }});
   var views = new Map();
@@ -144,8 +151,24 @@
     apply(setView, views, [id, proxy]);
     return proxy;
   };
-  ['parent', 'top', 'frameElement'].forEach(function (key) {
-    Object.defineProperty(globalThis, key, { configurable: true, get: function () { return __windowRelation(key); } });
+  var relation = __windowRelation;
+  define(globals, 'parent', {
+    enumerable: true, configurable: true,
+    get: function () { return relation('parent'); },
+    // WebIDL [Replaceable]: assignment creates an ordinary own data property.
+    set: function (value) {
+      define(this, 'parent', {
+        value: value, writable: true, enumerable: true, configurable: true
+      });
+    }
+  });
+  define(globals, 'top', {
+    enumerable: true, configurable: false,
+    get: function () { return relation('top'); }
+  });
+  define(globals, 'frameElement', {
+    enumerable: true, configurable: true,
+    get: function () { return relation('frameElement'); }
   });
   globalThis.opener = null;
   globalThis.postMessage = __realmPostMessage;

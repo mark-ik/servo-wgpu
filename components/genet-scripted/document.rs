@@ -405,7 +405,7 @@ impl<E: ScriptEngine> ScriptedDocument<E> {
     }
 
     /// Dispatch an event at a raw DOM node id and settle listener microtasks.
-    pub fn dispatch_event(&mut self, raw_node_id: usize, event_type: &str) -> Result<bool, String> {
+    pub fn dispatch_event(&mut self, raw_node_id: u64, event_type: &str) -> Result<bool, String> {
         let proceed = self
             .rt
             .dispatch_event(raw_node_id, event_type)
@@ -2462,13 +2462,13 @@ mod tests {
             let after = doc.child_cssoms.borrow()[&realm]
                 .fragment_rect(node)
                 .expect("mutated child layout");
+            // fragment_rect returns [x, y, width, height] in viewport coordinates.
             assert!(
-                (before[2] - before[0] - 20.0).abs() < 0.5,
+                (before[2] - 20.0).abs() < 0.5,
                 "initial child width: {before:?}"
             );
             assert!(
-                (after[2] - after[0] - 75.0).abs() < 0.5
-                    && (after[3] - after[1] - 30.0).abs() < 0.5,
+                (after[2] - 75.0).abs() < 0.5 && (after[3] - 30.0).abs() < 0.5,
                 "child inline-style mutations change retained geometry: {after:?}"
             );
             let value = doc

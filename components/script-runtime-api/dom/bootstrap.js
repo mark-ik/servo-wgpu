@@ -5,6 +5,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 (function() {
+  // Captured during trusted bootstrap, before authored scripts can run. The
+  // realm hooks and raw record lookup never become an authored-script API.
+  var domAgentDispatch = globalThis.__domAgentDispatch;
+  var domRegisterHooks = globalThis.__domRegisterHooks;
+  var domRealmHooks;
+  delete globalThis.__domAgentDispatch;
+  delete globalThis.__domRegisterHooks;
+
   // Annex B compatibility used by the upstream WebGL helpers. Nova and some
   // Boa builds intentionally omit this legacy method from the base realm;
   // install the small ES-compatible surface at the browser-host boundary so
@@ -38,6 +46,9 @@
   // GC tick. (Found by the gc-arena soak: a strong Map peaked at ~12k live nodes
   // under churn; weak-keyed, it stays bounded.)
   var wrappers = new WeakMap();
+  // Agent-private identity branding survives public property/prototype changes.
+  var domNodes = globalThis.__agentTimers.domNodes;
+  var addDOMNode = WeakSet.prototype.add, applyDOMBrand = Reflect.apply;
 
   // Opaque-root groups for **detached** subtrees (the reflector-identity policy).
   //
@@ -56,7 +67,7 @@
   // array alive, the array keeps every sibling alive, and when the last member
   // goes the whole group is unreachable and is collected together — which is the
   // opaque-root rule, resolved by the GC rather than approximated by the host.
-  // The host rebuilds the groups at each GC tick (`__gcPolicy`), sending only what
+  // The host rebuilds the groups at each GC tick (the private `gcPolicy` hook), sending only what
   // changed since the last one.
   var wrapperGroups = new WeakMap();
 
@@ -139,6 +150,15 @@
   function wrapNode(ref) {
     if (ref === undefined || ref === null) return null;
     if (wrappers.has(ref)) return wrappers.get(ref);
+    if (domAgentDispatch) {
+      var canonical = domAgentDispatch('wrap', ref);
+      if (canonical !== undefined) return canonical;
+    }
+    return wrapNodeLocal(ref);
+  }
+  function wrapNodeLocal(ref) {
+    if (ref === undefined || ref === null) return null;
+    if (wrappers.has(ref)) return wrappers.get(ref);
     var nt = +__nodeType(ref);
     var proto;
     var customDef = null;
@@ -178,6 +198,7 @@
             : Node.prototype;
     }
     var node = Object.create(proto);
+    applyDOMBrand(addDOMNode, domNodes, [node]);
     node.__ref = ref;
     node.nodeType = nt;
     wrappers.set(ref, node);
@@ -239,10 +260,103 @@
   Node.DOCUMENT_NODE = Node.prototype.DOCUMENT_NODE = 9;
   // Pre-insertion validity (DOM): the inserted node must not be an inclusive
   // ancestor of the parent (would form a cycle) → HierarchyRequestError.
-  function ensureInsertable(parent, node) {
-    if (node === parent || (node.contains && node.contains(parent))) {
-      throw new DOMException("The new child is an ancestor of the parent.", "HierarchyRequestError");
+  var nodeRealmState = __nodeRealmState;
+  function ensureLocalNode(node) {
+    if (node && nodeRealmState(node.__ref) === 'foreign') {
+      throw new DOMException("Cross-arena node adoption is unsupported.", "WrongDocumentError");
     }
+  }
+  function ensureInsertionNodes(parent, nodes, ref, replaced, replaceAll) {
+    // WebIDL argument conversion precedes the DOM hierarchy algorithm, even
+    // when the receiver cannot have children. Check every supplied node before
+    // any hierarchy/adoption work; retain the later check after authored getters.
+    for (var argumentIndex = 0; argumentIndex < nodes.length; argumentIndex++) {
+      var argumentNode = nodes[argumentIndex];
+      if (!argumentNode || argumentNode.__ref === undefined) {
+        throw new TypeError("The insertion argument is not a Node.");
+      }
+    }
+    ensureLocalNode(parent);
+    var parentType = parent && parent.__ref !== undefined ? +__nodeType(parent.__ref) : 0;
+    if (parentType !== 1 && parentType !== 9 && parentType !== 11) {
+      throw new DOMException("This node cannot contain children.", "HierarchyRequestError");
+    }
+    // DOM pre-insertion step 2 precedes reference membership and node-kind
+    // checks. Keep the later ancestor recheck after authored getters, too.
+    for (var ancestorIndex = 0; ancestorIndex < nodes.length; ancestorIndex++) {
+      var candidate = nodes[ancestorIndex];
+      if (!candidate || candidate.__ref === undefined) throw new TypeError("The insertion argument is not a Node.");
+      ensureLocalNode(candidate);
+      var ancestor = parent;
+      while (ancestor) {
+        if (ancestor === candidate) throw new DOMException("The new child is an ancestor of the parent.", "HierarchyRequestError");
+        ancestor = ancestor.parentNode || (ancestor.nodeType === 11 ? wrapNode(__shadowHost(ancestor.__ref)) : null);
+      }
+    }
+    if (ref !== null && ref !== undefined && ref.parentNode !== parent) {
+      throw new DOMException("The reference node is not a child of this node.", "NotFoundError");
+    }
+    var inserted = [];
+    for (var i = 0; i < nodes.length; i++) {
+      var node = nodes[i];
+      if (!node || node.__ref === undefined) throw new TypeError("The insertion argument is not a Node.");
+      ensureLocalNode(node);
+      var type = +__nodeType(node.__ref);
+      if (type !== 1 && type !== 3 && type !== 4 && type !== 7 && type !== 8 && type !== 10 && type !== 11) {
+        throw new DOMException("This node cannot be inserted.", "HierarchyRequestError");
+      }
+      // Include shadow hosts in the ancestor check. A shadow root itself is
+      // not an insertable DocumentFragment despite sharing its nodeType.
+      if (type === 11 && __shadowHost(node.__ref) !== null) {
+        throw new DOMException("A shadow root cannot be inserted.", "HierarchyRequestError");
+      }
+      var ancestor = parent;
+      while (ancestor) {
+        if (ancestor === node) throw new DOMException("The new child is an ancestor of the parent.", "HierarchyRequestError");
+        ancestor = ancestor.parentNode || (ancestor.nodeType === 11 ? wrapNode(__shadowHost(ancestor.__ref)) : null);
+      }
+      if ((type === 10 && parentType !== 9) || ((type === 3 || type === 4) && parentType === 9)) {
+        throw new DOMException("This child type is invalid for the parent.", "HierarchyRequestError");
+      }
+      var additions = type === 11 ? rawChildNodes(node) : [node];
+      for (var j = 0; j < additions.length; j++) {
+        var existing = inserted.indexOf(additions[j]);
+        if (existing >= 0) inserted.splice(existing, 1);
+        inserted.push(additions[j]);
+      }
+    }
+    if (parentType === 9) {
+      // Validate the resulting sequence before removing either source or
+      // destination nodes. This covers fragments and replacement together.
+      var current = replaceAll ? [] : rawChildNodes(parent);
+      var result = [], placed = false;
+      for (var k = 0; k < current.length; k++) {
+        if (current[k] === ref) {
+          result = result.concat(inserted); placed = true;
+        }
+        if (current[k] !== replaced && inserted.indexOf(current[k]) < 0) result.push(current[k]);
+      }
+      if (!placed) result = result.concat(inserted);
+      var elementSeen = false, doctypeSeen = false;
+      for (var r = 0; r < result.length; r++) {
+        var childType = +__nodeType(result[r].__ref);
+        if (childType === 3 || childType === 4 ||
+            (childType === 1 && elementSeen) ||
+            (childType === 10 && (doctypeSeen || elementSeen))) {
+          throw new DOMException("Invalid document child sequence.", "HierarchyRequestError");
+        }
+        if (childType === 1) elementSeen = true;
+        if (childType === 10) doctypeSeen = true;
+      }
+    }
+    // All shape checks precede the adoption checks, and all checks precede
+    // conversion/removal so a later unsupported argument cannot detach one.
+    if (domAgentDispatch) {
+      for (var n = 0; n < nodes.length; n++) domAgentDispatch('prepareAdoption', parent.__ref, nodes[n].__ref);
+    }
+  }
+  function ensureInsertable(parent, node, ref, replaced, replaceAll) {
+    ensureInsertionNodes(parent, [node], ref, replaced, replaceAll);
   }
   // The node tree root of `node`: parents only, so a shadow-tree node stops at
   // its shadow root. `getRootNode()` without `composed`.
@@ -268,6 +382,12 @@
   function ownerDocumentOf(node) {
     if (!node) return null;
     if (node.nodeType === 9) return null;
+    // Detached canonical wrappers retain their document metadata in their
+    // creation realm. A borrowed method must query that private metadata,
+    // rather than fall back to the borrowed method's own document.
+    if (domAgentDispatch && !wrappers.has(node.__ref)) {
+      return domAgentDispatch('ownerDocument', node.__ref);
+    }
     var root = rootDocument(node);
     if (root) return root;
     // Detached: the node's own recorded owner, else its tree root's — which is
@@ -301,21 +421,32 @@
     return snapshotTree(node, []);
   }
   function setOwnerDocumentSnapshot(nodes, doc) {
+    if (domAgentDispatch) return domAgentDispatch('owners', nodes, doc);
+    return setOwnerDocumentSnapshotLocal(nodes, doc);
+  }
+  function setOwnerDocumentSnapshotLocal(nodes, doc) {
     if (!doc) return;
     for (var i = 0; i < nodes.length; i++) {
       if (nodes[i] && nodes[i].nodeType !== 9) ownerDocuments.set(nodes[i], doc);
     }
   }
   function enqueueAdoptedTree(root, oldDoc, newDoc) {
+    if (domAgentDispatch) return domAgentDispatch('adopted', root, oldDoc, newDoc);
+    return enqueueAdoptedTreeLocal(root, oldDoc, newDoc);
+  }
+  function enqueueAdoptedTreeLocal(root, oldDoc, newDoc) {
     if (!root || oldDoc === newDoc) return;
     if (root.nodeType === 1 && upgradedCustomElements.get(root)) {
       enqueueCustomElementReaction(root, 'adoptedCallback', [oldDoc, newDoc]);
     }
     var kids = root.childNodes;
-    for (var i = 0; i < kids.length; i++) enqueueAdoptedTree(kids[i], oldDoc, newDoc);
+    for (var i = 0; i < kids.length; i++) enqueueAdoptedTreeLocal(kids[i], oldDoc, newDoc);
   }
   function prepareNodeMove(parent, node) {
+    ensureLocalNode(parent);
+    ensureLocalNode(node);
     return {
+      crossArena: domAgentDispatch ? domAgentDispatch('prepareAdoption', parent.__ref, node.__ref) : false,
       roots: movedRoots(node),
       snapshot: snapshotMovedNodes(node),
       oldDoc: ownerDocumentOf(node),
@@ -344,7 +475,15 @@
   // first (one childList record naming all of them) and land under the parent as
   // one group (one record there), which is the record shape the spec's insertion
   // steps produce. `ref === undefined` means append.
+  function adoptIntoInsertionArena(parent, node) {
+    if (domAgentDispatch && domAgentDispatch('prepareAdoption', parent.__ref, node.__ref)) {
+      if (node.parentNode) moRemoveChild(node.parentNode.__ref, node.__ref);
+      moFlush();
+      domAgentDispatch('adopt', parent.__ref, node.__ref);
+    }
+  }
   function insertNodeInto(parent, node, ref) {
+    adoptIntoInsertionArena(parent, node);
     if (node.nodeType !== 11) {
       if (ref === undefined) moAppendChild(parent.__ref, node.__ref);
       else moInsertBefore(parent.__ref, node.__ref, ref);
@@ -352,7 +491,7 @@
     }
     var kids = rawChildNodes(node);
     if (!kids.length) return; // spec: count 0, return before any record
-    moBeginGroup();
+    moBeginGroup(parent);
     try {
       for (var i = 0; i < kids.length; i++) moRemoveChild(node.__ref, kids[i].__ref);
       for (var j = 0; j < kids.length; j++) {
@@ -466,8 +605,13 @@
     var a = chain(this), b = chain(other);
     if (a[0] !== b[0]) {
       // Different trees: disconnected (+ stable implementation-specific order).
+      // Full-width node IDs are decimal strings. Compare their lengths first
+      // to retain all identity bits instead of narrowing through Number.
+      var leftId = __nodeRawId(this.__ref), rightId = __nodeRawId(other.__ref);
+      var before = leftId.length < rightId.length ||
+                   (leftId.length === rightId.length && leftId < rightId);
       return DP.DOCUMENT_POSITION_DISCONNECTED | DP.DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC |
-             DP.DOCUMENT_POSITION_PRECEDING;
+             (before ? DP.DOCUMENT_POSITION_FOLLOWING : DP.DOCUMENT_POSITION_PRECEDING);
     }
     // Containment.
     if (this.contains(other)) return DP.DOCUMENT_POSITION_CONTAINED_BY | DP.DOCUMENT_POSITION_FOLLOWING;
@@ -557,7 +701,13 @@
         copy = wrapNode(__createDoctype(node.name, node.publicId, node.systemId));
         break;
       case 11: copy = copyDocument.createDocumentFragment(); break;
-      case 9: copy = document.implementation.createHTMLDocument(); break;
+      case 9:
+        // A Document clone begins empty, even when deep. createHTMLDocument()
+        // would prepopulate html/head/body and make copied children duplicates.
+        copy = wrapNode(__createDocument());
+        copy.__isHtml = isHtmlDocument(node);
+        copyDocument = copy;
+        break;
       default: copy = copyDocument.createTextNode('');
     }
     // The create* paths above already record the owner; the two raw-native cases
@@ -601,7 +751,7 @@
     return child;
   };
   Node.prototype.insertBefore = function(node, ref) {
-    ensureInsertable(this, node);
+    ensureInsertable(this, node, ref);
     if (ref !== null && ref !== undefined && ref.parentNode !== this) {
       throw new DOMException("The reference node is not a child of this node.", "NotFoundError");
     }
@@ -626,6 +776,11 @@
   // this document, or both inside the same detached tree), and only
   // element/text/comment nodes move. (moveBefore plan S3.)
   Node.prototype.moveBefore = function(node, ref) {
+    // Unlike insertion, moveBefore never adopts. Preserve its specified
+    // hierarchy error when the source belongs to another realm's arena.
+    if (node && nodeRealmState(node.__ref) === 'foreign') {
+      throw new DOMException("moveBefore does not adopt across documents.", "HierarchyRequestError");
+    }
     if (this.nodeType !== 1 && this.nodeType !== 9 && this.nodeType !== 11) {
       throw new DOMException("This node cannot contain children.", "HierarchyRequestError");
     }
@@ -661,21 +816,27 @@
     if (!oldChild || oldChild.parentNode !== this) {
       throw new DOMException("The node to be replaced is not a child of this node.", "NotFoundError");
     }
-    ensureInsertable(this, newChild);
+    ensureInsertable(this, newChild, oldChild, oldChild);
     // DOM `replace`: the reference is resolved first, the replaced child is
     // removed and the new one inserted under one mutation record, and the new
     // node's own removal from wherever it was is a record of its own before it.
     var reference = oldChild.nextSibling;
     if (reference === newChild) reference = newChild.nextSibling;
+    var move = prepareNodeMove(this, newChild);
     if (newChild.parentNode) newChild.parentNode.removeChild(newChild);
-    moBeginGroup();
+    // Transfer before grouping: the store refuses cross-arena moves while an
+    // observer transaction is active. Keep the original document snapshot.
+    adoptIntoInsertionArena(this, newChild);
+    moBeginGroup(this);
     try {
       if (oldChild.parentNode === this) moRemoveChild(this.__ref, oldChild.__ref);
-      this.insertBefore(newChild, reference);
+      insertNodeInto(this, newChild, reference ? reference.__ref : undefined);
     } finally {
       moEndGroup();
     }
     disconnectCustomElementTree(oldChild);
+    finalizeNodeMove(move);
+    prepareScriptsAfterInsertion(this, move.roots);
     return oldChild;
   };
 
@@ -786,8 +947,10 @@
     // EventTarget listener-record shape, so `fire` handles it like any node.
     // Appended only when the chain reaches the document (a connected node), so
     // detached subtrees don't spuriously route to window.
-    if (path.length && path[path.length - 1].nodeType === 9 && globalThis.window) {
-      path.push(globalThis.window);
+    var terminalDocument = path.length && path[path.length - 1];
+    var terminalWindow = terminalDocument && terminalDocument.nodeType === 9 && terminalDocument.defaultView;
+    if (terminalWindow) {
+      path.push(terminalWindow);
       targets.push(currentTarget);
     }
     event.target = this;
@@ -1070,7 +1233,7 @@
       var fragment = ownerDocumentOf(this).createDocumentFragment();
       for (var i = 0; i < kids.length; i++) fragment.appendChild(kids[i]);
       var next = this.nextSibling;
-      moBeginGroup();
+      moBeginGroup(parent);
       try {
         parent.removeChild(this);
         parent.insertBefore(fragment, next);
@@ -1890,13 +2053,28 @@
     },
     replaceChildren: function() {
       var doc = this.nodeType === 9 ? this : ownerDocumentOf(this);
-      var node = arguments.length ? convertNodes(arguments, doc) : null;
-      moBeginGroup();
+      // Create string nodes without moving existing nodes, then validate the
+      // complete final document shape before conversion into a fragment.
+      var inputs = [];
+      for (var a = 0; a < arguments.length; a++) inputs.push(toNode(arguments[a], doc));
+      ensureInsertionNodes(this, inputs, undefined, undefined, true);
+      var node = inputs.length ? convertNodes(inputs, doc) : null;
+      var move = node ? prepareNodeMove(this, node) : null;
+      if (node) {
+        ensureInsertable(this, node, undefined, undefined, true);
+        disconnectMovedRoots(move);
+        adoptIntoInsertionArena(this, node);
+      }
+      moBeginGroup(this);
       try {
         var kids = rawChildNodes(this);
         for (var i = 0; i < kids.length; i++) this.removeChild(kids[i]);
-        if (node) this.appendChild(node);
+        if (node) insertNodeInto(this, node, undefined);
       } finally { moEndGroup(); }
+      if (move) {
+        finalizeNodeMove(move);
+        prepareScriptsAfterInsertion(this, move.roots);
+      }
     }
   };
   function installMixin(proto, mixin) {
@@ -2366,20 +2544,28 @@
   }
 
   function connectCustomElementTree(root) {
+    if (domAgentDispatch) return domAgentDispatch('connect', root);
+    return connectCustomElementTreeLocal(root);
+  }
+  function connectCustomElementTreeLocal(root) {
     if (!root) return;
     if (root.nodeType === 1) connectCustomElement(root);
     var kids = root.childNodes;
     for (var i = 0; i < kids.length; i++) {
-      connectCustomElementTree(kids[i]);
+      connectCustomElementTreeLocal(kids[i]);
     }
   }
 
   function disconnectCustomElementTree(root) {
+    if (domAgentDispatch) return domAgentDispatch('disconnect', root);
+    return disconnectCustomElementTreeLocal(root);
+  }
+  function disconnectCustomElementTreeLocal(root) {
     if (!root) return;
     if (root.nodeType === 1) disconnectCustomElement(root);
     var kids = root.childNodes;
     for (var i = 0; i < kids.length; i++) {
-      disconnectCustomElementTree(kids[i]);
+      disconnectCustomElementTreeLocal(kids[i]);
     }
   }
 
@@ -2514,6 +2700,8 @@
     return cloneNodeInto(node, this, !!deep);
   };
   Document.prototype.adoptNode = function(node) {
+    ensureLocalNode(this);
+    ensureLocalNode(node);
     if (!node) return node;
     if (node.nodeType === 9) {
       throw new DOMException("Cannot adopt a document node.", "NotSupportedError");
@@ -2523,6 +2711,10 @@
     if (move.oldParent) {
       disconnectMovedRoots(move);
       moRemoveChild(move.oldParent.__ref, node.__ref);
+    }
+    if (move.crossArena) {
+      moFlush();
+      domAgentDispatch('adopt', this.__ref, node.__ref);
     }
     if (move.oldDoc !== move.newDoc) {
       setOwnerDocumentSnapshot(move.snapshot, move.newDoc);
@@ -2940,6 +3132,7 @@
   // attribute's or a character-data node's old value, and the target's ancestor
   // chain at mutation time — and `__moTake` drains that record. Livery's
   // `DomMutation` stream is never touched by any of this.
+  var moLocalRegistrations = new WeakSet();
   var moRegisteredIds = Object.create(null);   // raw node id -> registration count
   var moRegistrationCount = 0;
   var moActive = false;
@@ -2950,12 +3143,14 @@
     var want = moRegistrationCount > 0;
     if (want === moActive) return;
     moActive = want;
-    __moObserving(want ? '1' : '0');
+    if (domAgentDispatch) domAgentDispatch('moActive', want);
+    else __moObserving(want ? '1' : '0');
   }
 
   function moKey(node) { return __nodeRawId(node.__ref); }
 
   function moAddRegistration(node, reg) {
+    moLocalRegistrations.add(reg);
     if (!node.__moRegs) node.__moRegs = [];
     node.__moRegs.push(reg);
     var key = moKey(node);
@@ -2972,7 +3167,7 @@
     if (!regs || !regs.length) return;
     var kept = [];
     for (var i = 0; i < regs.length; i++) {
-      if (pred(regs[i])) {
+      if (moLocalRegistrations.has(regs[i]) && pred(regs[i])) {
         var key = moKey(node);
         moRegisteredIds[key]--;
         if (!moRegisteredIds[key]) delete moRegisteredIds[key];
@@ -2997,7 +3192,9 @@
     return out;
   }
 
-  function moNodeById(id) { return id ? wrapNode(__reflectNode(id)) : null; }
+  function moNodeById(id) {
+    return id ? wrapNode(domAgentDispatch ? domAgentDispatch('recordNode', id) : __reflectNode(id)) : null;
+  }
   function moNodesById(csv) {
     var out = [];
     if (!csv) return out;
@@ -3044,6 +3241,7 @@
       if (!node || !node.__moRegs) continue;
       var regs = node.__moRegs.slice();
       for (var j = 0; j < regs.length; j++) {
+        if (!moLocalRegistrations.has(regs[j])) continue;
         var o = regs[j].options;
         if (id !== targetId && !o.subtree) continue;
         if (type === 'attributes' && !o.attributes) continue;
@@ -3082,7 +3280,7 @@
       var n = moNodeById(chain[i]);
       if (!n || !n.__moRegs) continue;
       for (var j = 0; j < n.__moRegs.length; j++) {
-        if (n.__moRegs[j].options.subtree) sources.push(n.__moRegs[j]);
+        if (moLocalRegistrations.has(n.__moRegs[j]) && n.__moRegs[j].options.subtree) sources.push(n.__moRegs[j]);
       }
     }
     if (!sources.length) return;
@@ -3110,9 +3308,11 @@
   // that can change the registry (`observe`, `takeRecords`, `disconnect`), so
   // "now" is always the registry as it stood when the mutation happened.
   function moFlush() {
-    if (!moActive) return;
-    var blob = __moTake();
-    if (!blob) return;
+    if (domAgentDispatch) return domAgentDispatch('moFlush');
+    if (moActive) moRecords(__moTake());
+  }
+  function moRecords(blob) {
+    if (!moActive || !blob) return;
     var lines = blob.split('\n');
     for (var i = 0; i < lines.length; i++) {
       var f = lines[i].split('\t');
@@ -3297,12 +3497,22 @@
   // document with none pays one native call that returns the empty string
   // — and only outside a coalescing group, so `replaceChild` fires once.
   function moAfterMutation() {
-    if (moActive && !moGroupDepth) moFlush();
+    if ((domAgentDispatch || moActive) && !moGroupDepth) moFlush();
     if (!moGroupDepth) flushSlotChanges();
   }
-  function moBeginGroup() { if (moGroupDepth++ === 0) __moGroup('1'); }
+  var moGroupTargets = [];
+  function moBeginGroup(parent) {
+    if (domAgentDispatch) domAgentDispatch('moGroup', parent.__ref, 1);
+    else if (!moGroupDepth) __moGroup('1');
+    moGroupTargets.push(parent);
+    moGroupDepth++;
+  }
   function moEndGroup() {
-    if (--moGroupDepth === 0) { __moGroup('0'); moAfterMutation(); }
+    var parent = moGroupTargets.pop();
+    moGroupDepth--;
+    if (domAgentDispatch) domAgentDispatch('moGroup', parent.__ref, 0);
+    else if (!moGroupDepth) __moGroup('0');
+    if (!moGroupDepth) moAfterMutation();
   }
   // The same call sites carry the DOM's live-range steps: `rangeWillRemove`
   // before the tree moves (it needs the child index and the pre-mutation
@@ -3376,7 +3586,7 @@
   function indexAdd(node, range, which) {
     var key = __nodeRawId(node.__ref);
     var bucket = rangeIndex[key] || (rangeIndex[key] = []);
-    var entry = [haveWeakRef ? new WeakRef(range) : range, which, null];
+    var entry = [haveWeakRef ? new WeakRef(range) : range, which];
     bucket.push(entry);
     if (which === 0) range.__se = entry; else range.__ee = entry;
   }
@@ -3402,24 +3612,26 @@
     setEndBP(range, ec, eo);
   }
 
-  // The live boundaries in `node`, with dead entries swept out. Entry slot 2
-  // carries the resolved range so the caller does not deref twice.
+  // The live boundaries in `node`, with dead entries swept out. Resolve into
+  // temporary copies only: storing the Range back in the persistent index
+  // would turn its weak registration into a permanent strong root.
   function boundariesAt(node) {
     if (!liveRangeCount) return null;
     var key = __nodeRawId(node.__ref);
     var bucket = rangeIndex[key];
     if (!bucket) return null;
-    var live = [];
+    var live = [], kept = [];
     for (var i = 0; i < bucket.length; i++) {
       var entry = bucket[i];
       if (!entry[0]) continue;
       var range = haveWeakRef ? entry[0].deref() : entry[0];
       if (!range) { entry[0] = null; continue; }
-      entry[2] = range;
-      live.push(entry);
+      // Preserve the original entry identity for __se/__ee retirement.
+      kept.push(entry);
+      live.push([entry[0], entry[1], range]);
     }
     if (!live.length) { delete rangeIndex[key]; return null; }
-    rangeIndex[key] = live.slice();
+    rangeIndex[key] = kept;
     return live;
   }
 
@@ -3482,6 +3694,10 @@
 
   // DOM "removing steps", run before `node` leaves its parent.
   function rangeWillRemove(node) {
+    if (domAgentDispatch) return domAgentDispatch('rangeRemove', node);
+    return rangeWillRemoveLocal(node);
+  }
+  function rangeWillRemoveLocal(node) {
     if (!liveRangeCount || !node) return;
     var parent = node.parentNode;
     if (!parent) return;
@@ -3500,6 +3716,10 @@
   // node now occupies is the reference child's index before the insertion,
   // which is what the spec compares offsets against.
   function rangeDidInsert(node) {
+    if (domAgentDispatch) return domAgentDispatch('rangeInsert', node);
+    return rangeDidInsertLocal(node);
+  }
+  function rangeDidInsertLocal(node) {
     if (!liveRangeCount || !node) return;
     var parent = node.parentNode;
     if (!parent) return;
@@ -3517,6 +3737,10 @@
   // that leaves any boundary inside the parent at offset 0, and any boundary
   // inside a removed subtree at (parent, 0).
   function rangeWillReplaceAll(parent) {
+    if (domAgentDispatch) return domAgentDispatch('rangeReplace', parent);
+    return rangeWillReplaceAllLocal(parent);
+  }
+  function rangeWillReplaceAllLocal(parent) {
     if (!liveRangeCount || !parent) return;
     var count = +__childNodesCount(parent.__ref);
     if (!count) return;
@@ -3543,9 +3767,12 @@
     count = count >>> 0;
     if (offset + count > length) count = length - offset;
     moSetTextContent(node.__ref, current.slice(0, offset) + data + current.slice(offset + count));
+    if (domAgentDispatch) domAgentDispatch('rangeData', node, offset, count, data.length);
+    else rangeDataLocal(node, offset, count, data.length);
+  }
+  function rangeDataLocal(node, offset, count, added) {
     var live = boundariesAt(node);
     if (!live) return;
-    var added = data.length;
     for (var i = 0; i < live.length; i++) {
       var range = live[i][2];
       if (live[i][1] === 0) {
@@ -3563,6 +3790,10 @@
   // DOM "split a Text node" range steps, run after the new node is in place and
   // before the original's data is truncated.
   function rangeDidSplit(node, newNode, offset) {
+    if (domAgentDispatch) return domAgentDispatch('rangeSplit', node, newNode, offset);
+    return rangeDidSplitLocal(node, newNode, offset);
+  }
+  function rangeDidSplitLocal(node, newNode, offset) {
     if (!liveRangeCount) return;
     var live = boundariesAt(node);
     var i, range;
@@ -4858,6 +5089,7 @@
   // wrapper cache so wrapNode(rootRef) returns this same object.
   var docRef = __documentRoot();
   var document = Object.create(Document.prototype);
+  applyDOMBrand(addDOMNode, domNodes, [document]);
   document.__ref = docRef;
   document.nodeType = 9;
   wrappers.set(docRef, document);
@@ -4881,6 +5113,13 @@
   // host calls this after a swap; reflectors are canonical per host, so on an
   // unswapped runtime the root compares identical and this is a no-op.
   globalThis.__rebindDocument = function() {
+    // Snapshot cloning replaces Rust host state but clones these lexical
+    // functions into the new heap. Re-register that heap's private dispatcher,
+    // never a donor E::Value or a publicly exposed hook object.
+    if (domRegisterHooks && domRealmHooks) {
+      domRegisterHooks(domRealmHooks);
+      if (domAgentDispatch) domAgentDispatch('moActive', moRegistrationCount > 0);
+    }
     var freshRef = __documentRoot();
     if (freshRef === docRef || freshRef === undefined || freshRef === null) {
       return;
@@ -4921,6 +5160,7 @@
     var frameElements;
     try { frameElements = document.querySelectorAll('iframe'); } catch (_) { frameElements = []; }
     for (var newIndex = 0; newIndex < frameElements.length; newIndex++) {
+      if (typeof __frameWindow === 'function') __frameWindow(frameElements[newIndex].__ref);
       (function(container) {
         Object.defineProperty(globalThis, String(installedFrameIndices), {
           configurable: true,
@@ -4987,15 +5227,15 @@
   // membership changed, listing every member that has a wrapper. Both arguments
   // are empty in the steady state, so a frame that moves nothing costs one call
   // and two empty-string tests.
-  globalThis.__gcPolicy = function(clear, spec) {
+  function gcPolicy(clear, spec) {
     var i, ref, w;
     if (clear) {
       var cleared = String(clear).split(',');
       for (i = 0; i < cleared.length; i++) {
         if (!cleared[i]) continue;
-        ref = __reflectNode(cleared[i]);
-        if (ref === undefined || ref === null || !wrappers.has(ref)) continue;
-        wrapperGroups.delete(wrappers.get(ref));
+        ref = domAgentDispatch ? domAgentDispatch('recordNode', cleared[i]) : __reflectNode(cleared[i]);
+        if (ref === undefined || ref === null) continue;
+        wrapperGroups.delete(wrapNode(ref));
       }
     }
     if (!spec) return;
@@ -5007,14 +5247,14 @@
       var arr = [];
       for (i = 0; i < members.length; i++) {
         if (!members[i]) continue;
-        ref = __reflectNode(members[i]);
-        if (ref === undefined || ref === null || !wrappers.has(ref)) continue;
-        w = wrappers.get(ref);
+        ref = domAgentDispatch ? domAgentDispatch('recordNode', members[i]) : __reflectNode(members[i]);
+        if (ref === undefined || ref === null) continue;
+        w = wrapNode(ref);
         arr.push(w);
         wrapperGroups.set(w, arr);
       }
     }
-  };
+  }
 
   globalThis.__dispatchSynthetic = function(rawId, type, opts) {
     var node = wrapNode(__reflectNode(String(rawId)));
@@ -5074,8 +5314,10 @@
     var path = [];
     var n = node;
     while (n) { path.push(n); n = n.parentNode; }
-    if (path.length && path[path.length - 1].nodeType === 9 && globalThis.window) {
-      path.push(globalThis.window);
+    var terminalDocument = path.length && path[path.length - 1];
+    var terminalWindow = terminalDocument && terminalDocument.nodeType === 9 && terminalDocument.defaultView;
+    if (terminalWindow) {
+      path.push(terminalWindow);
     }
     var keys = ['c:' + type, 'b:' + type];
     for (var i = 0; i < path.length; i++) {
@@ -5872,6 +6114,12 @@
     }
   }
   function prepareScriptsAfterInsertion(parent, roots) {
+    if (domAgentDispatch && parent && parent.__ref !== undefined) {
+      return domAgentDispatch('prepareScripts', parent.__ref, parent, roots);
+    }
+    return prepareScriptsAfterInsertionLocal(parent, roots);
+  }
+  function prepareScriptsAfterInsertionLocal(parent, roots) {
     if (typeof __stageScripts !== 'function') return;
     var staged = 0;
     if (parent && parent.__ref !== undefined) staged += Number(__stageScripts(parent.__ref, '1'));
@@ -5976,4 +6224,25 @@
   installTemplateInterface();
 
   globalThis.XMLSerializer = XMLSerializer;
+
+  domRealmHooks = function(op, a, b, c, d) {
+      switch (op) {
+        case 'wrap': return wrapNodeLocal(a);
+        case 'ownerDocument': return ownerDocumentOf(wrapNodeLocal(a));
+        case 'owners': return setOwnerDocumentSnapshotLocal(a, b);
+        case 'adopted': return enqueueAdoptedTreeLocal(a, b, c);
+        case 'connect': return connectCustomElementTreeLocal(a);
+        case 'disconnect': return disconnectCustomElementTreeLocal(a);
+        case 'rangeRemove': return rangeWillRemoveLocal(a);
+        case 'rangeInsert': return rangeDidInsertLocal(a);
+        case 'rangeReplace': return rangeWillReplaceAllLocal(a);
+        case 'rangeData': return rangeDataLocal(a, b, c, d);
+        case 'rangeSplit': return rangeDidSplitLocal(a, b, c);
+        case 'moRecords': return moRecords(a);
+        case 'gcPolicy': return gcPolicy(a, b);
+        case 'prepareScripts': return prepareScriptsAfterInsertionLocal(a, b);
+      }
+      throw new Error('Unknown private DOM hook operation: ' + String(op));
+  };
+  if (domRegisterHooks) domRegisterHooks(domRealmHooks);
 })();

@@ -33,6 +33,7 @@
 //! `docs/2026-05-26_pluggable_engines_testharness_plan.md`.
 
 use std::cell::RefCell;
+
 use std::rc::Rc;
 
 use genet_scripted_dom::{NodeId, ScriptedDom};
@@ -41,6 +42,22 @@ use script_engine_api::{
     CallCx, MAIN_REALM, NativeFn, RealmError, RealmId, ReflectorData, ScriptEngine,
     ScriptEngineSnapshot,
 };
+
+/// Reject a foreign realm's arena identity before entering the current DOM.
+/// Reflector data itself stays agent-wide on the engine contract.
+trait LocalReflectorCx: script_engine_api::CallCx {
+    fn local_reflector_data(
+        &mut self,
+        value: &Self::Value,
+    ) -> Result<Option<script_engine_api::ReflectorData>, Self::Error> {
+        let Some(data) = self.reflector_data(value) else {
+            return Ok(None);
+        };
+        dom::adoption::validate(self, data)?;
+        Ok(Some(data))
+    }
+}
+impl<T: script_engine_api::CallCx + ?Sized> LocalReflectorCx for T {}
 
 mod crypto;
 mod dom;
@@ -348,6 +365,7 @@ pub struct Runtime<E: ScriptEngine> {
 /// Realm-owned state shared with native frame creation. Hosts point back weakly.
 #[derive(Default)]
 pub(crate) struct AgentState {
+    pub(crate) dom_adoption: dom::adoption::AgentDomState,
     pub(crate) frames: crate::frames::FrameState,
     pub(crate) child_host_initializer: Option<Rc<dyn Fn(RealmId, &SharedHost)>>,
     /// Engine value retained outside script reach; queued cross-origin callbacks
@@ -361,6 +379,8 @@ pub(crate) struct AgentState {
 
 impl AgentState {
     pub(crate) fn register(&mut self, realm: RealmId, host: SharedHost) {
+        self.dom_adoption
+            .register_realm(realm, host.borrow().dom.arena_id());
         self.hosts.insert(realm, host);
         self.opaque_roots.entry(realm).or_default();
     }
@@ -502,6 +522,7 @@ impl<E: ScriptEngine> Runtime<E> {
         }
         host.agent = Rc::downgrade(&self.agent);
         let shared = Rc::new(RefCell::new(host));
+        self.agent.borrow_mut().register(realm, shared.clone());
         let result = (|| {
             self.engine.set_host_data_in_realm(realm, shared.clone())?;
             let timer_value = self
@@ -541,10 +562,15 @@ impl<E: ScriptEngine> Runtime<E> {
             Ok(())
         })();
         if let Err(error) = result {
+            {
+                let mut agent = self.agent.borrow_mut();
+                agent.dom_adoption.remove_realm(realm);
+                agent.hosts.remove(&realm);
+                agent.opaque_roots.remove(&realm);
+            }
             let _ = self.engine.discard_realm(realm);
             return Err(error);
         }
-        self.agent.borrow_mut().register(realm, shared);
         Ok(realm)
     }
 
@@ -690,11 +716,7 @@ impl<E: ScriptEngine> Runtime<E> {
     /// etc.). A microtask checkpoint runs after dispatch so listener-scheduled
     /// continuations settle. Bubbling and cancelable by default; an unknown id is a
     /// no-op that returns `false`.
-    pub fn dispatch_event(
-        &mut self,
-        raw_node_id: usize,
-        event_type: &str,
-    ) -> Result<bool, E::Error> {
+    pub fn dispatch_event(&mut self, raw_node_id: u64, event_type: &str) -> Result<bool, E::Error> {
         self.trace_scheduler(
             "dispatch_event",
             "start",
@@ -733,7 +755,7 @@ impl<E: ScriptEngine> Runtime<E> {
     /// continuations settle. An unknown id is a no-op.
     pub fn dispatch_transition_event(
         &mut self,
-        raw_node_id: usize,
+        raw_node_id: u64,
         event_type: &str,
         property_name: &str,
         elapsed_time: f64,
@@ -774,7 +796,7 @@ impl<E: ScriptEngine> Runtime<E> {
     /// suppress the default gesture). An unknown id is a no-op.
     pub fn dispatch_touch_event(
         &mut self,
-        raw_node_id: usize,
+        raw_node_id: u64,
         event_type: &str,
         x: f64,
         y: f64,
@@ -803,7 +825,7 @@ impl<E: ScriptEngine> Runtime<E> {
     /// [`dispatch_touch_event`]. Returns `false` if either event was canceled.
     pub fn dispatch_wheel_event(
         &mut self,
-        raw_node_id: usize,
+        raw_node_id: u64,
         x: f64,
         y: f64,
         delta_x: f64,
@@ -834,7 +856,7 @@ impl<E: ScriptEngine> Runtime<E> {
     /// continuations settle. An unknown id is a no-op.
     pub fn dispatch_animation_event(
         &mut self,
-        raw_node_id: usize,
+        raw_node_id: u64,
         event_type: &str,
         animation_name: &str,
         elapsed_time: f64,
@@ -860,24 +882,94 @@ impl<E: ScriptEngine> Runtime<E> {
     /// unrooted and joined instead to its detached tree's ephemeron group in the
     /// bootstrap, where the collector decides the group's fate as a whole.
     ///
-    /// Only differences from the previous tick cross either boundary, so the
-    /// steady-state cost over a document with thousands of touched nodes is one
-    /// `minted_reflectors` walk plus one hash lookup per reflector.
+    /// Single-realm detached groups send only changed metadata. Multiple realms
+    /// rebuild complete physical components so any creation realm can retain the
+    /// canonical wrappers. Temporary roots protect both paths while hooks allocate.
     pub(crate) fn apply_opaque_root_policy(&mut self) {
-        self.apply_opaque_root_policy_in_realm(MAIN_REALM);
-        for realm in self.child_hosts().keys().copied().collect::<Vec<_>>() {
-            self.apply_opaque_root_policy_in_realm(realm);
+        let realms: Vec<_> = std::iter::once(MAIN_REALM)
+            .chain(self.child_hosts().keys().copied())
+            .collect();
+        // Policy hooks allocate and execute JS. Keep every existing reflector
+        // alive until all creation realms have installed their complete detached
+        // component edges; unrooting one realm first leaves a collection window
+        // before another realm's sole reachable descendant can anchor its group.
+        let mut inventories = Vec::with_capacity(realms.len());
+        for &realm in &realms {
+            let minted = self
+                .engine
+                .minted_reflectors_in_realm(realm)
+                .expect("registered realm reflector inventory");
+            // Prior connected roots remain installed throughout this
+            // transaction, even if those nodes have since been detached.
+            let temporary: Vec<_> = if realm == MAIN_REALM {
+                minted
+                    .iter()
+                    .copied()
+                    .filter(|raw| !self.opaque_roots.rooted.contains(raw))
+                    .collect()
+            } else {
+                let agent = self.agent.borrow();
+                let previous = agent.opaque_roots.get(&realm);
+                minted
+                    .iter()
+                    .copied()
+                    .filter(|raw| !previous.is_some_and(|state| state.rooted.contains(raw)))
+                    .collect()
+            };
+            if !temporary.is_empty() {
+                self.engine
+                    .root_reflectors_in_realm(realm, &temporary)
+                    .expect("registered realm temporary policy roots");
+            }
+            inventories.push((realm, minted));
+        }
+        for (realm, minted) in &inventories {
+            self.apply_opaque_root_policy_in_realm(*realm, minted);
+        }
+        // Release transaction roots only after every hook has returned, before
+        // force_gc. Detached components now rely solely on their ephemerons and
+        // authored references, so dropping the final wrapper still collects them.
+        for (realm, minted) in inventories {
+            let detached: Vec<_> = if realm == MAIN_REALM {
+                minted
+                    .into_iter()
+                    .filter(|raw| !self.opaque_roots.rooted.contains(raw))
+                    .collect()
+            } else {
+                let agent = self.agent.borrow();
+                let connected = &agent
+                    .opaque_roots
+                    .get(&realm)
+                    .expect("rebuilt realm root policy")
+                    .rooted;
+                minted
+                    .into_iter()
+                    .filter(|raw| !connected.contains(raw))
+                    .collect()
+            };
+            if !detached.is_empty() {
+                self.engine
+                    .unroot_reflectors_in_realm(realm, &detached)
+                    .expect("registered realm temporary policy roots");
+            }
         }
     }
 
-    fn apply_opaque_root_policy_in_realm(&mut self, realm: RealmId) {
+    fn apply_opaque_root_policy_in_realm(&mut self, realm: RealmId, minted: &[ReflectorData]) {
         let host_handle = self.host_in_realm(realm).expect("registered realm");
-        let minted = if realm == MAIN_REALM {
-            self.engine.minted_reflectors()
+        // Earlier participant hooks may mint reflectors. Keep the established
+        // refreshed inventory semantics for multi-realm agents; only the sole
+        // realm uses the transaction inventory directly.
+        let refreshed;
+        let sole_realm = self.child_hosts().is_empty();
+        let minted = if sole_realm {
+            minted
         } else {
-            self.engine
+            refreshed = self
+                .engine
                 .minted_reflectors_in_realm(realm)
-                .expect("live child realm reflector inventory")
+                .expect("live child realm reflector inventory");
+            refreshed.as_slice()
         };
         let mut owned_roots = if realm == MAIN_REALM {
             std::mem::take(&mut self.opaque_roots)
@@ -894,15 +986,29 @@ impl<E: ScriptEngine> Runtime<E> {
         // left alone (it is about to be reported dead and unpinned).
         let mut connected: Vec<ReflectorData> = Vec::new();
         let mut detached: Vec<(ReflectorData, ReflectorData)> = Vec::new();
-        {
+        if sole_realm {
+            // A sole realm has one physical store. Borrow it once instead of
+            // scanning and cloning the agent host registry for every node.
             let mut host = host_handle.borrow_mut();
             let doc = LayoutDom::document(&host.dom);
-            for &d in &minted {
-                let id = NodeId::from_raw(d as usize);
-                match host.tree_root_of(id) {
+            for &d in minted {
+                match host.tree_root_of(NodeId::from_raw(d)) {
                     Some(root) if root == doc => connected.push(d),
                     Some(root) => detached.push((d, root.raw() as ReflectorData)),
                     None => {},
+                }
+            }
+        } else {
+            for &d in minted {
+                let id = NodeId::from_raw(d);
+                if let Some((_, owner)) = dom::adoption::owner_host(&host_handle, id) {
+                    let mut host = owner.borrow_mut();
+                    let doc = LayoutDom::document(&host.dom);
+                    match host.tree_root_of(id) {
+                        Some(root) if root == doc => connected.push(d),
+                        Some(root) => detached.push((d, root.raw() as ReflectorData)),
+                        None => {},
+                    }
                 }
             }
         }
@@ -910,40 +1016,22 @@ impl<E: ScriptEngine> Runtime<E> {
         // Engine roots: take the newly connected, release everything else.
         let now_rooted: std::collections::HashSet<ReflectorData> =
             connected.iter().copied().collect();
-        let to_root: Vec<ReflectorData> = connected
-            .iter()
-            .copied()
-            .filter(|d| !opaque_roots.rooted.contains(d))
-            .collect();
-        // Everything not connected is unrooted, not only what *this* pass rooted:
-        // `dom::reflect_pinned` also roots on the mint, so a node created and
-        // removed between two ticks carries a root this pass has no record of.
-        let mut to_unroot: Vec<ReflectorData> = detached.iter().map(|&(d, _)| d).collect();
-        to_unroot.extend(
-            opaque_roots
-                .rooted
+        // The sole realm's captured reflectors are already transaction-rooted.
+        // Multi-realm hooks can mint new entries, so preserve the established
+        // rooting pass for that refreshed inventory.
+        if !sole_realm {
+            let to_root: Vec<_> = connected
                 .iter()
                 .copied()
-                .filter(|d| !now_rooted.contains(d)),
-        );
-        if !to_root.is_empty() {
-            if realm == MAIN_REALM {
-                self.engine.root_reflectors(&to_root);
-            } else {
+                .filter(|raw| !opaque_roots.rooted.contains(raw))
+                .collect();
+            if !to_root.is_empty() {
                 self.engine
                     .root_reflectors_in_realm(realm, &to_root)
                     .expect("live realm roots");
             }
         }
-        if !to_unroot.is_empty() {
-            if realm == MAIN_REALM {
-                self.engine.unroot_reflectors(&to_unroot);
-            } else {
-                self.engine
-                    .unroot_reflectors_in_realm(realm, &to_unroot)
-                    .expect("live realm roots");
-            }
-        }
+        // Detached roots are released only after every realm's groups are ready.
 
         // Bootstrap groups: a detached tree is re-linked only when its membership
         // changed. A reflector that became connected must also be dropped from its
@@ -982,7 +1070,8 @@ impl<E: ScriptEngine> Runtime<E> {
                 .insert(realm, owned_roots);
         }
 
-        if dirty_roots.is_empty() && clear.is_empty() {
+        let other_realms = self.child_hosts();
+        if other_realms.is_empty() && dirty_roots.is_empty() && clear.is_empty() {
             return;
         }
         let mut by_root: std::collections::HashMap<ReflectorData, Vec<ReflectorData>> =
@@ -990,6 +1079,38 @@ impl<E: ScriptEngine> Runtime<E> {
         for &(d, root) in &detached {
             if dirty_roots.contains(&root) {
                 by_root.entry(root).or_default().push(d);
+            }
+        }
+        if !other_realms.is_empty() {
+            // A detached component can contain wrappers created in several
+            // realms. Every ephemeron group must contain its complete canonical
+            // wrapper set; a child-realm descendant can be the sole live key
+            // retaining an ancestor and siblings created in the main realm.
+            // Rebuild complete groups for multi-realm agents. The single-realm
+            // hot path above retains its membership-delta optimization.
+            by_root.clear();
+            clear.clear();
+            let mut all_minted = self.engine.minted_reflectors();
+            for &creation_realm in other_realms.keys() {
+                all_minted.extend(
+                    self.engine
+                        .minted_reflectors_in_realm(creation_realm)
+                        .expect("live realm reflector inventory"),
+                );
+            }
+            all_minted.sort_unstable();
+            all_minted.dedup();
+            for raw in all_minted {
+                let id = NodeId::from_raw(raw);
+                if let Some((_, owner)) = dom::adoption::owner_host(&host_handle, id) {
+                    let mut host = owner.borrow_mut();
+                    let document = LayoutDom::document(&host.dom);
+                    match host.tree_root_of(id) {
+                        Some(root) if root == document => clear.push(raw),
+                        Some(root) => by_root.entry(root.raw()).or_default().push(raw),
+                        None => {},
+                    }
+                }
             }
         }
         let mut spec = String::new();
@@ -1011,18 +1132,10 @@ impl<E: ScriptEngine> Runtime<E> {
             .map(ReflectorData::to_string)
             .collect::<Vec<_>>()
             .join(",");
-        // The arguments are decimal digits built here, never authored text, so no
-        // literal can break out of the call expression.
-        let expr = format!(
-            "__gcPolicy({CLEAR}, {SPEC})",
-            CLEAR = js_str(&clear_arg),
-            SPEC = js_str(&spec)
-        );
-        if realm == MAIN_REALM {
-            let _ = self.engine.eval(&expr);
-        } else {
-            let _ = self.engine.eval_in_realm(realm, &expr);
-        }
+        // Invoke the captured private hook: authored globals must not obtain
+        // arbitrary foreign wrappers by substituting a raw-id group spec.
+        dom::adoption::apply_gc_policy::<E>(self, realm, &clear_arg, &spec)
+            .expect("registered realm GC policy");
     }
 
     /// How many reflectors the opaque-root policy currently holds an engine root
@@ -1058,24 +1171,27 @@ impl<E: ScriptEngine> Runtime<E> {
         // Force the engine GC, so reflector wrappers script has dropped are
         // observed dead this tick (the epoch-pin default no-ops, losing nothing).
         self.engine.force_gc();
-        let dead = self.engine.drain_dead_reflectors();
-        let mut host = self.host.borrow_mut();
-        let unpinned = host
-            .pins
-            .retire_dead(dead.into_iter().map(|d| NodeId::from_raw(d as usize)));
-        let HostState { dom, pins, .. } = &mut *host;
-        let collected = dom.collect(pins.iter());
-        drop(host);
-        let mut totals = (unpinned, collected);
-        for (&realm, host) in &self.child_hosts() {
-            let dead = self
-                .engine
-                .drain_dead_reflectors_in_realm(realm)
-                .expect("live realm dead reflectors");
-            let mut host = host.borrow_mut();
-            totals.0 += host
-                .pins
-                .retire_dead(dead.into_iter().map(|d| NodeId::from_raw(d as usize)));
+        let children = self.child_hosts();
+        let mut dead = self.engine.drain_dead_reflectors();
+        for &realm in children.keys() {
+            dead.extend(
+                self.engine
+                    .drain_dead_reflectors_in_realm(realm)
+                    .expect("live realm dead reflectors"),
+            );
+        }
+        // A reflector dies in its creation realm, but adoption moves its pin
+        // into the current owning store. Retire every death before collecting
+        // any store, independent of realm iteration order.
+        let mut totals = (0, 0);
+        for raw in dead {
+            let id = NodeId::from_raw(raw);
+            if let Some((_, owner)) = dom::adoption::owner_host(&self.host, id) {
+                totals.0 += owner.borrow_mut().pins.retire_dead(std::iter::once(id));
+            }
+        }
+        for shared in std::iter::once(&self.host).chain(children.values()) {
+            let mut host = shared.borrow_mut();
             let HostState { dom, pins, .. } = &mut *host;
             totals.1 += dom.collect(pins.iter());
         }
@@ -1608,7 +1724,13 @@ impl<E: ScriptEngine> Runtime<E> {
         id: u64,
         outcome: FetchOutcome,
     ) -> Result<(), RealmError> {
-        if self.agent.borrow().fetch_realms.get(&id).is_some_and(|owner| *owner != realm) {
+        if self
+            .agent
+            .borrow()
+            .fetch_realms
+            .get(&id)
+            .is_some_and(|owner| *owner != realm)
+        {
             return Err(RealmError::Refused("fetch belongs to another realm"));
         }
         let json = fetch::encode_outcome(&outcome);
@@ -1627,7 +1749,13 @@ impl<E: ScriptEngine> Runtime<E> {
         id: u64,
         message: &str,
     ) -> Result<(), RealmError> {
-        if self.agent.borrow().fetch_realms.get(&id).is_some_and(|owner| *owner != realm) {
+        if self
+            .agent
+            .borrow()
+            .fetch_realms
+            .get(&id)
+            .is_some_and(|owner| *owner != realm)
+        {
             return Err(RealmError::Refused("fetch belongs to another realm"));
         }
         self.eval_in_realm(
@@ -1922,7 +2050,7 @@ const EVENT_LOOP_BOOTSTRAP: &str = r#"
   if (!state) {
     var queue = Object.create(null);
     queue.length = 0;
-    state = globalThis.__agentTimers = { timers: queue, nextId: 1, now: 0 };
+    state = globalThis.__agentTimers = { timers: queue, nextId: 1, now: 0, domNodes: new WeakSet() };
   }
   var timers = state.timers;
   var realm = globalThis.__realmId || 0;
@@ -2500,11 +2628,11 @@ struct ScrollIntoView;
 impl<E: ScriptEngine> NativeFn<E> for ScrollIntoView {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let el = cx.arg(0);
-        if let Some(raw) = cx.reflector_data(&el) {
-            let node = NodeId::from_raw(raw as usize);
-            if let Some(data) = cx.host_data() {
-                if let Some(host) = data.downcast_ref::<RefCell<HostState>>() {
-                    host.borrow_mut().scroll_into_view = Some(node);
+        if let Some(raw) = cx.local_reflector_data(&el)? {
+            let node = NodeId::from_raw(raw);
+            if let Some(host) = dom::adoption::current_host(cx) {
+                if let Some((_, owner)) = dom::adoption::owner_host(&host, node) {
+                    owner.borrow_mut().scroll_into_view = Some(node);
                 }
             }
         }
@@ -3623,6 +3751,63 @@ mod tests {
 
         assert_eq!(clone.host().borrow().console, vec!["2"]);
         assert_eq!(template.host().borrow().console, vec!["template", "1"]);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn runtime_snapshot_clone_on_nova_restores_private_dom_hooks() {
+        let mut template = Runtime::<script_engine_nova::NovaEngine>::new().expect("runtime");
+        template.eval("var templateMarker = 41;").unwrap();
+        let mut clone = template.snapshot_clone().expect("snapshot clone");
+        drop(template); // Restored hooks must be rooted in the clone's heap.
+        clone
+            .eval(
+                r#"
+            if (templateMarker !== 41) throw new Error('snapshot reset JS state');
+            var node = document.createElement('div'); node.marker='retained';
+            node.textContent='abcd';
+            var text=node.firstChild, range=document.createRange(), records=[];
+            range.setStart(text,1); range.setEnd(text,3);
+            var observer=new MutationObserver(function(batch){records.push(batch[0]);});
+            observer.observe(text,{characterData:true,characterDataOldValue:true});
+            text.insertData(0,'X');
+            if (range.startOffset !== 2 || range.endOffset !== 4 || range.toString() !== 'bc')
+                throw new Error('restored range hooks inactive');
+        "#,
+            )
+            .unwrap();
+        clone.run_microtasks();
+        clone.eval(r#"
+            if (records.length !== 1 || records[0].target !== text || records[0].oldValue !== 'abcd')
+                throw new Error('restored observer hooks inactive');
+            observer.disconnect(); observer=null; records=[]; range=null;
+            var held=text; text=null;
+            var rootId=__nodeRawId(node.__ref); node=null;
+        "#).unwrap();
+        let id = {
+            let value = clone.eval("rootId").unwrap();
+            NodeId::from_raw(
+                clone
+                    .value_to_string(&value)
+                    .unwrap()
+                    .parse::<u64>()
+                    .unwrap(),
+            )
+        };
+        for _ in 0..3 {
+            clone.collect_garbage();
+        }
+        clone.eval("if (held.parentNode.marker !== 'retained') throw new Error('restored GC groups inactive'); held=null;").unwrap();
+        for _ in 0..8 {
+            clone.collect_garbage();
+            if !clone.host().borrow().dom.is_live(id) {
+                break;
+            }
+        }
+        assert!(
+            !clone.host().borrow().dom.is_live(id),
+            "snapshot clone leaked detached group"
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]

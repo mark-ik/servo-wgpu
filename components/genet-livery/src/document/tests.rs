@@ -2284,3 +2284,63 @@ fn positioned_descendant_extends_its_scroll_container_range() {
         "the positioned fragment contributes to the container's scrollable overflow"
     );
 }
+
+#[test]
+fn transferred_subtree_pending_mutations_damage_both_retained_documents() {
+    let styles = || {
+        StyleSet::cambium(&[
+            "html, body { margin:0; padding:0; } #holder { display:flex; width:160px; } p { width:40px; height:20px; background:red; } p:empty { background:blue; }",
+        ])
+    };
+    let make = |html: &str| {
+        let mut dom = ScriptedDom::from_serialized_document(html);
+        dom.drain_mutations(&mut Vec::new());
+        LiveryDocument::new(dom, styles(), Device::screen(160.0, 120.0))
+    };
+    let mut source = make(
+        "<html><body><div id=holder><p id=moved>old</p><p id=stay>stay</p></div></body></html>",
+    );
+    let mut destination = make("<html><body><div id=holder></div></body></html>");
+    source.frame(160, 120).unwrap();
+    destination.frame(160, 120).unwrap();
+    let node = by_id(&source.dom, "moved");
+    let text = source.dom.dom_children(node).next().unwrap();
+    let former_parent = by_id(&source.dom, "holder");
+    let new_parent = by_id(&destination.dom, "holder");
+    source.dom.set_text(text, "changed");
+    source.dom.set_attribute(node, attr("class"), "changed");
+    source.dom.remove_child(node);
+    let before = format!("{:?}", source.dom.pending_mutations());
+    source
+        .dom
+        .transfer_detached_subtree_preserving_mutations_to(&mut destination.dom, node)
+        .unwrap();
+    assert_eq!(format!("{:?}", source.dom.pending_mutations()), before);
+    destination.dom.append_child(new_parent, node);
+    let mut removed = Vec::new();
+    let mut inserted = Vec::new();
+    source.dom.drain_mutations(&mut removed);
+    destination.dom.drain_mutations(&mut inserted);
+    assert!(
+        removed
+            .iter()
+            .any(|m| matches!(m, DomMutation::CharacterDataChanged { node } if *node == text))
+    );
+    assert!(removed.iter().any(|m| matches!(m, DomMutation::Removed { node: id, former_parent: parent } if *id == node && *parent == former_parent)));
+    assert!(inserted.iter().any(|m| matches!(m, DomMutation::Inserted { node: id, parent } if *id == node && *parent == new_parent)));
+    source.apply_dom_mutations(&removed);
+    destination.apply_dom_mutations(&inserted);
+    assert_eq!(
+        source.last_layout_damage().unwrap().roots,
+        vec![former_parent]
+    );
+    assert_eq!(
+        destination.last_layout_damage().unwrap().roots,
+        vec![new_parent]
+    );
+    source.frame(160, 120).unwrap();
+    destination.frame(160, 120).unwrap();
+    assert!(source.style_session.styles().get(node).is_none());
+    assert_eq!(destination.dom.text(text), Some("changed"));
+    assert!(!generated_ids(&destination, node).is_empty());
+}

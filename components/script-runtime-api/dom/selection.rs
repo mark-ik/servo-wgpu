@@ -36,10 +36,24 @@ pub trait SelectionHandler {
 }
 
 fn handler<E: ScriptEngine>(cx: &mut E::CallCx<'_>) -> Option<Rc<dyn SelectionHandler>> {
-    let data = cx.host_data()?;
-    let cell = data.downcast_ref::<RefCell<HostState>>()?;
-    let handler = cell.borrow().selection.clone();
+    let host = adoption::host_for_call::<E>(cx)?;
+    let handler = host.borrow().selection.clone();
     handler
+}
+
+// Authored calls can pass independently valid nodes from different documents.
+// A layout handler must never receive a boundary owned by another arena.
+fn same_boundary_owner<E: ScriptEngine>(cx: &mut E::CallCx<'_>, start: u64, end: u64) -> bool {
+    let Some(host) = adoption::current_host(cx) else {
+        return false;
+    };
+    let (Some((_, start_host)), Some((_, end_host))) = (
+        adoption::owner_host(&host, NodeId::from_raw(start)),
+        adoption::owner_host(&host, NodeId::from_raw(end)),
+    ) else {
+        return false;
+    };
+    Rc::ptr_eq(&start_host, &end_host)
 }
 
 fn offset_arg<E: ScriptEngine>(cx: &mut E::CallCx<'_>, index: usize) -> Result<u32, E::Error> {
@@ -56,11 +70,14 @@ impl<E: ScriptEngine> NativeFn<E> for RangeRects {
         let start_value = cx.arg(0);
         let end_value = cx.arg(2);
         let (Some(start), Some(end)) = (
-            cx.reflector_data(&start_value),
-            cx.reflector_data(&end_value),
+            cx.local_reflector_data(&start_value)?,
+            cx.local_reflector_data(&end_value)?,
         ) else {
             return cx.make_string("");
         };
+        if !same_boundary_owner::<E>(cx, start, end) {
+            return cx.make_string("");
+        }
         let start_offset = offset_arg::<E>(cx, 1)?;
         let end_offset = offset_arg::<E>(cx, 3)?;
         let rects = handler::<E>(cx)
@@ -83,10 +100,10 @@ impl<E: ScriptEngine> NativeFn<E> for VisualSelection {
         let start_value = cx.arg(0);
         let end_value = cx.arg(2);
         let points = match (
-            cx.reflector_data(&start_value),
-            cx.reflector_data(&end_value),
+            cx.local_reflector_data(&start_value)?,
+            cx.local_reflector_data(&end_value)?,
         ) {
-            (Some(start), Some(end)) => {
+            (Some(start), Some(end)) if same_boundary_owner::<E>(cx, start, end) => {
                 let start_offset = offset_arg::<E>(cx, 1)?;
                 let end_offset = offset_arg::<E>(cx, 3)?;
                 Some((start, start_offset, end, end_offset))

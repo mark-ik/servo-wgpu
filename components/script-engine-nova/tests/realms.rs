@@ -459,3 +459,215 @@ fn host_installed_globals_are_writable_configurable_and_deletable() {
     let value = engine.eval_in_realm(child, script).unwrap();
     assert_eq!(engine.value_to_string(&value).unwrap(), "true");
 }
+
+#[test]
+fn reflector_locality_uses_owner_not_raw_id() {
+    type E = NovaEngine;
+    struct Mint;
+    impl NativeFn<E> for Mint {
+        fn call(
+            cx: &mut <E as ScriptEngine>::CallCx<'_>,
+        ) -> Result<<E as ScriptEngine>::Value, <E as ScriptEngine>::Error> {
+            cx.make_reflector(17)
+        }
+    }
+    struct Canonical;
+    impl NativeFn<E> for Canonical {
+        fn call(
+            cx: &mut <E as ScriptEngine>::CallCx<'_>,
+        ) -> Result<<E as ScriptEngine>::Value, <E as ScriptEngine>::Error> {
+            cx.reflector_for(17)
+        }
+    }
+    struct Local;
+    impl NativeFn<E> for Local {
+        fn call(
+            cx: &mut <E as ScriptEngine>::CallCx<'_>,
+        ) -> Result<<E as ScriptEngine>::Value, <E as ScriptEngine>::Error> {
+            let value = cx.arg(0);
+            let local = cx.reflector_is_local(&value);
+            let raw = cx.reflector_data(&value);
+            cx.make_string(&format!("{local}:{raw:?}"))
+        }
+    }
+    let mut engine = E::new().unwrap();
+    let child = engine.create_realm().unwrap();
+    engine.set_function::<Mint>("mint", 0).unwrap();
+    engine.set_function::<Canonical>("canonical", 0).unwrap();
+    engine.set_function::<Local>("local", 1).unwrap();
+    engine
+        .set_function_in_realm::<Mint>(child, "mint", 0)
+        .unwrap();
+    engine
+        .set_function_in_realm::<Canonical>(child, "canonical", 0)
+        .unwrap();
+    engine
+        .set_function_in_realm::<Local>(child, "local", 1)
+        .unwrap();
+    let global = engine.realm_global(child).unwrap();
+    engine.set_global("child", &global).unwrap();
+    let result = engine.eval("var a=mint(), b=child.mint(), c=canonical(), d=child.canonical(); Object.setPrototypeOf(b,null); local(a)==='true:Some(17)' && local(b)==='false:Some(17)' && child.local(a)==='false:Some(17)' && child.local(b)==='true:Some(17)' && local(c)==='true:Some(17)' && local(d)==='false:Some(17)' && child.local(c)==='false:Some(17)' && child.local(d)==='true:Some(17)' && local({})==='false:None'").unwrap();
+    assert_eq!(engine.value_to_string(&result).unwrap(), "true");
+    engine.force_gc();
+    let result = engine.eval("local(a)==='true:Some(17)' && local(b)==='false:Some(17)' && child.local(a)==='false:Some(17)' && child.local(b)==='true:Some(17)' && local(c)==='true:Some(17)' && child.local(d)==='true:Some(17)'").unwrap();
+    assert_eq!(engine.value_to_string(&result).unwrap(), "true");
+}
+
+#[test]
+fn callback_reflector_selection_preserves_identity_and_roots() {
+    type E = NovaEngine;
+    struct Select;
+    impl NativeFn<E> for Select {
+        fn call(
+            cx: &mut <E as ScriptEngine>::CallCx<'_>,
+        ) -> Result<<E as ScriptEngine>::Value, <E as ScriptEngine>::Error> {
+            let value = cx.arg(0);
+            let realm = cx.value_to_string(&value)?.parse::<RealmId>().unwrap();
+            let value = cx.arg(1);
+            let mode = cx.value_to_string(&value)?;
+            let current = cx.current_realm();
+            let result = match mode.as_str() {
+                "root" => cx
+                    .root_reflector_in_realm(realm, 91)
+                    .map(|()| cx.undefined()),
+                "release" => cx
+                    .unroot_reflector_in_realm(realm, 91)
+                    .map(|()| cx.undefined()),
+                _ => cx.reflector_for_in_realm(realm, 91),
+            };
+            assert_eq!(cx.current_realm(), current);
+            match result {
+                Ok(value) => Ok(value),
+                Err(RealmError::NoSuchRealm(id)) => cx.make_string(&format!("missing:{id}")),
+                Err(error) => Err(cx.error(&error.to_string())),
+            }
+        }
+    }
+    let mut engine = E::new().unwrap();
+    let child = engine.create_realm().unwrap();
+    engine.set_function::<Select>("select", 2).unwrap();
+    engine
+        .set_function_in_realm::<Select>(child, "select", 2)
+        .unwrap();
+    let global = engine.realm_global(child).unwrap();
+    engine.set_global("child", &global).unwrap();
+    drop(global);
+    let script = format!(
+        "var original=child.select({child},'get'); original.marker=73; var other=select(0,'get'); select({child},'root'); select({child},'root'); select({child},'get')===original && child.select(0,'get')===other && other!==original && select(4294967295,'get')==='missing:4294967295' && select(4294967295,'root')==='missing:4294967295' && select(4294967295,'release')==='missing:4294967295'"
+    );
+    let result = engine.eval(&script).unwrap();
+    assert_eq!(engine.value_to_string(&result).unwrap(), "true");
+    drop(result);
+    assert_eq!(engine.rooted_reflector_count_in_realm(child).unwrap(), 1);
+    assert_eq!(
+        engine.rooted_reflector_count_in_realm(MAIN_REALM).unwrap(),
+        0
+    );
+    engine.eval("original=null; other=null").unwrap();
+    engine.force_gc();
+    engine.force_gc();
+    assert!(
+        engine
+            .drain_dead_reflectors_in_realm(child)
+            .unwrap()
+            .is_empty()
+    );
+    let result = engine
+        .eval(&format!("select({child},'get').marker===73"))
+        .unwrap();
+    assert_eq!(engine.value_to_string(&result).unwrap(), "true");
+    drop(result);
+    engine
+        .eval(&format!(
+            "select({child},'release'); select({child},'release');"
+        ))
+        .unwrap();
+    assert_eq!(engine.rooted_reflector_count_in_realm(child).unwrap(), 0);
+    engine.force_gc();
+    engine.force_gc();
+    assert_eq!(
+        engine.drain_dead_reflectors_in_realm(child).unwrap(),
+        vec![91]
+    );
+    engine.discard_realm(child).unwrap();
+    let result = engine.eval(&format!("select({child},'get')==='missing:{child}' && select({child},'root')==='missing:{child}' && select({child},'release')==='missing:{child}'")).unwrap();
+    assert_eq!(engine.value_to_string(&result).unwrap(), "true");
+}
+
+#[test]
+fn host_calls_retained_child_function_without_global_lookup() {
+    let mut engine = NovaEngine::new().unwrap();
+    let child = engine.create_realm().unwrap();
+    let function = engine.eval_in_realm(child,
+        "globalThis.label = 'child'; (function (value) { return label + ':' + this.tag + ':' + value; })"
+    ).unwrap();
+    let receiver = engine.eval("({tag: 'receiver'})").unwrap();
+    // Parentheses make this an expression rather than a directive prologue.
+    let argument = engine.eval("('argument')").unwrap();
+    assert_eq!(engine.value_to_string(&argument).unwrap(), "argument");
+    engine.eval("globalThis.label = 'parent'").unwrap();
+    engine.force_gc();
+    let result = engine
+        .call_function(&function, &receiver, &[argument])
+        .unwrap();
+    assert_eq!(
+        engine.value_to_string(&result).unwrap(),
+        "child:receiver:argument"
+    );
+    assert!(engine.call_function(&receiver, &receiver, &[]).is_err());
+    let throwing = engine
+        .eval_in_realm(
+            child,
+            "(function () { throw new TypeError('host failure'); })",
+        )
+        .unwrap();
+    assert!(matches!(
+        engine.call_function(&throwing, &receiver, &[]),
+        Err(RealmError::Engine(_))
+    ));
+    let parent = engine.eval("label").unwrap();
+    assert_eq!(engine.value_to_string(&parent).unwrap(), "parent");
+}
+
+#[test]
+fn cross_realm_ephemeron_chains_keep_values_until_the_last_key_dies() {
+    let mut engine = NovaEngine::new().unwrap();
+    let child = engine.create_realm().unwrap();
+    let child_global = engine.realm_global(child).unwrap();
+    engine.set_global("ephemeronChild", &child_global).unwrap();
+    drop(child_global);
+    engine
+        .eval_in_realm(child, "globalThis.chain = new WeakMap();")
+        .unwrap();
+    engine
+        .eval(
+            r#"
+        globalThis.chain = new WeakMap();
+        globalThis.held = Object.create(null);
+        globalThis.weakPayload = (function () {
+            var key = held;
+            for (var i = 0; i < 64; i++) {
+                var next = Object.create(null);
+                (i % 2 ? chain : ephemeronChild.chain).set(key, next);
+                key = next;
+            }
+            key.marker = 'retained';
+            return new WeakRef(key);
+        })();
+    "#,
+        )
+        .unwrap();
+    for _ in 0..3 {
+        engine.force_gc();
+        let value = engine
+            .eval("weakPayload.deref() && weakPayload.deref().marker")
+            .unwrap();
+        assert_eq!(engine.value_to_string(&value).unwrap(), "retained");
+    }
+    engine.eval("held = null;").unwrap();
+    for _ in 0..3 {
+        engine.force_gc();
+    }
+    let value = engine.eval("weakPayload.deref() === undefined").unwrap();
+    assert_eq!(engine.value_to_string(&value).unwrap(), "true");
+}

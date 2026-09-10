@@ -1030,12 +1030,16 @@ fn livery_session_rejects_inaccessible_native_text_value_replacements_and_text_e
         "rejected controls do not take edit focus"
     );
 
-    let _scene = session.frame(400, 240);
     for node in [disabled, readonly, aria_disabled, aria_readonly] {
-        let [x, y, width, height] = session
-            .document()
-            .fragment_rect(node)
-            .expect("native control has retained geometry");
+        // Clicking can invalidate retained layout through focus styling. Render
+        // the next frame before resolving the next control's hit geometry.
+        let _scene = session.frame(400, 240);
+        let [x, y, width, height] = session.document().fragment_rect(node).unwrap_or_else(|| {
+            panic!(
+                "native control {:?} has retained geometry",
+                session.attribute(node, "id")
+            )
+        });
         let _ = session.click_at(x + width * 0.5, y + height * 0.5);
         assert!(
             !session.text_input("changed"),
@@ -1059,6 +1063,7 @@ fn livery_session_rejects_inaccessible_native_text_value_replacements_and_text_e
         Some("aria locked")
     );
     assert_eq!(session.text_content(aria_readonly), "aria fixed");
+    let _scene = session.frame(400, 240);
     let [x, y, width, height] = session
         .document()
         .fragment_rect(disabled_submit)
@@ -1088,6 +1093,7 @@ fn livery_session_rejects_inaccessible_native_text_value_replacements_and_text_e
     );
     session.focused_node = None;
     session.active_form = None;
+    let _scene = session.frame(400, 240);
     assert!(session.focus_move(SessionFocusDirection::Forward));
     assert_ne!(session.focused_node, Some(disabled_submit));
     assert_eq!(
@@ -1543,6 +1549,20 @@ fn livery_session_edits_and_submits_a_retained_get_form() {
     let released = session.input(pointer(SessionButtonState::Released));
     assert!(released.editable);
     assert_eq!(released.cursor, Some(SessionCursor::Text));
+
+    // The pointer target identifies the start caret. Select the end explicitly
+    // because this test exercises appending and submission, not hit-test bias.
+    assert_eq!(
+        session
+            .input(document_session_api::SessionInput::Key {
+                key: SessionKey::End,
+                state: SessionButtonState::Pressed,
+                modifiers: SessionModifiers::default(),
+                repeat: false,
+            })
+            .effect,
+        SessionEffect::Handled,
+    );
 
     let edited = session.input(document_session_api::SessionInput::Text(
         " and ash".to_owned(),

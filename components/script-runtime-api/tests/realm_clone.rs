@@ -7,7 +7,7 @@
 //! Clone records cross the engine's actual realm boundary without a JSON wire.
 //! Serialization runs in the sender; reconstruction uses recipient intrinsics.
 
-use script_engine_api::ScriptEngine;
+use script_engine_api::{CallCx, NativeFn, ScriptEngine};
 use script_runtime_api::{HostState, Runtime};
 
 fn with_child<E: ScriptEngine>() -> Runtime<E> {
@@ -194,9 +194,90 @@ fn decoder_rejects_accessors_and_defines_own_properties<E: ScriptEngine>() {
     );
 }
 
+fn dom_wrapper_branding_uses_identity<E: ScriptEngine>() {
+    let mut runtime = with_child::<E>();
+    check(
+        &mut runtime,
+        r#"
+        var nodeLike = { nodeType: 1, nodeName: 'DIV', value: 7 };
+        var borrowed = { value: 9 };
+        Object.defineProperty(borrowed, '__ref', { value: document.__ref });
+        var pretend = Object.create(Node.prototype);
+        pretend.value = 11;
+        var plain = structuredClone([nodeLike, borrowed, pretend]);
+        var foreign = child.__scDeserializeRecord(__scSerializeRecord([nodeLike, borrowed, pretend]));
+        if (plain[0].nodeName !== 'DIV' || plain[1].value !== 9 || plain[2].value !== 11 ||
+            Object.prototype.hasOwnProperty.call(plain[1], '__ref') ||
+            Object.getPrototypeOf(plain[2]) !== Object.prototype ||
+            foreign[0].nodeType !== 1 || foreign[2].value !== 11) throw Error('plain data branding');
+        var actual = child.document.createElement('div');
+        delete actual.__ref;
+        delete actual.nodeType;
+        Object.setPrototypeOf(actual, null);
+        var rejected = 0;
+        try { structuredClone(actual); } catch (e) { if (e.name === 'DataCloneError') rejected++; }
+        try { __scSerializeRecord(actual); } catch (e) { if (e.name === 'DataCloneError') rejected++; }
+        try { structuredClone(child.document); } catch (e) { if (e.name === 'DataCloneError') rejected++; }
+        rejected === 3
+        "#,
+    );
+}
+
+fn native_rethrow_preserves_authored_value<E: ScriptEngine>() {
+    struct Rethrow;
+    impl<E: ScriptEngine> NativeFn<E> for Rethrow {
+        fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+            let realm_value = cx.arg(0);
+            let realm = cx.value_to_string(&realm_value)?.parse().unwrap();
+            let mode = cx.arg(1);
+            if cx.value_to_string(&mode)? == "eval" {
+                return E::eval_in_realm_from_call(cx, realm, "throw globalThis.thrownToken");
+            }
+            let function = E::eval_in_realm_from_call(
+                cx,
+                realm,
+                "(function () { throw globalThis.thrownToken; })",
+            )?;
+            let this = cx.undefined();
+            E::call_from_call(cx, &function, &this, &[])
+        }
+    }
+    let mut runtime = Runtime::<E>::new().unwrap();
+    let child = runtime.create_child_realm(HostState::default()).unwrap();
+    let global = runtime.engine_mut().realm_global(child).unwrap();
+    runtime.engine_mut().set_global("child", &global).unwrap();
+    runtime
+        .engine_mut()
+        .set_function::<Rethrow>("rethrow", 2)
+        .unwrap();
+    check(
+        &mut runtime,
+        &format!(
+            r#"
+        var token = {{ value: 7 }};
+        child.thrownToken = token;
+        var observed = 0;
+        try {{ rethrow({child}, 'eval'); }} catch (error) {{ if (error === token) observed++; }}
+        try {{ rethrow({child}, 'call'); }} catch (error) {{ if (error === token) observed++; }}
+        try {{ postMessage('payload', {{ get targetOrigin() {{ throw token; }} }}); }}
+        catch (error) {{ if (error === token) observed++; }}
+        observed === 3
+    "#
+        ),
+    );
+}
+
 macro_rules! backend {
     ($module:ident, $engine:ty) => {
         mod $module {
+            #[test]
+            fn native_rethrow_preserves_authored_value() {
+                super::native_rethrow_preserves_authored_value::<$engine>();
+            }
+            #[test]
+            fn dom_wrapper_branding_uses_identity() {
+                super::dom_wrapper_branding_uses_identity::<$engine>();
+            }
             #[test]
             fn cycles_and_recipient_intrinsics() {
                 super::cycles_and_recipient_intrinsics::<$engine>();

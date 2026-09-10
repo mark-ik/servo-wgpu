@@ -11,6 +11,7 @@
 //! policy all need the root regardless of mode, so the arena answers honestly
 //! and the DOM surface withholds.
 
+use crate::LocalReflectorCx as _;
 use genet_scripted_dom::{
     AttachShadowError, ShadowRootInit, ShadowRootMode, SlotAssignmentMode, may_host_shadow_tree,
 };
@@ -23,7 +24,7 @@ use super::*;
 fn parse_raw_ids(list: &str) -> Vec<NodeId> {
     list.split(',')
         .filter(|part| !part.is_empty())
-        .filter_map(|part| part.parse::<usize>().ok())
+        .filter_map(|part| part.parse::<u64>().ok())
         .map(NodeId::from_raw)
         .collect()
 }
@@ -57,7 +58,7 @@ pub(crate) struct AttachShadow;
 impl<E: ScriptEngine> NativeFn<E> for AttachShadow {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let host = cx.arg(0);
-        let Some(raw) = cx.reflector_data(&host) else {
+        let Some(raw) = cx.local_reflector_data(&host)? else {
             return cx.make_string("NotSupportedError");
         };
         let mode_v = cx.arg(1);
@@ -82,7 +83,7 @@ impl<E: ScriptEngine> NativeFn<E> for AttachShadow {
             slot_assignment: SlotAssignmentMode::parse(&assignment)
                 .unwrap_or(SlotAssignmentMode::Named),
         };
-        let host_id = NodeId::from_raw(raw as usize);
+        let host_id = NodeId::from_raw(raw);
         let outcome = with_dom::<E, _>(cx, |dom| {
             let local = dom
                 .element_name(host_id)
@@ -107,11 +108,10 @@ pub(crate) struct ShadowRootOf;
 impl<E: ScriptEngine> NativeFn<E> for ShadowRootOf {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let host = cx.arg(0);
-        let Some(raw) = cx.reflector_data(&host) else {
+        let Some(raw) = cx.local_reflector_data(&host)? else {
             return Ok(cx.make_null());
         };
-        let found = with_dom::<E, _>(cx, |dom| dom.shadow_root_of(NodeId::from_raw(raw as usize)))
-            .flatten();
+        let found = with_dom::<E, _>(cx, |dom| dom.shadow_root_of(NodeId::from_raw(raw))).flatten();
         match found {
             Some(root) => reflect_pinned::<E>(cx, root.raw() as u64),
             None => Ok(cx.make_null()),
@@ -124,11 +124,10 @@ pub(crate) struct ShadowHostOf;
 impl<E: ScriptEngine> NativeFn<E> for ShadowHostOf {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let root = cx.arg(0);
-        let Some(raw) = cx.reflector_data(&root) else {
+        let Some(raw) = cx.local_reflector_data(&root)? else {
             return Ok(cx.make_null());
         };
-        let found = with_dom::<E, _>(cx, |dom| dom.shadow_host_of(NodeId::from_raw(raw as usize)))
-            .flatten();
+        let found = with_dom::<E, _>(cx, |dom| dom.shadow_host_of(NodeId::from_raw(raw))).flatten();
         match found {
             Some(host) => reflect_pinned::<E>(cx, host.raw() as u64),
             None => Ok(cx.make_null()),
@@ -143,11 +142,10 @@ pub(crate) struct ShadowInitOf;
 impl<E: ScriptEngine> NativeFn<E> for ShadowInitOf {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let root = cx.arg(0);
-        let Some(raw) = cx.reflector_data(&root) else {
+        let Some(raw) = cx.local_reflector_data(&root)? else {
             return cx.make_string("");
         };
-        let init =
-            with_dom::<E, _>(cx, |dom| dom.shadow_init(NodeId::from_raw(raw as usize))).flatten();
+        let init = with_dom::<E, _>(cx, |dom| dom.shadow_init(NodeId::from_raw(raw))).flatten();
         let text = match init {
             Some(init) => format!(
                 "{},{},{},{},{}",
@@ -168,13 +166,11 @@ pub(crate) struct AssignedSlotOf;
 impl<E: ScriptEngine> NativeFn<E> for AssignedSlotOf {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let node = cx.arg(0);
-        let Some(raw) = cx.reflector_data(&node) else {
+        let Some(raw) = cx.local_reflector_data(&node)? else {
             return Ok(cx.make_null());
         };
-        let found = with_dom::<E, _>(cx, |dom| {
-            dom.assigned_slot_of(NodeId::from_raw(raw as usize))
-        })
-        .flatten();
+        let found =
+            with_dom::<E, _>(cx, |dom| dom.assigned_slot_of(NodeId::from_raw(raw))).flatten();
         match found {
             Some(slot) => reflect_pinned::<E>(cx, slot.raw() as u64),
             None => Ok(cx.make_null()),
@@ -187,13 +183,11 @@ pub(crate) struct AssignedNodesOf;
 impl<E: ScriptEngine> NativeFn<E> for AssignedNodesOf {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let slot = cx.arg(0);
-        let Some(raw) = cx.reflector_data(&slot) else {
+        let Some(raw) = cx.local_reflector_data(&slot)? else {
             return cx.make_string("");
         };
-        let ids = with_dom::<E, _>(cx, |dom| {
-            dom.assigned_nodes_of(NodeId::from_raw(raw as usize))
-        })
-        .unwrap_or_default();
+        let ids = with_dom::<E, _>(cx, |dom| dom.assigned_nodes_of(NodeId::from_raw(raw)))
+            .unwrap_or_default();
         let text = join_raw_ids(&ids);
         cx.make_string(&text)
     }
@@ -204,14 +198,14 @@ pub(crate) struct SlotAssign;
 impl<E: ScriptEngine> NativeFn<E> for SlotAssign {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let slot = cx.arg(0);
-        let Some(raw) = cx.reflector_data(&slot) else {
+        let Some(raw) = cx.local_reflector_data(&slot)? else {
             return Ok(cx.undefined());
         };
         let list_v = cx.arg(1);
         let list = cx.value_to_string(&list_v)?;
         let nodes = parse_raw_ids(&list);
         with_dom::<E, _>(cx, |dom| {
-            dom.set_manual_assignment(NodeId::from_raw(raw as usize), nodes)
+            dom.set_manual_assignment(NodeId::from_raw(raw), nodes)
         });
         Ok(cx.undefined())
     }
@@ -234,10 +228,10 @@ pub(crate) struct TemplateContent;
 impl<E: ScriptEngine> NativeFn<E> for TemplateContent {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let template = cx.arg(0);
-        let Some(raw) = cx.reflector_data(&template) else {
+        let Some(raw) = cx.local_reflector_data(&template)? else {
             return Ok(cx.make_null());
         };
-        let id = NodeId::from_raw(raw as usize);
+        let id = NodeId::from_raw(raw);
         let fragment = with_dom::<E, _>(cx, |dom| {
             let is_template = dom
                 .element_name(id)
@@ -271,11 +265,11 @@ pub(crate) struct RealizeDeclarativeShadow;
 impl<E: ScriptEngine> NativeFn<E> for RealizeDeclarativeShadow {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let node = cx.arg(0);
-        let Some(raw) = cx.reflector_data(&node) else {
+        let Some(raw) = cx.local_reflector_data(&node)? else {
             return cx.make_string("0");
         };
         let count = with_dom::<E, _>(cx, |dom| {
-            dom.realize_declarative_shadow_roots(NodeId::from_raw(raw as usize))
+            dom.realize_declarative_shadow_roots(NodeId::from_raw(raw))
                 .len()
         })
         .unwrap_or(0);
@@ -291,13 +285,13 @@ pub(crate) struct GetHtmlWithShadow;
 impl<E: ScriptEngine> NativeFn<E> for GetHtmlWithShadow {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let node = cx.arg(0);
-        let Some(raw) = cx.reflector_data(&node) else {
+        let Some(raw) = cx.local_reflector_data(&node)? else {
             return cx.make_string("");
         };
         let include_v = cx.arg(1);
         let include = cx.value_to_string(&include_v)? == "1";
         let html = with_dom::<E, _>(cx, |dom| {
-            let id = NodeId::from_raw(raw as usize);
+            let id = NodeId::from_raw(raw);
             if include {
                 dom.inner_html_with_shadow_roots(id)
             } else {

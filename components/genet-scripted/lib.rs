@@ -166,7 +166,7 @@ pub use genet_scripted_dom::Pins as ReflectorPins;
 pub fn pump_and_retire<E: ScriptEngine>(engine: &mut E, pins: &mut ReflectorPins) -> usize {
     engine.pump_microtasks();
     let dead = engine.drain_dead_reflectors();
-    pins.retire_dead(dead.into_iter().map(|data| NodeId::from_raw(data as usize)))
+    pins.retire_dead(dead.into_iter().map(|data| NodeId::from_raw(data)))
 }
 
 /// Run a mark-sweep collection over `dom`, treating the currently-pinned ids as
@@ -224,8 +224,7 @@ mod native {
             let text = cx.value_to_string(&text)?;
             if let Some(data) = cx.host_data() {
                 if let Some(dom) = data.downcast_ref::<HostDom>() {
-                    dom.borrow_mut()
-                        .set_text(NodeId::from_raw(id as usize), &text);
+                    dom.borrow_mut().set_text(NodeId::from_raw(id), &text);
                 }
             }
             Ok(cx.undefined())

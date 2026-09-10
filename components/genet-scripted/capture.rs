@@ -135,20 +135,41 @@ pub(crate) struct RecordedLayoutBatch {
 }
 
 impl RecordedMutation {
-    fn capture(dom: &ScriptedDom, mutation: &DomMutation<NodeId>) -> Self {
-        match mutation {
+    fn capture(dom: &ScriptedDom, mutation: &DomMutation<NodeId>) -> io::Result<Self> {
+        let capture_id = |id| {
+            dom.try_capture_node_id(id)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+        };
+        // Retained source journals may name an exported node. Its birth-arena
+        // serial is valid, but current-value readback from this store is not.
+        // Removed needs only historical identities and its current liveness.
+        let readback_node = match mutation {
+            DomMutation::Inserted { node, .. }
+            | DomMutation::AttributeChanged { node, .. }
+            | DomMutation::CharacterDataChanged { node }
+            | DomMutation::SubtreeReplaced { node }
+            | DomMutation::Moved { node, .. } => Some(*node),
+            DomMutation::Removed { .. } => None,
+        };
+        if readback_node.is_some_and(|node| !dom.is_live(node)) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "capture mutation target is no longer in this document",
+            ));
+        }
+        Ok(match mutation {
             DomMutation::Inserted { node, parent } => Self::Inserted {
-                node: dom.capture_node_id(*node),
-                parent: dom.capture_node_id(*parent),
-                next_sibling: dom.next_sibling(*node).map(|id| dom.capture_node_id(id)),
+                node: capture_id(*node)?,
+                parent: capture_id(*parent)?,
+                next_sibling: dom.next_sibling(*node).map(capture_id).transpose()?,
                 outer_html: dom.outer_html(*node),
             },
             DomMutation::Removed {
                 node,
                 former_parent,
             } => Self::Removed {
-                node: dom.capture_node_id(*node),
-                former_parent: dom.capture_node_id(*former_parent),
+                node: capture_id(*node)?,
+                former_parent: capture_id(*former_parent)?,
                 still_live: dom.is_live(*node),
             },
             DomMutation::AttributeChanged {
@@ -156,7 +177,7 @@ impl RecordedMutation {
                 name,
                 old_value,
             } => Self::AttributeChanged {
-                node: dom.capture_node_id(*node),
+                node: capture_id(*node)?,
                 name: name.into(),
                 old_value: old_value.clone(),
                 new_value: dom
@@ -164,11 +185,11 @@ impl RecordedMutation {
                     .map(ToString::to_string),
             },
             DomMutation::CharacterDataChanged { node } => Self::CharacterDataChanged {
-                node: dom.capture_node_id(*node),
+                node: capture_id(*node)?,
                 new_data: dom.text(*node).unwrap_or_default().to_string(),
             },
             DomMutation::SubtreeReplaced { node } => Self::SubtreeReplaced {
-                node: dom.capture_node_id(*node),
+                node: capture_id(*node)?,
                 new_inner_html: dom.inner_html(*node),
             },
             DomMutation::Moved {
@@ -176,12 +197,12 @@ impl RecordedMutation {
                 from_parent,
                 to_parent,
             } => Self::Moved {
-                node: dom.capture_node_id(*node),
-                from_parent: dom.capture_node_id(*from_parent),
-                to_parent: dom.capture_node_id(*to_parent),
-                next_sibling: dom.next_sibling(*node).map(|id| dom.capture_node_id(id)),
+                node: capture_id(*node)?,
+                from_parent: capture_id(*from_parent)?,
+                to_parent: capture_id(*to_parent)?,
+                next_sibling: dom.next_sibling(*node).map(capture_id).transpose()?,
             },
-        }
+        })
     }
 }
 
@@ -228,15 +249,19 @@ impl DomCaptureRecorder {
     }
 
     pub(crate) fn record_pending(&mut self, dom: &mut ScriptedDom) -> io::Result<usize> {
-        let mut pending = Vec::new();
-        dom.drain_mutations(&mut pending);
+        // Validate the entire batch before consuming its mutation journal or
+        // writing any record. Imported identities require a capture translation
+        // protocol; refuse them through the recorder's ordinary disable path.
+        let (_, pending) = dom.pending_mutations();
         if pending.is_empty() {
             return Ok(0);
         }
         let mutations = pending
             .iter()
             .map(|m| RecordedMutation::capture(dom, m))
-            .collect();
+            .collect::<io::Result<Vec<_>>>()?;
+        let mut pending = Vec::new();
+        dom.drain_mutations(&mut pending);
         // Layout parity capture (a shadow `genet_layout::IncrementalLayout` kept
         // beside the recorder, applying each batch to record fragment-digest +
         // viewport alongside the DOM mutations) was retired with the
@@ -309,6 +334,95 @@ mod tests {
         static NEXT_ID: AtomicU64 = AtomicU64::new(0);
         let unique = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!("genet-dom-capture-{}-{unique}.bin", now_millis()))
+    }
+
+    #[test]
+    fn recorder_refuses_imported_batch_without_consuming_live_mutations() {
+        let mut source = ScriptedDom::new();
+        let imported = source.create_element(qual("p"));
+        let text = source.create_text("retained");
+        source.append_child(imported, text);
+        source.drain_mutations(&mut Vec::new());
+        let mut dom = ScriptedDom::new();
+        let root = dom.document();
+        let local = dom.create_element(qual("main"));
+        dom.append_child(root, local);
+        let path = temp_capture_path();
+        let mut recorder = DomCaptureRecorder::open_at_path(&path, &mut dom, &[]).unwrap();
+        // A valid leading mutation must not be written as a partial batch.
+        dom.set_attribute(local, qual("id"), "local");
+        source
+            .transfer_detached_subtree_to(&mut dom, imported)
+            .unwrap();
+        dom.append_child(local, imported);
+        let before = dom.pending_mutations().1.len();
+        let error = recorder.record_pending(&mut dom).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("capture translation"));
+        assert_eq!(read_capture_records(&path).unwrap().len(), 1);
+        assert_eq!(dom.pending_mutations().1.len(), before);
+        assert_eq!(dom.parent(imported), Some(local));
+        assert_eq!(dom.text(text), Some("retained"));
+        dom.set_text_content(text, "still usable");
+        assert!(dom.inner_html(root).contains("still usable"));
+        let mut layout_mutations = Vec::new();
+        dom.drain_mutations(&mut layout_mutations);
+        assert!(layout_mutations.iter().any(|mutation| matches!(
+            mutation, DomMutation::Inserted { node, .. } if *node == imported
+        )));
+        drop(recorder);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn recorder_refuses_exported_readback_without_consuming_source_journal() {
+        let mut source = ScriptedDom::new();
+        let node = source.create_element(qual("p"));
+        let root = source.document();
+        source.append_child(root, node);
+        let path = temp_capture_path();
+        let mut recorder = DomCaptureRecorder::open_at_path(&path, &mut source, &[]).unwrap();
+        source.set_attribute(node, qual("id"), "exported");
+        source.remove_child(node);
+        let mut destination = ScriptedDom::new();
+        source
+            .transfer_detached_subtree_preserving_mutations_to(&mut destination, node)
+            .unwrap();
+        let before = source.pending_mutations().1.len();
+        let error = recorder.record_pending(&mut source).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("no longer in this document"));
+        assert_eq!(source.pending_mutations().1.len(), before);
+        assert_eq!(read_capture_records(&path).unwrap().len(), 1);
+        assert_eq!(
+            destination.attribute(node, &Namespace::from(""), &LocalName::from("id")),
+            Some("exported")
+        );
+        destination.append_child(destination.document(), node);
+        destination.set_attribute(node, qual("id"), "still-usable");
+        assert!(
+            destination
+                .inner_html(destination.document())
+                .contains("still-usable")
+        );
+        // Historical removal remains representable even after physical export.
+        let removal = RecordedMutation::capture(
+            &source,
+            &DomMutation::Removed {
+                node,
+                former_parent: root,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            removal,
+            RecordedMutation::Removed {
+                still_live: false,
+                ..
+            }
+        ));
+        drop(recorder);
+        let _ = fs::remove_file(path);
     }
 
     #[test]

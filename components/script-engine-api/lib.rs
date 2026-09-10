@@ -150,6 +150,18 @@ pub trait ScriptEngine: Sized {
     /// Evaluate `source` in the global scope, returning its completion value.
     fn eval(&mut self, source: &str) -> Result<Self::Value, Self::Error>;
 
+    /// Invoke a retained callable directly from the host. The function enters its
+    /// own creation realm; values must belong to this engine. Thrown exceptions
+    /// are rendered as host errors, unlike the exception-preserving callback API.
+    fn call_function(
+        &mut self,
+        _function: &Self::Value,
+        _this: &Self::Value,
+        _args: &[Self::Value],
+    ) -> Result<Self::Value, RealmError> {
+        Err(RealmError::Unsupported)
+    }
+
     /// Evaluate `source` as an ECMAScript **module** (module scope, strict mode,
     /// `import` / `export`), driving its load → link → evaluate to completion.
     ///
@@ -343,7 +355,7 @@ pub trait ScriptEngine: Sized {
         0
     }
 
-    /// Realm-scoped counterpart of [`Self::minted_reflectors`]. IDs are local to the realm's host arena.
+    /// Realm-scoped counterpart of [`Self::minted_reflectors`]. IDs identify that realm's canonical reflectors, independently of current storage ownership.
     fn minted_reflectors_in_realm(
         &mut self,
         realm: RealmId,
@@ -355,7 +367,7 @@ pub trait ScriptEngine: Sized {
         }
     }
 
-    /// Realm-scoped counterpart of [`Self::root_reflectors`]. IDs are local to the realm's host arena.
+    /// Realm-scoped counterpart of [`Self::root_reflectors`]. IDs identify that realm's canonical reflectors, independently of current storage ownership.
     fn root_reflectors_in_realm(
         &mut self,
         realm: RealmId,
@@ -368,7 +380,7 @@ pub trait ScriptEngine: Sized {
         }
     }
 
-    /// Realm-scoped counterpart of [`Self::unroot_reflectors`]. IDs are local to the realm's host arena.
+    /// Realm-scoped counterpart of [`Self::unroot_reflectors`]. IDs identify that realm's canonical reflectors, independently of current storage ownership.
     fn unroot_reflectors_in_realm(
         &mut self,
         realm: RealmId,
@@ -381,7 +393,7 @@ pub trait ScriptEngine: Sized {
         }
     }
 
-    /// Realm-scoped counterpart of [`Self::rooted_reflector_count`]. IDs are local to the realm's host arena.
+    /// Realm-scoped counterpart of [`Self::rooted_reflector_count`]. IDs identify that realm's canonical reflectors, independently of current storage ownership.
     fn rooted_reflector_count_in_realm(&mut self, realm: RealmId) -> Result<usize, RealmError> {
         if realm == MAIN_REALM {
             Ok(self.rooted_reflector_count())
@@ -390,7 +402,7 @@ pub trait ScriptEngine: Sized {
         }
     }
 
-    /// Realm-scoped counterpart of [`Self::drain_dead_reflectors`]. IDs are local to the realm's host arena.
+    /// Realm-scoped counterpart of [`Self::drain_dead_reflectors`]. IDs identify that realm's canonical reflectors, independently of current storage ownership.
     fn drain_dead_reflectors_in_realm(
         &mut self,
         realm: RealmId,
@@ -451,18 +463,19 @@ pub trait ScriptEngine: Sized {
         _cx: &mut Self::CallCx<'_>,
         _realm: RealmId,
         _source: &str,
-    ) -> Result<Self::Value, RealmError> {
-        Err(RealmError::Unsupported)
+    ) -> Result<Self::Value, Self::Error> {
+        Err(_cx.error("realm operation is unsupported"))
     }
 
     /// Call an engine function without publishing its arguments on a global.
+    /// JavaScript exceptions retain their thrown value when returned by the native callback.
     fn call_from_call(
         _cx: &mut Self::CallCx<'_>,
         _function: &Self::Value,
         _this: &Self::Value,
         _args: &[Self::Value],
-    ) -> Result<Self::Value, RealmError> {
-        Err(RealmError::Unsupported)
+    ) -> Result<Self::Value, Self::Error> {
+        Err(_cx.error("realm operation is unsupported"))
     }
 
     /// Fetch an existing realm's actual global while inside a native callback.
@@ -596,6 +609,14 @@ pub trait CallCx {
     /// is not a reflector.
     fn reflector_data(&mut self, value: &Self::Value) -> Option<ReflectorData>;
 
+    /// Whether this reflector was minted for the callback's current realm.
+    /// Check this before decoding arena-local data. `reflector_data` itself
+    /// remains agent-wide and does not establish permission to use that arena.
+    /// Single-realm engines accept any native reflector; nonreflectors are false.
+    fn reflector_is_local(&mut self, value: &Self::Value) -> bool {
+        self.reflector_data(value).is_some()
+    }
+
     /// Mint a reflector carrying `data`, the in-callback mirror of
     /// [`ScriptEngineLive::make_reflector`]. A native callback that *returns* a host
     /// object (e.g. `document.createElement` handing JS a new `Node`) needs this:
@@ -615,6 +636,50 @@ pub trait CallCx {
     /// neutral [`HostData`] without re-coupling the host layer to an engine). It
     /// lives in the same host-defined slot the engine already owns.
     fn reflector_for(&mut self, data: ReflectorData) -> Result<Self::Value, Self::Error>;
+
+    /// Fetch the canonical reflector in its creation realm without changing the
+    /// active callback realm. Storage ownership may have moved independently.
+    fn reflector_for_in_realm(
+        &mut self,
+        realm: RealmId,
+        data: ReflectorData,
+    ) -> Result<Self::Value, RealmError> {
+        if realm != self.current_realm() {
+            return Err(RealmError::Unsupported);
+        }
+        self.reflector_for(data)
+            .map_err(|_| RealmError::Refused("reflector creation failed"))
+    }
+
+    /// Root the creation realm's canonical object, even from another callback realm.
+    /// Roots are idempotent holds, not reference counts, matching `root_reflector`.
+    fn root_reflector_in_realm(
+        &mut self,
+        realm: RealmId,
+        data: ReflectorData,
+    ) -> Result<(), RealmError> {
+        if realm != self.current_realm() {
+            return Err(RealmError::Unsupported);
+        }
+        if self.root_reflector(data) {
+            Ok(())
+        } else {
+            Err(RealmError::Refused("reflector rooting unsupported"))
+        }
+    }
+
+    /// Release a creation-realm root. An absent root is an idempotent success.
+    fn unroot_reflector_in_realm(
+        &mut self,
+        realm: RealmId,
+        data: ReflectorData,
+    ) -> Result<(), RealmError> {
+        if realm != self.current_realm() {
+            return Err(RealmError::Unsupported);
+        }
+        self.unroot_reflector(data);
+        Ok(())
+    }
 
     /// Hold a **strong** engine root on the canonical reflector for `data`, the
     /// in-callback mirror of [`ScriptEngine::root_reflectors`]. Returns whether the
@@ -666,8 +731,9 @@ pub trait CallCx {
         self.undefined()
     }
 
-    /// Realm of the immediate caller at native entry, before the callee realm
-    /// becomes current. Hosts needing incumbent settings must track those separately.
+    /// Realm of the nearest authored caller at native entry. Backends supporting
+    /// realms skip native call/apply trampolines and preserve authored callbacks.
+    /// Hosts needing HTML's backup incumbent settings stack must track it separately.
     fn caller_realm(&mut self) -> RealmId {
         self.current_realm()
     }

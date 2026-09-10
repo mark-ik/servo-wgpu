@@ -34,6 +34,7 @@
 //! reason: they are host facts a native reads, set by the parser driver at the
 //! spec's points rather than guessed by the bootstrap.
 
+use crate::LocalReflectorCx as _;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
@@ -459,6 +460,22 @@ fn with_host<E: ScriptEngine, R>(
     Some(f(&mut host))
 }
 
+// Stream parsing and its JS continuation belong to the callback's realm. A
+// foreign document must never fall through write_target to this active document.
+fn stream_target<E: ScriptEngine>(
+    cx: &mut E::CallCx<'_>,
+    value: &E::Value,
+) -> Result<Option<NodeId>, E::Error> {
+    let target = cx.local_reflector_data(value)?.map(NodeId::from_raw);
+    if let Some(node) = target {
+        let local = with_host::<E, _>(cx, |host| host.dom.is_live(node)).unwrap_or(false);
+        if !local {
+            return Err(cx.error("document stream requires its owning document realm"));
+        }
+    }
+    Ok(target)
+}
+
 /// `__readyState()` → `"loading"` / `"interactive"` / `"complete"`.
 pub(crate) struct ReadyStateOf;
 impl<E: ScriptEngine> NativeFn<E> for ReadyStateOf {
@@ -489,9 +506,7 @@ pub(crate) struct DocOpen;
 impl<E: ScriptEngine> NativeFn<E> for DocOpen {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let a0 = cx.arg(0);
-        let target = cx
-            .reflector_data(&a0)
-            .map(|id| NodeId::from_raw(id as usize));
+        let target = stream_target::<E>(cx, &a0)?;
         with_host::<E, _>(cx, |host| match write_target(host, target) {
             (_, true) => open_stream_begin(host),
             // A document with no browsing context has no stream to open; its
@@ -526,9 +541,7 @@ impl<E: ScriptEngine> NativeFn<E> for DocWrite {
         let text_v = cx.arg(0);
         let text = cx.value_to_string(&text_v)?;
         let a1 = cx.arg(1);
-        let target = cx
-            .reflector_data(&a1)
-            .map(|id| NodeId::from_raw(id as usize));
+        let target = stream_target::<E>(cx, &a1)?;
         with_host::<E, _>(cx, |host| {
             // A write into a document that is not the active one must not touch
             // the active one — which is what this did until 2026-09-08, so
@@ -564,9 +577,7 @@ pub(crate) struct DocPumpStream;
 impl<E: ScriptEngine> NativeFn<E> for DocPumpStream {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let a0 = cx.arg(0);
-        let target = cx
-            .reflector_data(&a0)
-            .map(|id| NodeId::from_raw(id as usize));
+        let target = stream_target::<E>(cx, &a0)?;
         let pumped = with_host::<E, _>(cx, |host| {
             if host.markup.parser_active || !write_target(host, target).1 {
                 return None;
@@ -588,9 +599,7 @@ pub(crate) struct DocClose;
 impl<E: ScriptEngine> NativeFn<E> for DocClose {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let a0 = cx.arg(0);
-        let target = cx
-            .reflector_data(&a0)
-            .map(|id| NodeId::from_raw(id as usize));
+        let target = stream_target::<E>(cx, &a0)?;
         with_host::<E, _>(cx, |host| {
             if host.markup.parser_active || !write_target(host, target).1 {
                 return;
@@ -618,12 +627,12 @@ pub(crate) struct StageScripts;
 impl<E: ScriptEngine> NativeFn<E> for StageScripts {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let a0 = cx.arg(0);
-        let Some(id) = cx.reflector_data(&a0) else {
+        let Some(id) = cx.local_reflector_data(&a0)? else {
             return cx.make_string("0");
         };
         let a1 = cx.arg(1);
         let self_only = cx.value_to_string(&a1).unwrap_or_default() == "1";
-        let node = NodeId::from_raw(id as usize);
+        let node = NodeId::from_raw(id);
         let staged = with_host::<E, _>(cx, |host| {
             if !host.dom.is_live(node) || !in_active_document(&host.dom, node) {
                 return 0;
@@ -692,11 +701,11 @@ impl<E: ScriptEngine> NativeFn<E> for CopyScriptStarted {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let a0 = cx.arg(0);
         let a1 = cx.arg(1);
-        let from = cx.reflector_data(&a0);
-        let to = cx.reflector_data(&a1);
+        let from = cx.local_reflector_data(&a0)?;
+        let to = cx.local_reflector_data(&a1)?;
         if let (Some(from), Some(to)) = (from, to) {
-            let from = NodeId::from_raw(from as usize);
-            let to = NodeId::from_raw(to as usize);
+            let from = NodeId::from_raw(from);
+            let to = NodeId::from_raw(to);
             with_host::<E, _>(cx, |host| {
                 if script_started(host, from) {
                     host.markup.already_started.insert(to);

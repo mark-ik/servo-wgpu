@@ -177,7 +177,10 @@ where
                     }
                 },
                 DomMutation::CharacterDataChanged { node } => {
-                    if structural_dependencies && let Some(parent) = dom.parent(*node) {
+                    if structural_dependencies
+                        && dom.is_live(*node)
+                        && let Some(parent) = dom.parent(*node)
+                    {
                         push_element_hint(dom, &mut roots, parent, sibling_dependencies);
                     }
                 },

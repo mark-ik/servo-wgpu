@@ -79,12 +79,12 @@ impl WorkerSession {
     }
 
     /// Dispatch an event. Node ids cross the JS boundary as decimal strings so the
-    /// protocol never truncates a wasm64 `usize` through JavaScript's Number type.
+    /// protocol preserves the full u64 identity through JavaScript's Number type.
     #[wasm_bindgen(js_name = dispatchEvent)]
     pub fn dispatch_event(&mut self, node_id: &str, event_type: &str) -> Result<bool, JsValue> {
         let node_id = node_id
-            .parse::<usize>()
-            .map_err(|_| js_error("nodeId must be a decimal pointer-width integer"))?;
+            .parse::<u64>()
+            .map_err(|_| js_error("nodeId must be a decimal 64-bit unsigned integer"))?;
         self.document
             .dispatch_event(node_id, event_type)
             .map_err(js_error)

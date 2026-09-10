@@ -849,7 +849,7 @@ fn process_testdriver_actions<E: ScriptEngine>(
     // for dispatch below.
     let cssom = render.cssom.clone();
     let resolver = move |reference: &str| -> Option<(f64, f64)> {
-        let raw: usize = reference.parse().ok()?;
+        let raw: u64 = reference.parse().ok()?;
         let node = DomNodeId::from_raw(raw);
         let [x, y, w, h] = cssom.fragment_rect(node)?;
         Some((f64::from(x + w / 2.0), f64::from(y + h / 2.0)))

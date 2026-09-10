@@ -181,6 +181,42 @@ fn an_opaque_origin_matches_no_explicit_target<E: ScriptEngine>() {
     assert_eq!(read(&mut rt, "seen.join(',')"), "star");
 }
 
+fn parent_is_replaceable_and_top_is_unforgeable<E: ScriptEngine>() {
+    let mut rt = Runtime::<E>::new().expect("runtime");
+    load(&mut rt, "<body><iframe id=child></iframe></body>");
+    assert_eq!(
+        read(
+            &mut rt,
+            r#"(function () {
+        var descriptor = Object.getOwnPropertyDescriptor(window, 'parent');
+        var topDescriptor = Object.getOwnPropertyDescriptor(window, 'top');
+        var childWindow = document.getElementById('child').contentWindow;
+        if (parent !== window || top !== window || childWindow.parent !== window ||
+            childWindow.top !== window) return 'initial relations';
+        if (!descriptor.enumerable || !descriptor.configurable ||
+            typeof descriptor.get !== 'function' || typeof descriptor.set !== 'function')
+            return 'parent accessor';
+        if (!topDescriptor.enumerable || topDescriptor.configurable ||
+            typeof topDescriptor.get !== 'function' || topDescriptor.set !== undefined)
+            return 'top accessor';
+        window.parent = 17;
+        childWindow.parent = 23;
+        descriptor = Object.getOwnPropertyDescriptor(window, 'parent');
+        if (parent !== 17 || childWindow.parent !== 23 || !descriptor.writable ||
+            !descriptor.enumerable || !descriptor.configurable || descriptor.value !== 17)
+            return 'replacement';
+        if (top !== window || childWindow.top !== window) return 'topology changed';
+        if (Reflect.set(window, 'top', 31) || Reflect.deleteProperty(window, 'top') ||
+            Reflect.defineProperty(window, 'top', { value: 31 })) return 'top mutated';
+        try { (function () { 'use strict'; window.top = 31; })(); return 'strict write'; }
+        catch (error) { if (!(error instanceof TypeError)) return 'wrong error'; }
+        return 'ok';
+    })()"#
+        ),
+        "ok"
+    );
+}
+
 macro_rules! both_engines {
     ($($body:ident => ($boa:ident, $nova:ident)),* $(,)?) => {
         $(
@@ -195,6 +231,8 @@ macro_rules! both_engines {
 }
 
 both_engines! {
+    parent_is_replaceable_and_top_is_unforgeable
+        => (parent_and_top_descriptors_on_boa, parent_and_top_descriptors_on_nova),
     frames_is_the_window_and_length_counts_children
         => (frames_and_length_on_boa, frames_and_length_on_nova),
     a_nested_frame_still_counts

@@ -36,6 +36,8 @@ use script_engine_api::{
 struct Reflector {
     #[unsafe_ignore_trace]
     data: ReflectorData,
+    #[unsafe_ignore_trace]
+    owner: RealmId,
 }
 
 impl Class for Reflector {
@@ -279,6 +281,29 @@ pub struct BoaCallCx<'a> {
     args: &'a [JsValue],
 }
 
+impl BoaCallCx<'_> {
+    fn with_reflector_realm<R>(
+        &mut self,
+        realm: RealmId,
+        operation: impl FnOnce(&mut Self) -> Result<R, RealmError>,
+    ) -> Result<R, RealmError> {
+        let target = self
+            .ctx
+            .get_data::<HostCell>()
+            .ok_or(RealmError::Refused("host cell missing"))?
+            .registry
+            .realms
+            .borrow()
+            .get(&realm)
+            .cloned()
+            .ok_or(RealmError::NoSuchRealm(realm))?;
+        let previous = self.ctx.enter_realm(target);
+        let result = operation(self);
+        self.ctx.enter_realm(previous);
+        result
+    }
+}
+
 impl CallCx for BoaCallCx<'_> {
     type Value = JsValue;
     type Error = JsError;
@@ -344,6 +369,49 @@ impl CallCx for BoaCallCx<'_> {
         Ok(v)
     }
 
+    fn reflector_for_in_realm(
+        &mut self,
+        realm: RealmId,
+        data: ReflectorData,
+    ) -> Result<Self::Value, RealmError> {
+        self.with_reflector_realm(realm, |cx| {
+            cx.reflector_for(data)
+                .map_err(|error| RealmError::Engine(format!("{error:?}")))
+        })
+    }
+
+    fn root_reflector_in_realm(
+        &mut self,
+        realm: RealmId,
+        data: ReflectorData,
+    ) -> Result<(), RealmError> {
+        self.with_reflector_realm(realm, |cx| {
+            let value = cx
+                .reflector_for(data)
+                .map_err(|error| RealmError::Engine(format!("{error:?}")))?;
+            let object = value
+                .as_object()
+                .ok_or(RealmError::Refused("reflector is not an object"))?;
+            let host = cx.ctx.realm().host_defined();
+            let slot = host
+                .get::<RealmSlot>()
+                .ok_or(RealmError::Refused("realm host slot missing"))?;
+            slot.roots.borrow_mut().insert(data, object);
+            Ok(())
+        })
+    }
+
+    fn unroot_reflector_in_realm(
+        &mut self,
+        realm: RealmId,
+        data: ReflectorData,
+    ) -> Result<(), RealmError> {
+        self.with_reflector_realm(realm, |cx| {
+            cx.unroot_reflector(data);
+            Ok(())
+        })
+    }
+
     fn root_reflector(&mut self, data: ReflectorData) -> bool {
         let Ok(v) = self.reflector_for(data) else {
             return false;
@@ -376,11 +444,25 @@ impl CallCx for BoaCallCx<'_> {
             .and_then(|o| o.downcast_ref::<Reflector>().map(|r| r.data))
     }
 
+    fn reflector_is_local(&mut self, value: &JsValue) -> bool {
+        let current = realm_id_of(self.ctx);
+        value
+            .as_object()
+            .and_then(|o| o.downcast_ref::<Reflector>().map(|r| r.owner == current))
+            .unwrap_or(false)
+    }
+
     fn make_reflector(&mut self, data: ReflectorData) -> Result<JsValue, JsError> {
         // The `Reflector` class is registered at engine construction, so building one
         // from the held `Context` is the in-callback mirror of the engine-level
         // `ScriptEngineLive::make_reflector`.
-        let obj: JsObject = Reflector::from_data(Reflector { data }, self.ctx)?;
+        let obj: JsObject = Reflector::from_data(
+            Reflector {
+                data,
+                owner: realm_id_of(self.ctx),
+            },
+            self.ctx,
+        )?;
         Ok(obj.into())
     }
 
@@ -432,6 +514,20 @@ impl ScriptEngine for BoaEngine {
 
     fn eval(&mut self, source: &str) -> Result<Self::Value, Self::Error> {
         self.ctx.eval(Source::from_bytes(source))
+    }
+
+    fn call_function(
+        &mut self,
+        function: &Self::Value,
+        this: &Self::Value,
+        args: &[Self::Value],
+    ) -> Result<Self::Value, RealmError> {
+        let function = function
+            .as_callable()
+            .ok_or_else(|| RealmError::Engine("value is not callable".into()))?;
+        function
+            .call(this, args, &mut self.ctx)
+            .map_err(|error| RealmError::Engine(self.describe_error(&error)))
     }
 
     fn eval_module(
@@ -510,7 +606,7 @@ impl ScriptEngine for BoaEngine {
             };
             F::call(&mut cx)
         }
-        self.ctx.register_global_callable(
+        self.ctx.register_global_builtin_callable(
             JsString::from(name),
             length,
             NativeFunction::from_fn_ptr(trampoline::<F>),
@@ -785,7 +881,7 @@ impl ScriptEngine for BoaEngine {
             })
         }
         cx.ctx
-            .register_global_callable(
+            .register_global_builtin_callable(
                 JsString::from(name),
                 length,
                 NativeFunction::from_fn_ptr(trampoline::<F>),
@@ -797,7 +893,7 @@ impl ScriptEngine for BoaEngine {
         cx: &mut Self::CallCx<'_>,
         realm: RealmId,
         source: &str,
-    ) -> Result<Self::Value, RealmError> {
+    ) -> Result<Self::Value, Self::Error> {
         let target = cx
             .ctx
             .get_data::<HostCell>()
@@ -807,12 +903,11 @@ impl ScriptEngine for BoaEngine {
             .borrow()
             .get(&realm)
             .cloned()
-            .ok_or(RealmError::NoSuchRealm(realm))?;
+            .ok_or_else(|| {
+                JsNativeError::error().with_message(format!("no such realm: {realm}"))
+            })?;
         let previous = cx.ctx.enter_realm(target);
-        let result = cx
-            .ctx
-            .eval(Source::from_bytes(source))
-            .map_err(|e| RealmError::Engine(format!("{e:?}")));
+        let result = cx.ctx.eval(Source::from_bytes(source));
         cx.ctx.enter_realm(previous);
         result
     }
@@ -822,13 +917,11 @@ impl ScriptEngine for BoaEngine {
         function: &Self::Value,
         this: &Self::Value,
         args: &[Self::Value],
-    ) -> Result<Self::Value, RealmError> {
+    ) -> Result<Self::Value, Self::Error> {
         let function = function
             .as_callable()
-            .ok_or(RealmError::Refused("value is not callable"))?;
-        function
-            .call(this, args, cx.ctx)
-            .map_err(|e| RealmError::Engine(format!("{e:?}")))
+            .ok_or_else(|| JsNativeError::typ().with_message("value is not callable"))?;
+        function.call(this, args, cx.ctx)
     }
 
     fn realm_global_from_call(
@@ -961,7 +1054,11 @@ impl ScriptEngine for BoaEngine {
         }
         let name = JsString::from(name);
         self.with_realm(realm, |ctx| {
-            ctx.register_global_callable(name, length, NativeFunction::from_fn_ptr(trampoline::<F>))
+            ctx.register_global_builtin_callable(
+                name,
+                length,
+                NativeFunction::from_fn_ptr(trampoline::<F>),
+            )
         })?
         .map_err(|e| RealmError::Engine(format!("{e:?}")))
     }
@@ -1024,7 +1121,13 @@ impl ScriptEngine for BoaEngine {
 
 impl ScriptEngineLive for BoaEngine {
     fn make_reflector(&mut self, data: ReflectorData) -> Result<Self::Value, Self::Error> {
-        let obj: JsObject = Reflector::from_data(Reflector { data }, &mut self.ctx)?;
+        let obj: JsObject = Reflector::from_data(
+            Reflector {
+                data,
+                owner: realm_id_of(&self.ctx),
+            },
+            &mut self.ctx,
+        )?;
         Ok(obj.into())
     }
 
@@ -1626,5 +1729,169 @@ mod tests {
         assert_eq!(engine.value_to_string(&value).unwrap(), "true");
         let value = engine.eval_in_realm(child, script).unwrap();
         assert_eq!(engine.value_to_string(&value).unwrap(), "true");
+    }
+    #[test]
+    fn reflector_locality_uses_owner_not_raw_id() {
+        type E = BoaEngine;
+        struct Mint;
+        impl NativeFn<E> for Mint {
+            fn call(
+                cx: &mut <E as ScriptEngine>::CallCx<'_>,
+            ) -> Result<<E as ScriptEngine>::Value, <E as ScriptEngine>::Error> {
+                cx.make_reflector(17)
+            }
+        }
+        struct Canonical;
+        impl NativeFn<E> for Canonical {
+            fn call(
+                cx: &mut <E as ScriptEngine>::CallCx<'_>,
+            ) -> Result<<E as ScriptEngine>::Value, <E as ScriptEngine>::Error> {
+                cx.reflector_for(17)
+            }
+        }
+        struct Local;
+        impl NativeFn<E> for Local {
+            fn call(
+                cx: &mut <E as ScriptEngine>::CallCx<'_>,
+            ) -> Result<<E as ScriptEngine>::Value, <E as ScriptEngine>::Error> {
+                let value = cx.arg(0);
+                let local = cx.reflector_is_local(&value);
+                let raw = cx.reflector_data(&value);
+                cx.make_string(&format!("{local}:{raw:?}"))
+            }
+        }
+        let mut engine = E::new().unwrap();
+        let child = engine.create_realm().unwrap();
+        engine.set_function::<Mint>("mint", 0).unwrap();
+        engine.set_function::<Canonical>("canonical", 0).unwrap();
+        engine.set_function::<Local>("local", 1).unwrap();
+        engine
+            .set_function_in_realm::<Mint>(child, "mint", 0)
+            .unwrap();
+        engine
+            .set_function_in_realm::<Canonical>(child, "canonical", 0)
+            .unwrap();
+        engine
+            .set_function_in_realm::<Local>(child, "local", 1)
+            .unwrap();
+        let global = engine.realm_global(child).unwrap();
+        engine.set_global("child", &global).unwrap();
+        let result = engine.eval("var a=mint(), b=child.mint(), c=canonical(), d=child.canonical(); Object.setPrototypeOf(b,null); local(a)==='true:Some(17)' && local(b)==='false:Some(17)' && child.local(a)==='false:Some(17)' && child.local(b)==='true:Some(17)' && local(c)==='true:Some(17)' && local(d)==='false:Some(17)' && child.local(c)==='false:Some(17)' && child.local(d)==='true:Some(17)' && local({})==='false:None'").unwrap();
+        assert_eq!(engine.value_to_string(&result).unwrap(), "true");
+        engine.force_gc();
+        let result = engine.eval("local(a)==='true:Some(17)' && local(b)==='false:Some(17)' && child.local(a)==='false:Some(17)' && child.local(b)==='true:Some(17)' && local(c)==='true:Some(17)' && child.local(d)==='true:Some(17)'").unwrap();
+        assert_eq!(engine.value_to_string(&result).unwrap(), "true");
+    }
+    #[test]
+    fn callback_reflector_selection_preserves_identity_and_roots() {
+        type E = BoaEngine;
+        struct Select;
+        impl NativeFn<E> for Select {
+            fn call(
+                cx: &mut <E as ScriptEngine>::CallCx<'_>,
+            ) -> Result<<E as ScriptEngine>::Value, <E as ScriptEngine>::Error> {
+                let value = cx.arg(0);
+                let realm = cx.value_to_string(&value)?.parse::<RealmId>().unwrap();
+                let value = cx.arg(1);
+                let mode = cx.value_to_string(&value)?;
+                let current = cx.current_realm();
+                let result = match mode.as_str() {
+                    "root" => cx
+                        .root_reflector_in_realm(realm, 91)
+                        .map(|()| cx.undefined()),
+                    "release" => cx
+                        .unroot_reflector_in_realm(realm, 91)
+                        .map(|()| cx.undefined()),
+                    _ => cx.reflector_for_in_realm(realm, 91),
+                };
+                assert_eq!(cx.current_realm(), current);
+                match result {
+                    Ok(value) => Ok(value),
+                    Err(RealmError::NoSuchRealm(id)) => cx.make_string(&format!("missing:{id}")),
+                    Err(error) => Err(cx.error(&error.to_string())),
+                }
+            }
+        }
+        let mut engine = E::new().unwrap();
+        let child = engine.create_realm().unwrap();
+        engine.set_function::<Select>("select", 2).unwrap();
+        engine
+            .set_function_in_realm::<Select>(child, "select", 2)
+            .unwrap();
+        let global = engine.realm_global(child).unwrap();
+        engine.set_global("child", &global).unwrap();
+        drop(global);
+        let script = format!(
+            "var original=child.select({child},'get'); original.marker=73; var other=select(0,'get'); select({child},'root'); select({child},'root'); select({child},'get')===original && child.select(0,'get')===other && other!==original && select(4294967295,'get')==='missing:4294967295' && select(4294967295,'root')==='missing:4294967295' && select(4294967295,'release')==='missing:4294967295'"
+        );
+        let result = engine.eval(&script).unwrap();
+        assert_eq!(engine.value_to_string(&result).unwrap(), "true");
+        drop(result);
+        assert_eq!(engine.rooted_reflector_count_in_realm(child).unwrap(), 1);
+        assert_eq!(
+            engine.rooted_reflector_count_in_realm(MAIN_REALM).unwrap(),
+            0
+        );
+        engine.eval("original=null; other=null").unwrap();
+        engine.force_gc();
+        engine.force_gc();
+        assert!(
+            engine
+                .drain_dead_reflectors_in_realm(child)
+                .unwrap()
+                .is_empty()
+        );
+        let result = engine
+            .eval(&format!("select({child},'get').marker===73"))
+            .unwrap();
+        assert_eq!(engine.value_to_string(&result).unwrap(), "true");
+        drop(result);
+        engine
+            .eval(&format!(
+                "select({child},'release'); select({child},'release');"
+            ))
+            .unwrap();
+        assert_eq!(engine.rooted_reflector_count_in_realm(child).unwrap(), 0);
+        engine.force_gc();
+        engine.force_gc();
+        assert_eq!(
+            engine.drain_dead_reflectors_in_realm(child).unwrap(),
+            vec![91]
+        );
+        engine.discard_realm(child).unwrap();
+        let result = engine.eval(&format!("select({child},'get')==='missing:{child}' && select({child},'root')==='missing:{child}' && select({child},'release')==='missing:{child}'")).unwrap();
+        assert_eq!(engine.value_to_string(&result).unwrap(), "true");
+    }
+    #[test]
+    fn host_calls_retained_child_function_without_global_lookup() {
+        let mut engine = BoaEngine::new().unwrap();
+        let child = engine.create_realm().unwrap();
+        let function = engine.eval_in_realm(child,
+            "globalThis.label = 'child'; (function (value) { return label + ':' + this.tag + ':' + value; })"
+        ).unwrap();
+        let receiver = engine.eval("({tag: 'receiver'})").unwrap();
+        let argument = engine.eval("'argument'").unwrap();
+        engine.eval("globalThis.label = 'parent'").unwrap();
+        engine.force_gc();
+        let result = engine
+            .call_function(&function, &receiver, &[argument])
+            .unwrap();
+        assert_eq!(
+            engine.value_to_string(&result).unwrap(),
+            "child:receiver:argument"
+        );
+        assert!(engine.call_function(&receiver, &receiver, &[]).is_err());
+        let throwing = engine
+            .eval_in_realm(
+                child,
+                "(function () { throw new TypeError('host failure'); })",
+            )
+            .unwrap();
+        assert!(matches!(
+            engine.call_function(&throwing, &receiver, &[]),
+            Err(RealmError::Engine(_))
+        ));
+        let parent = engine.eval("label").unwrap();
+        assert_eq!(engine.value_to_string(&parent).unwrap(), "parent");
     }
 }
