@@ -116,6 +116,22 @@ Each positive case writes its log, PNG, SHA-256, completion pixel and, for live
 resources, ordered server events. The timeout case must exit unsuccessfully
 with its configured deadline in the log.
 
+The native WebGL receipt uses the selected Boa/Nova engine and the window's
+own GPU device. It checks canvas creation, context identity across drawing-buffer
+resize, and exact page/canvas/overlapping-DOM pixels at the reported display scale:
+
+```powershell
+./support/ci/run_ortet_webgl_receipt.ps1 `
+    -ArtifactDir C:\path\to\ortet-webgl-receipt
+```
+
+This runner requires clean source checkouts and records dependency revisions,
+lock/config hashes, and unchanged source identities before and after execution.
+The supported composition path covers plain canvases with opaque, ungrouped
+scene content. At high DPI the combined logical-resolution image is upscaled;
+ancestor clipping, transforms, opacity groups and full WebGL conformance remain
+outside this receipt.
+
 The digest is FNV-1a over the frame's RGBA bytes (`RgbaFrame::digest`), so two
 runs of the same address on the same machine agree, and a run whose content
 moved does not. Every run also prints `settled at <address>`, which is the

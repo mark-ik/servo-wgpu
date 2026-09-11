@@ -14,7 +14,7 @@ default = []
 # O5a is opt-in so the default Ortet target keeps the script-free dependency
 # cone. These only select existing genet-documents lanes; O5b scheduling and
 # host integration remain separate work.
-scripted = ["genet-documents/scripted", "dep:script-engine-boa"]
+scripted = ["genet-documents/scripted", "dep:genet-scripted", "dep:script-engine-boa", "dep:script-runtime-api", "dep:webgl_wgpu"]
 scripted-nova = ["scripted", "genet-documents/scripted-nova", "dep:script-engine-nova"]
 
 [lib]
@@ -59,6 +59,9 @@ winit = { workspace = true }
 wgpu = { workspace = true }
 # The receipt artifact. `png` alone: ortet writes RGBA8 and reads nothing.
 png = "0.18"
+script-runtime-api = { path = "../../components/script-runtime-api", optional = true }
+genet-scripted = { path = "../../components/genet-scripted", optional = true }
+webgl_wgpu = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "=0.2.127"

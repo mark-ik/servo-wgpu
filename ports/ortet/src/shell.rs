@@ -33,6 +33,7 @@ impl ScriptWake {
     }
 }
 use genet_host_api::navigation::resolve_href;
+use genet_render_host::RenderCore;
 use genet_winit_host::{AccessKitBridge, BridgeStatus, SurfaceHost, wheel_delta_from_winit};
 use netrender::{ColorLoad, ExternalTexturePlacement, NetrenderOptions, Scene};
 use winit::application::ApplicationHandler;
@@ -45,6 +46,8 @@ use crate::a11y::{Accessibility, RoutedAction};
 use crate::args::{Action, Config};
 use crate::fetch::OrtetFetcher;
 use crate::receipt;
+#[cfg(feature = "scripted")]
+use crate::webgl::WebGlHost;
 
 /// What a completed run has to say for itself.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -109,14 +112,38 @@ const fn enabled_features() -> &'static str {
 /// Open the window and run the document until the frame budget or the user
 /// closes it.
 pub fn run(config: Config, fetcher: OrtetFetcher) -> Result<Outcome, String> {
+    let render_options = NetrenderOptions {
+        tile_cache_size: Some(64),
+        enable_vello: true,
+        ..NetrenderOptions::for_untrusted_content()
+    };
+    let core = Arc::new(RenderCore::boot(render_options)?);
     let wake = ScriptWake::new();
-    let engine = make_engine_with_wake(config.engine, fetcher, wake.clone())?;
+    #[cfg(feature = "scripted")]
+    let webgl = WebGlHost::new(core.device().clone(), core.queue().clone());
+    let engine = make_engine_with_wake(
+        config.engine,
+        fetcher,
+        wake.clone(),
+        #[cfg(feature = "scripted")]
+        Some(webgl.clone()),
+        #[cfg(not(feature = "scripted"))]
+        (),
+    )?;
     // Spawn before the window exists so a bad address fails without flashing a
     // window at anyone.
     let session = spawn(engine.as_ref(), &config.address, config.size)?;
     let event_loop =
         EventLoop::new().map_err(|error| format!("could not create the event loop: {error}"))?;
-    let mut app = Ortet::new(config, engine, session, wake);
+    let mut app = Ortet::new(
+        config,
+        engine,
+        session,
+        wake,
+        core,
+        #[cfg(feature = "scripted")]
+        webgl,
+    );
     event_loop
         .run_app(&mut app)
         .map_err(|error| format!("the ortet event loop failed: {error}"))?;
@@ -145,7 +172,15 @@ fn make_engine(
     choice: crate::args::EngineChoice,
     fetcher: OrtetFetcher,
 ) -> Result<Box<dyn SessionEngine<Scene>>, String> {
-    make_engine_with_wake(choice, fetcher, ScriptWake::new())
+    make_engine_with_wake(
+        choice,
+        fetcher,
+        ScriptWake::new(),
+        #[cfg(feature = "scripted")]
+        None,
+        #[cfg(not(feature = "scripted"))]
+        (),
+    )
 }
 
 #[cfg(feature = "scripted")]
@@ -153,20 +188,25 @@ fn make_engine_with_wake(
     choice: crate::args::EngineChoice,
     fetcher: OrtetFetcher,
     wake: ScriptWake,
+    webgl: Option<WebGlHost>,
 ) -> Result<Box<dyn SessionEngine<Scene>>, String> {
     match choice {
         crate::args::EngineChoice::Livery => Ok(Box::new(LiverySessionEngine::new(fetcher))),
         crate::args::EngineChoice::Boa => {
             #[cfg(feature = "scripted")]
             {
-                Ok(Box::new(ScriptedSessionEngine::<
-                    script_engine_boa::BoaEngine,
-                    _,
-                >::new_with_wake(
-                    document_session_api::engine_ids::ENGINE_GENET_SCRIPTED,
-                    fetcher,
-                    wake,
-                )))
+                let engine =
+                    ScriptedSessionEngine::<script_engine_boa::BoaEngine, _>::new_with_wake(
+                        document_session_api::engine_ids::ENGINE_GENET_SCRIPTED,
+                        fetcher,
+                        wake,
+                    );
+                Ok(Box::new(match webgl {
+                    Some(webgl) => {
+                        engine.with_options_factory(move |_| Ok(webgl.scripted_document_options()))
+                    },
+                    None => engine,
+                }))
             }
             #[cfg(not(feature = "scripted"))]
             {
@@ -180,14 +220,18 @@ fn make_engine_with_wake(
         crate::args::EngineChoice::Nova => {
             #[cfg(all(feature = "scripted-nova", target_pointer_width = "64"))]
             {
-                Ok(Box::new(ScriptedSessionEngine::<
-                    script_engine_nova::NovaEngine,
-                    _,
-                >::new_with_wake(
-                    document_session_api::engine_ids::ENGINE_GENET_SCRIPTED_NOVA,
-                    fetcher,
-                    wake,
-                )))
+                let engine =
+                    ScriptedSessionEngine::<script_engine_nova::NovaEngine, _>::new_with_wake(
+                        document_session_api::engine_ids::ENGINE_GENET_SCRIPTED_NOVA,
+                        fetcher,
+                        wake,
+                    );
+                Ok(Box::new(match webgl {
+                    Some(webgl) => {
+                        engine.with_options_factory(move |_| Ok(webgl.scripted_document_options()))
+                    },
+                    None => engine,
+                }))
             }
             #[cfg(all(feature = "scripted-nova", not(target_pointer_width = "64")))]
             {
@@ -211,6 +255,7 @@ fn make_engine_with_wake(
     choice: crate::args::EngineChoice,
     fetcher: OrtetFetcher,
     _wake: ScriptWake,
+    _webgl: (),
 ) -> Result<Box<dyn SessionEngine<Scene>>, String> {
     match choice {
         crate::args::EngineChoice::Livery => Ok(Box::new(LiverySessionEngine::new(fetcher))),
@@ -231,6 +276,9 @@ struct Ortet {
     session: Box<dyn DocumentSession<Scene>>,
     window: Option<Arc<Window>>,
     host: Option<SurfaceHost>,
+    core: Arc<RenderCore>,
+    #[cfg(feature = "scripted")]
+    webgl: WebGlHost,
     a11y_bridge: Option<AccessKitBridge>,
     a11y: Accessibility,
     width: u32,
@@ -263,6 +311,8 @@ impl Ortet {
         engine: Box<dyn SessionEngine<Scene>>,
         session: Box<dyn DocumentSession<Scene>>,
         wake: ScriptWake,
+        core: Arc<RenderCore>,
+        #[cfg(feature = "scripted")] webgl: WebGlHost,
     ) -> Self {
         let start = Instant::now();
         let receipt_deadline = (config.artifact.is_some() || config.expect_heading.is_some())
@@ -279,6 +329,9 @@ impl Ortet {
             session,
             window: None,
             host: None,
+            core,
+            #[cfg(feature = "scripted")]
+            webgl,
             a11y_bridge: None,
             a11y: Accessibility::default(),
             scale_factor: 1.0,
@@ -576,12 +629,34 @@ impl Ortet {
         let Some(host) = self.host.as_ref() else {
             return;
         };
+        #[cfg(feature = "scripted")]
+        let (_scene_texture, view) =
+            self.webgl
+                .with_external_textures(self.session.external_texture_draws(), |textures| {
+                    if textures.is_empty() {
+                        host.rasterize_scaled(
+                            &scene,
+                            self.width.max(1),
+                            self.height.max(1),
+                            ColorLoad::Clear(wgpu::Color::WHITE),
+                            self.scale_factor,
+                        )
+                    } else {
+                        host.rasterize_scaled_with_external_textures(
+                            &scene,
+                            self.width.max(1),
+                            self.height.max(1),
+                            ColorLoad::Clear(wgpu::Color::WHITE),
+                            self.scale_factor,
+                            textures,
+                        )
+                    }
+                });
+        #[cfg(not(feature = "scripted"))]
         let (_scene_texture, view) = host.rasterize_scaled(
             &scene,
             self.width.max(1),
             self.height.max(1),
-            // A document with no root background paints over white, as a
-            // browser's page canvas does.
             ColorLoad::Clear(wgpu::Color::WHITE),
             self.scale_factor,
         );
@@ -673,6 +748,14 @@ impl ApplicationHandler for Ortet {
         self.width = size.width.max(1);
         self.height = size.height.max(1);
         self.scale_factor = window.scale_factor() as f32;
+        eprintln!(
+            "ortet: display scale={} physical={}x{} logical={}x{}",
+            self.scale_factor,
+            self.width,
+            self.height,
+            self.logical_size().0,
+            self.logical_size().1
+        );
         #[cfg(feature = "scripted")]
         self.wake.set_callback({
             let wake_window = window.clone();
@@ -733,15 +816,12 @@ impl ApplicationHandler for Ortet {
             eprintln!("[ortet] accessibility bridge installed");
         }
         self.a11y_bridge = Some(bridge);
-        // A raw browsing host is exactly the case wgpu's limit bucketing exists
-        // for: adapter limits are a fingerprinting surface and the content here
-        // is untrusted by construction.
-        let options = NetrenderOptions {
-            tile_cache_size: Some(64),
-            enable_vello: true,
-            ..NetrenderOptions::for_untrusted_content()
-        };
-        match SurfaceHost::boot(window.clone(), self.width, self.height, options) {
+        match SurfaceHost::from_shared_core(
+            window.clone(),
+            self.width,
+            self.height,
+            Arc::clone(&self.core),
+        ) {
             Ok(host) => self.host = Some(host),
             Err(error) => {
                 self.failure = Some(error);

@@ -52,6 +52,22 @@ pub struct SurfaceHost {
 }
 
 impl SurfaceHost {
+    /// Attach a native surface to an already-booted shared render core.
+    ///
+    /// Hosts that need document-local same-device capabilities before parsing
+    /// can boot the core first, build those capabilities, then create the
+    /// visible surface without allocating a second wgpu device.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_shared_core(
+        window: Arc<Window>,
+        width: u32,
+        height: u32,
+        core: Arc<RenderCore>,
+    ) -> Result<Self, String> {
+        let surface = core.create_surface(window, width, height)?;
+        Ok(Self { core, surface })
+    }
+
     /// Boot the core + create this window's surface (native blocking).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn boot(

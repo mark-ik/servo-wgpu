@@ -1,0 +1,28 @@
+<!-- Copyright 2026 Mark Alan Boykin
+     This Source Code Form is subject to the terms of the Mozilla Public
+     License, v. 2.0. If a copy of the MPL was not distributed with this
+     file, You can obtain one at https://mozilla.org/MPL/2.0/.
+     SPDX-License-Identifier: MPL-2.0 -->
+<!doctype html>
+<meta charset="utf-8">
+<title>Ortet WebGL native receipt</title>
+<style>
+  html, body { margin: 0; width: 320px; height: 200px; overflow: hidden;
+               background: #c43d3d; font: 24px sans-serif; }
+  canvas { display: block; position: absolute; left: 20px; top: 40px;
+           width: 200px; height: 100px; }
+  #overlay { position: absolute; z-index: 1; left: 80px; top: 70px;
+             width: 40px; height: 40px; background: #2b6cb0; }
+  #state { position: absolute; z-index: 2; left: 8px; top: 8px; margin: 0;
+           padding: 3px 5px; color: #f2ede1; background: #17324d;
+           border: 2px solid #d8e6dc; font-size: 12px; }
+</style>
+<canvas id="surface" width="320" height="200" aria-label="Ortet WebGL surface"></canvas>
+<div id="overlay" aria-label="DOM overlay after WebGL canvas"></div>
+<h1 id="state">Ortet WebGL receipt pending</h1>
+<script>
+  // The external script must observe this parser-time DOM mutation before it
+  // can create the WebGL context or publish the completion heading.
+  document.body.dataset.inlineReady = "yes";
+</script>
+<script src="webgl_receipt.js"></script>
