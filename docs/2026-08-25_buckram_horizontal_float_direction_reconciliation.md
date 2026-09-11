@@ -130,3 +130,16 @@ is repaired in both directions, native gates are green, and every full-CSS
 status change is either a measured gain or an assigned false pass outside the
 implemented float-shape claim. Row 12 remains in progress for the 15 classified
 shape-box residuals and the wider shape families.
+
+## Progress — 2026-09-11: RTL root body geometry
+
+`9ad96bd6f4f` removes the UA `body { inline-size: 100% }` declaration while
+retaining its default 8px margins. Automatic body sizing now resolves inside
+those margins in LTR, RTL, and vertical roots; an authored `inline-size: 100%`
+continues to overflow them. The implementation also adds Buckram's physical
+margin invariant and updates the affected automatic-flex expectation.
+
+Focused native checks on the committed source passed: Buckram's RTL physical
+margin invariant (1), Livery's root-body geometry cases (5), and the related
+automatic-flex regression (1). This is a root-block sizing correction, not a
+new float or shape receipt; the Row 12 map and its remaining work are unchanged.
