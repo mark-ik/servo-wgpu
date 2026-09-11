@@ -68,6 +68,11 @@ fn run() -> Result<(), String> {
     if let Some(heading) = outcome.matched_heading.as_deref() {
         println!("ortet: semantic heading {heading:?}");
     }
+    // The engine-owned inspection seam a G5 receipt correlates with the
+    // captured frame: cumulative reflectors-unpinned/nodes-collected across
+    // this session's frame-cadence GC ticks. Zero for non-scripted lanes.
+    let (unpinned, collected) = outcome.collection_stats;
+    println!("ortet: receipt collection unpinned={unpinned} collected={collected}");
     Ok(())
 }
 

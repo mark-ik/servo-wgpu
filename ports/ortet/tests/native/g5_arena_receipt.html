@@ -1,0 +1,29 @@
+<!-- Copyright 2026 Mark Alan Boykin
+     This Source Code Form is subject to the terms of the Mozilla Public
+     License, v. 2.0. If a copy of the MPL was not distributed with this
+     file, You can obtain one at https://mozilla.org/MPL/2.0/.
+     SPDX-License-Identifier: MPL-2.0 -->
+<!doctype html>
+<meta charset="utf-8">
+<title>Ortet G5 arena receipt</title>
+<style>
+  html, body { margin: 0; min-height: 400px; color: #17324d; background: #f2ede1; font: 20px sans-serif; }
+  body { box-sizing: border-box; padding: 24px; }
+  html.complete, html.complete body { background: #2f6b3c; }
+  #activate { box-sizing: border-box; width: 300px; height: 100px; padding: 30px;
+              background: #d8e6dc; border: 5px solid #5b3b78; }
+  #origin, #destination { min-height: 40px; margin-top: 16px; border: 2px dashed #8a2f24; padding: 8px; }
+  .reattached { color: #f2ede1; background: #2f6b3c; }
+  h1 { color: #8a2f24; border-bottom: 3px solid #2f6b3c; }
+</style>
+<div id="activate">Native click starts the G5 arena sequence</div>
+<h1 id="state">Ortet G5 arena sequence pending</h1>
+<div id="origin"><div id="victim">victim payload<span id="victim-child">child</span></div></div>
+<div id="destination"></div>
+<script>
+  // The external script must observe this parser-time mutation before it may
+  // schedule the sequence, the same inline-readiness contract the O5 native
+  // receipt fixture uses.
+  document.body.dataset.inlineReady = "yes";
+</script>
+<script src="g5_arena_receipt.js"></script>

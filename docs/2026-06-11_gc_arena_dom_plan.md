@@ -1,5 +1,10 @@
 # gc-arena DOM Plan (the piccolo fork's dividends)
 
+**G5 reconciliation, 2026-09-11:** collection counters and the native Ortet
+fixture/runner are recovered. Fresh Boa/Nova acceptance is pending; the runner
+now checks clean source/dependency revisions before and after the receipt.
+The historical September 9 branch run is not an exact-source acceptance receipt.
+
 **Date**: 2026-06-11
 **Current continuation, updated 2026-09-09:** G5 below scopes the arena's
 identity, mutation and lifetime contract and its scripted Ortet proof. S1

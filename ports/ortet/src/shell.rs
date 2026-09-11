@@ -63,6 +63,14 @@ pub struct Outcome {
     /// The semantic completion condition proven at the same final frame as a
     /// scripted receipt artifact, when the caller requested one.
     pub matched_heading: Option<String>,
+    /// Cumulative `(reflectors_unpinned, nodes_collected)` the session's own
+    /// frame-cadence GC ticks reported since it spawned (`0, 0` for lanes
+    /// without a scripted engine). This is the same production
+    /// `Runtime::collect_garbage` accounting the S1/S2/S5 arena receipts use
+    /// as their collection proof, surfaced here so a G5 host receipt can
+    /// correlate it with the captured frame instead of approximating
+    /// collection from script-visible behavior alone.
+    pub collection_stats: (usize, usize),
 }
 
 /// Build facts that a host receipt can report without guessing a source
@@ -302,6 +310,7 @@ impl Ortet {
             artifact: self.capture.as_ref().map(|(path, _)| path.clone()),
             digest: self.capture.as_ref().map(|(_, digest)| *digest),
             matched_heading: self.matched_heading.clone(),
+            collection_stats: self.session.collection_stats(),
         }
     }
 

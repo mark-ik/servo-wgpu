@@ -1,5 +1,12 @@
 # Ortet founding plan
 
+**G5 reconciliation, 2026-09-11:** the collection counter seam and native
+arena fixture/runner have been recovered from the September 9 branch. Native
+acceptance remains pending a fresh run. The recovered runner requires clean
+source repositories, records resolved local dependency revisions and lock/config
+hashes, and rejects source changes during the run. The historical branch receipt
+used an uncommitted Genet tree and dirty Boa fork and is not current acceptance.
+
 **Status:** O0 through O5 are landed for the native host. O5's exact-source
 Boa/Nova receipts at `f3dc1bcf909` accept native input, timer/microtask
 completion, bounded failure, idle-woken fetch and Worker delivery, correlated

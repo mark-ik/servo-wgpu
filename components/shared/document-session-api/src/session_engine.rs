@@ -906,6 +906,15 @@ pub trait DocumentSession<F>: Any {
     /// Drive timers / pending script work (scripted lanes). No-op default.
     fn pump(&mut self, _now_ms: f64) {}
 
+    /// Cumulative garbage-collection tally since this session was spawned:
+    /// `(reflectors_unpinned, nodes_collected)`. This is the engine-owned
+    /// inspection seam a host correlates with its captured frame to confirm
+    /// collection (G5's Lifetime contract), not a live API surface for
+    /// script. Static and non-scripted lanes have nothing to report.
+    fn collection_stats(&self) -> (usize, usize) {
+        (0, 0)
+    }
+
     /// Report the work that should wake this session after the current turn.
     ///
     /// Static sessions remain idle. Scripted sessions report their earliest

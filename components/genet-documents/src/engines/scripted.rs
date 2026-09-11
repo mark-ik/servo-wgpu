@@ -108,6 +108,7 @@ where
             address: navigation.script_visible_url,
             pressed_target: None,
             pointer_active: false,
+            collection_stats: (0, 0),
         };
         if request.hidden {
             session.doc.set_hidden(true);
@@ -125,6 +126,9 @@ pub struct ScriptedDocumentSession<E: script_engine_api::ScriptEngine> {
     address: String,
     pressed_target: Option<genet_scripted_dom::NodeId>,
     pointer_active: bool,
+    /// Cumulative `(reflectors_unpinned, nodes_collected)` from normal frame
+    /// pumps. Reading this never triggers another collection.
+    collection_stats: (usize, usize),
 }
 
 #[cfg(feature = "scripted")]
@@ -142,6 +146,7 @@ impl<E: script_engine_api::ScriptEngine + 'static> ScriptedDocumentSession<E> {
             address: address.into(),
             pressed_target: None,
             pointer_active: false,
+            collection_stats: (0, 0),
         }
     }
 }
@@ -222,7 +227,12 @@ impl<E: script_engine_api::ScriptEngine + 'static> DocumentSession<Scene>
             .collect()
     }
     fn pump(&mut self, now_ms: f64) {
-        let _ = self.doc.pump(now_ms);
+        let (unpinned, collected) = self.doc.pump(now_ms);
+        self.collection_stats.0 += unpinned;
+        self.collection_stats.1 += collected;
+    }
+    fn collection_stats(&self) -> (usize, usize) {
+        self.collection_stats
     }
     fn pending_work(&mut self) -> SessionPendingWork {
         let timer = self
