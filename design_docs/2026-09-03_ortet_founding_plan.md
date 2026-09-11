@@ -1,5 +1,22 @@
 # Ortet founding plan
 
+**Native WebGL wiring, 2026-09-11:** Boa/Nova now create document-local WebGL
+contexts on Ortet's render device before authored scripts run. The native
+capture/presentation path resolves live textures in scene order; resize keeps
+context keys while replacing storage, and context drop retires registry entries.
+Clean Genet `8dffe09375d` with Netrender `18f569c21` passed both engines'
+exact red/green/blue ordering pixels at display scale 2 and the timeout controls.
+Artifacts: `Code/testing/genet/ortet-webgl-20260911-final/`, including unchanged
+before/after source identities. The default script-free route is preserved.
+This accepts the existing bounded WebGL surface and plain opaque composition;
+full WebGL conformance, producer ancestor clipping/opacity, and crisp high-DPI
+external composition remain separate work.
+
+The existing native G5 guard also passed at those revisions, with unchanged
+capture digest `0xc5d147e70d4e4425` and `unpinned=5 collected=6` on both engines
+(Boa five frames, Nova six). Its positive and timeout artifacts and unchanged
+source identities are at `Code/testing/genet/ortet-webgl-g5-20260911/`.
+
 **Final combined replay, 2026-09-11:** after marker and WebGL host integration,
 the same native Boa/Nova gate passed at clean source `6b8b3cc2fca`.
 `Code/testing/genet/reconcile-g5-final-20260911/` preserves both positive

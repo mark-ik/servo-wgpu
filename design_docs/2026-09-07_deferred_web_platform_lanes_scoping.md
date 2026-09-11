@@ -157,9 +157,10 @@ then travel through paint/session metadata to the host. `RenderCore` and
 boundaries. The focused GPU receipt covers a plain opaque scene, an inserted
 producer texture, and a later opaque scene operation. This is limited to
 ungrouped, untransformed, unclipped stacking: ancestor transforms, clips and
-opacity groups need a wider renderer contract. Ortet's default engine still
-installs neither factory nor registry, so it does not visibly compose scripted
-WebGL yet. The workspace still declares `vello_cpu` and the WPT tree has a
+opacity groups need a wider renderer contract. Native Ortet's Boa/Nova engines
+now install the factory before parsing and resolve the live registry through
+the same render device before capture/presentation. The default Livery engine
+remains script-free. The workspace still declares `vello_cpu` and the WPT tree has a
 `vello_canvas` subsuite config naming a `dom_canvas_backend=vello` pref;
 nothing in the current tree reads either.
 
@@ -169,6 +170,16 @@ resize, actual GPU ordered composition, and `servo-webgl-wgpu` resize preserving
 viewport/scissor. The key check rejects arbitrary unmatched key `999`; copying
 a live registered key is not covered. This acceptance retains the host and
 stacking limits above.
+
+**Native Ortet acceptance, 2026-09-11:** clean Genet `8dffe09375d` with
+Netrender `18f569c21` passed `run_ortet_webgl_receipt.ps1` on Boa and Nova.
+At display scale 2, both captures contain the exact red page, green WebGL
+canvas and later blue DOM overlay pixels; both impossible-heading controls
+fail at the expected deadline. Source/dependency identities match before and
+after. Artifacts: `Code/testing/genet/ortet-webgl-20260911-final/`.
+Netrender's tail redraw now reconstructs open layers, fixing the observed
+unmatched `PopLayer` panic. Producer clipping/opacity remains outside this
+gate, and the combined logical-resolution image is upscaled at high DPI.
 
 **What the lane is.**
 
