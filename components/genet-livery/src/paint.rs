@@ -25,11 +25,11 @@ use livery::{
 use paint_list_api::{
     AlphaType, BorderDetails, BorderItem, BorderRadius, BorderSide, BorderStyle, BoxShadowClipMode,
     ClipKind, ClipSpec, ColorF, CommonPlacement, DashPattern, DeviceIntSize, EngineId, ExtendMode,
-    FontResource, GradientStop, IdNamespace, ImageItem, ImageKey, ImageRendering, ImageResource,
-    LayerSpec, LayoutPoint, LayoutRect, LayoutSideOffsets, LayoutSize, LayoutTransform,
-    LayoutVector2D, LinearGradientItem, LinearGradientPayload, NormalBorder, PaintCmd, PaintList,
-    PathCommand, PathData, RectItem, ShadowItem, StrokeCap, StrokeItem, StrokeJoin, TransformKind,
-    TransformSpec,
+    ExternalTextureItem, FontResource, GradientStop, IdNamespace, ImageItem, ImageKey,
+    ImageRendering, ImageResource, LayerSpec, LayoutPoint, LayoutRect, LayoutSideOffsets,
+    LayoutSize, LayoutTransform, LayoutVector2D, LinearGradientItem, LinearGradientPayload,
+    NormalBorder, PaintCmd, PaintList, PathCommand, PathData, RectItem, ShadowItem, StrokeCap,
+    StrokeItem, StrokeJoin, TransformKind, TransformSpec,
 };
 use serde::{Deserialize, Serialize};
 
@@ -505,6 +505,38 @@ where
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
 {
+    emit_paint_list_with_text_system_scrolled_with_images_and_external_textures(
+        dom,
+        styles,
+        fragments,
+        viewport,
+        generation,
+        text,
+        scroll_offsets,
+        image_sources,
+        &HashMap::new(),
+    )
+}
+
+/// Emit a retained Livery frame and trusted WebGL canvas draws. The map is
+/// supplied by the runtime owner, keyed by the canvas DOM node; authored DOM
+/// attributes alone never authorize a compositor texture import.
+#[allow(clippy::too_many_arguments)]
+pub fn emit_paint_list_with_text_system_scrolled_with_images_and_external_textures<D>(
+    dom: &D,
+    styles: &StylePlane<D::NodeId>,
+    fragments: &LiveryLayout<D::NodeId>,
+    viewport: DeviceIntSize,
+    generation: u64,
+    text: &mut TextSystem,
+    scroll_offsets: &HashMap<D::NodeId, (f32, f32)>,
+    image_sources: &HashMap<String, Vec<u8>>,
+    external_textures: &HashMap<D::NodeId, u64>,
+) -> LiveryPaintList
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
     // C3: consumers receive a numeric view made with the exact retained
     // element scheme and host palette. Keep `styles` contextual for cascade
     // and CSSOM, but never let paint reach the old light-palette fallback.
@@ -529,6 +561,7 @@ where
         &mut list,
         scroll_offsets,
         canvas_background_source,
+        external_textures,
     );
     list.fonts = text.fonts_for(&text_frame);
     list
@@ -550,6 +583,7 @@ fn emit_node<D>(
     list: &mut LiveryPaintList,
     scroll_offsets: &HashMap<D::NodeId, (f32, f32)>,
     canvas_background_source: Option<D::NodeId>,
+    external_textures: &HashMap<D::NodeId, u64>,
 ) where
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash,
@@ -591,6 +625,7 @@ fn emit_node<D>(
             stacking_roots: None,
             inline_owner: None,
             canvas_background_source,
+            external_textures,
         },
         text,
         list,
@@ -621,6 +656,7 @@ fn emit_node<D>(
         list,
         scroll_offsets,
         canvas_background_source,
+        external_textures,
         deferred_collapsed.as_mut(),
     );
     if let Some(deferred) = deferred_collapsed.as_mut() {
@@ -836,6 +872,7 @@ where
                     emit_border(list, style, fragment);
                 }
             }
+            emit_canvas_external_texture(dom, fragments, id, style, scope.external_textures, list);
             // The overflow clip stays on the outer box: CSS Tables 3 section
             // 3.6.1 puts `overflow` on the table wrapper box, so a clipping
             // table clips at the box that contains its captions.
@@ -907,6 +944,52 @@ where
         _ => scope.inherited,
     };
     Some((inherited, clips_descendants))
+}
+
+fn emit_canvas_external_texture<D>(
+    dom: &D,
+    fragments: &LiveryLayout<D::NodeId>,
+    id: D::NodeId,
+    style: &ComputedValues,
+    trusted: &HashMap<D::NodeId, u64>,
+    list: &mut LiveryPaintList,
+) where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    if dom.kind(id) != NodeKind::Element
+        || !dom
+            .element_name(id)
+            .is_some_and(|name| name.local.as_ref().eq_ignore_ascii_case("canvas"))
+    {
+        return;
+    }
+    let Some(&texture_key) = trusted.get(&id) else {
+        return;
+    };
+    let marker = dom
+        .attribute(
+            id,
+            &Namespace::default(),
+            &LocalName::from("data-genet-external-texture-key"),
+        )
+        .and_then(|value| value.parse::<u64>().ok());
+    if marker != Some(texture_key) {
+        return;
+    }
+    let Some(fragment) = fragments
+        .get(id)
+        .filter(|fragment| paintable_fragment(fragment))
+    else {
+        return;
+    };
+    list.commands
+        .push(PaintCmd::DrawExternalTexture(ExternalTextureItem {
+            placement: CommonPlacement::new(bounds(fragment)),
+            texture_key,
+            opacity: style.opacity.value(),
+            content_generation: None,
+        }));
 }
 
 fn emit_table_backgrounds<D>(
@@ -2121,6 +2204,7 @@ struct PaintScope<'a, Id> {
     stacking_roots: Option<&'a HashSet<Id>>,
     inline_owner: Option<Id>,
     canvas_background_source: Option<Id>,
+    external_textures: &'a HashMap<Id, u64>,
 }
 
 /// A collapsed table's border phase sits between block descendant backgrounds
@@ -2166,6 +2250,7 @@ fn emit_children_in_stacking_order<D>(
     list: &mut LiveryPaintList,
     scroll_offsets: &HashMap<D::NodeId, (f32, f32)>,
     canvas_background_source: Option<D::NodeId>,
+    external_textures: &HashMap<D::NodeId, u64>,
     mut deferred_collapsed: Option<&mut DeferredCollapsedBorders<'_>>,
 ) where
     D: LayoutDom,
@@ -2198,6 +2283,7 @@ fn emit_children_in_stacking_order<D>(
         list,
         scroll_offsets,
         canvas_background_source,
+        external_textures,
     );
 
     emit_normal_children(
@@ -2213,6 +2299,7 @@ fn emit_children_in_stacking_order<D>(
                 .filter(|style| style.display == Display::Inline)
                 .map(|_| parent),
             canvas_background_source,
+            external_textures,
         },
         text,
         list,
@@ -2229,6 +2316,7 @@ fn emit_children_in_stacking_order<D>(
         list,
         scroll_offsets,
         canvas_background_source,
+        external_textures,
     );
 }
 
@@ -2316,6 +2404,7 @@ fn emit_stacking_items<'items, D>(
     list: &mut LiveryPaintList,
     scroll_offsets: &HashMap<D::NodeId, (f32, f32)>,
     canvas_background_source: Option<D::NodeId>,
+    external_textures: &HashMap<D::NodeId, u64>,
 ) where
     D: LayoutDom,
     D::NodeId: Copy + Eq + Hash + 'items,
@@ -2344,6 +2433,7 @@ fn emit_stacking_items<'items, D>(
             list,
             scroll_offsets,
             canvas_background_source,
+            external_textures,
         );
     }
     if let Some(current) = open {

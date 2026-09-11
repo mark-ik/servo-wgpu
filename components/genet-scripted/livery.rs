@@ -10,7 +10,7 @@
 //! a second DOM copy: script mutations are visible to the next read immediately.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
 
 use genet_document_resources::{
@@ -21,8 +21,9 @@ use genet_livery::{
     LayoutError, LiveryLayout, LiveryPaintList, RestyleStats, RuleMutationError, StylePlane,
     StyleSet, TextDirective, TextRange, TextSelection, TextSystem, ViewportSizes,
     canonicalize_specified_value, classify_specified_shorthand, content_box_size,
-    emit_paint_list_with_text_system_scrolled_with_images, hit_test, is_implemented_shorthand,
-    layout, layout_with_text_system, reconstruct_specified_shorthand,
+    emit_paint_list_with_text_system_scrolled_with_images,
+    emit_paint_list_with_text_system_scrolled_with_images_and_external_textures, hit_test,
+    is_implemented_shorthand, layout, layout_with_text_system, reconstruct_specified_shorthand,
     resolve_container_query_styles, resolve_container_query_styles_with_images, resolve_styles,
     specified_shorthand_longhands, used_value_context as layout_used_value_context,
 };
@@ -39,6 +40,41 @@ use script_runtime_api::{
     StyleSheetImportRule, StyleSheetMutationError, StyleSheetRule, StyleSheetRuleKind,
 };
 
+/// Author markup may name a texture key, but only a key minted by this
+/// runtime's live WebGL contexts is eligible for paint emission.
+fn trusted_canvas_textures(host: &HostState) -> HashMap<NodeId, u64> {
+    let allowed: HashSet<u64> = host
+        .webgl_contexts
+        .iter()
+        .filter_map(|context| context.external_texture_key())
+        .collect();
+    if allowed.is_empty() {
+        return HashMap::new();
+    }
+    let mut textures = HashMap::new();
+    let mut nodes = vec![host.dom.document()];
+    while let Some(node) = nodes.pop() {
+        if host.dom.element_name(node).is_some_and(|name| {
+            name.ns.as_ref() == "http://www.w3.org/1999/xhtml" && name.local.as_ref() == "canvas"
+        }) {
+            if let Some(key) = host
+                .dom
+                .attribute(
+                    node,
+                    &Namespace::default(),
+                    &LocalName::from("data-genet-external-texture-key"),
+                )
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|key| allowed.contains(key))
+            {
+                textures.insert(node, key);
+            }
+        }
+        nodes.extend(host.dom.dom_children(node));
+    }
+    textures
+}
+
 struct LiveryState {
     styles: StyleSet,
     document_sheets: Vec<usize>,
@@ -49,6 +85,7 @@ struct LiveryState {
     render_cursor: u64,
     render_generation: u64,
     cached_frame: Option<((u32, u32), LiveryPaintList)>,
+    external_textures: HashMap<NodeId, u64>,
     frame: Option<LiveFrame>,
     text: TextSystem,
     image_sources: HashMap<String, Vec<u8>>,
@@ -256,6 +293,7 @@ impl LiveryCssom {
             render_cursor: 0,
             render_generation: 0,
             cached_frame: None,
+            external_textures: HashMap::new(),
             frame: None,
             text: TextSystem::new(),
             image_sources: HashMap::new(),
@@ -418,6 +456,7 @@ impl LiveryCssom {
             render_cursor: mutation_cursor,
             render_generation: 0,
             cached_frame: None,
+            external_textures: HashMap::new(),
             frame: None,
             text: TextSystem::new(),
             image_sources: HashMap::new(),
@@ -615,6 +654,11 @@ impl LiveryCssom {
         let end = base.saturating_add(pending.len() as u64);
         let mut state = self.state.borrow_mut();
         synchronize_live_styles(&host, &mut state);
+        let external_textures = trusted_canvas_textures(&host);
+        if state.external_textures != external_textures {
+            state.external_textures = external_textures;
+            state.invalidate_frame();
+        }
 
         if (state.device.viewport_width, state.device.viewport_height)
             != (viewport.0 as f32, viewport.1 as f32)
@@ -701,12 +745,13 @@ impl LiveryCssom {
         state.render_generation = state.render_generation.saturating_add(1);
         let generation = state.render_generation;
         let frame = {
+            let external_textures = state.external_textures.clone();
             let LiveryState {
                 text,
                 image_sources,
                 ..
             } = &mut *state;
-            emit_paint_list_with_text_system_scrolled_with_images(
+            emit_paint_list_with_text_system_scrolled_with_images_and_external_textures(
                 &host.dom,
                 &styles,
                 &fragments,
@@ -715,6 +760,7 @@ impl LiveryCssom {
                 text,
                 &HashMap::new(),
                 image_sources,
+                &external_textures,
             )
         };
         state.render_cursor = end;

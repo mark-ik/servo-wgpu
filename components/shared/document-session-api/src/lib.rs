@@ -57,8 +57,8 @@ pub use session_engine::{
     DocumentFindDirection, DocumentFindMatch, DocumentFindQuery, DocumentFindReveal,
     DocumentFindState, DocumentSession, DocumentZoomState, EngineKindIndex, EngineKinds,
     OutlineEntry, SessionButtonState, SessionClick, SessionCursor, SessionEffect, SessionEngine,
-    SessionError, SessionFocusDirection, SessionFormMethod, SessionFormSubmission, SessionIme,
-    SessionInput, SessionInputResult, SessionKey, SessionLink, SessionModifiers,
-    SessionNavigationCommand, SessionPendingWork, SessionPointerButton, SessionRegistry,
-    SessionScrollKey, SessionSpawnRequest, SessionTextTarget,
+    SessionError, SessionExternalTextureDraw, SessionFocusDirection, SessionFormMethod,
+    SessionFormSubmission, SessionIme, SessionInput, SessionInputResult, SessionKey, SessionLink,
+    SessionModifiers, SessionNavigationCommand, SessionPendingWork, SessionPointerButton,
+    SessionRegistry, SessionScrollKey, SessionSpawnRequest, SessionTextTarget,
 };

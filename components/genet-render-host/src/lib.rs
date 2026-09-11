@@ -27,6 +27,20 @@
 
 use netrender::{ColorLoad, NetrenderOptions, Renderer, Scene};
 
+#[derive(Default)]
+struct CaptureMasterCompositor {
+    master: Option<wgpu::Texture>,
+}
+
+impl netrender::Compositor for CaptureMasterCompositor {
+    fn declare_surface(&mut self, _key: netrender::SurfaceKey, _world_bounds: [f32; 4]) {}
+    fn destroy_surface(&mut self, _key: netrender::SurfaceKey) {}
+
+    fn present_frame(&mut self, frame: netrender::PresentedFrame<'_>) {
+        self.master = Some(frame.master.clone());
+    }
+}
+
 /// One tightly packed RGBA8 frame read back from the shared render device.
 ///
 /// The host decides whether to encode, digest, or compare the bytes. Keeping the
@@ -78,6 +92,95 @@ mod rgba_frame_tests {
         };
         assert!(!black.is_blank());
         assert_ne!(black.digest(), transparent.digest());
+    }
+}
+
+#[cfg(test)]
+mod ordered_external_texture_tests {
+    use super::*;
+
+    const DIM: u32 = 64;
+
+    #[test]
+    fn composition_preserves_external_texture_scene_boundary() {
+        let core = match RenderCore::boot(NetrenderOptions {
+            tile_cache_size: Some(4),
+            enable_vello: true,
+            ..Default::default()
+        }) {
+            Ok(core) => core,
+            Err(error) => {
+                eprintln!("skipping GPU composition receipt: {error}");
+                return;
+            },
+        };
+        let source = core.device().create_texture(&wgpu::TextureDescriptor {
+            label: Some("ordered external composition source"),
+            size: wgpu::Extent3d {
+                width: 16,
+                height: 16,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        core.queue().write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &source,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &vec![0_u8, 255, 0, 255].repeat(16 * 16),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(16 * 4),
+                rows_per_image: Some(16),
+            },
+            wgpu::Extent3d {
+                width: 16,
+                height: 16,
+                depth_or_array_layers: 1,
+            },
+        );
+        let source_view = source.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut scene = Scene::new(DIM, DIM);
+        scene.push_rect(0.0, 0.0, DIM as f32, DIM as f32, [1.0, 0.0, 0.0, 1.0]);
+        scene.push_rect(24.0, 24.0, 40.0, 40.0, [0.0, 0.0, 1.0, 1.0]);
+        let composites = [netrender::ExternalTextureComposite::new(
+            &source_view,
+            netrender::ExternalTexturePlacement::new([16.0, 16.0, 48.0, 48.0]),
+        )
+        .with_scene_op_boundary(1)];
+        let (texture, _) = core.rasterize_scaled_with_external_textures(
+            &scene,
+            DIM,
+            DIM,
+            ColorLoad::Clear(wgpu::Color::TRANSPARENT),
+            1.0,
+            &composites,
+        );
+        let rgba = core
+            .read_rgba8_texture(&texture, DIM, DIM)
+            .expect("read ordered external composition");
+        let pixel = |x: u32, y: u32| {
+            let i = ((y * DIM + x) * 4) as usize;
+            [
+                rgba.rgba[i],
+                rgba.rgba[i + 1],
+                rgba.rgba[i + 2],
+                rgba.rgba[i + 3],
+            ]
+        };
+        assert_eq!(pixel(4, 4), [255, 0, 0, 255]);
+        assert_eq!(pixel(20, 20), [0, 255, 0, 255]);
+        assert_eq!(pixel(32, 32), [0, 0, 255, 255]);
     }
 }
 
@@ -407,6 +510,56 @@ impl RenderCore {
         (tex, view)
     }
 
+    /// Rasterize a logical-coordinate scene with caller-owned same-device
+    /// textures inserted at their emitted scene-operation boundaries.
+    ///
+    /// The current NetRender contract does not reconstruct ancestor transforms,
+    /// clips, or opacity groups around an external producer. It is exact for
+    /// plain canvases among opaque scene operations; richer stacking requires a
+    /// renderer contract extension.
+    pub fn rasterize_scaled_with_external_textures(
+        &self,
+        scene: &Scene,
+        w: u32,
+        h: u32,
+        clear: ColorLoad,
+        _scale: f32,
+        external_textures: &[netrender::ExternalTextureComposite<'_>],
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let mut compositor = CaptureMasterCompositor::default();
+        let base_color = match clear {
+            ColorLoad::Clear(color) => netrender::peniko::Color::new([
+                color.r as f32,
+                color.g as f32,
+                color.b as f32,
+                color.a as f32,
+            ]),
+            ColorLoad::Load => netrender::peniko::Color::new([0.0, 0.0, 0.0, 0.0]),
+        };
+        self.renderer.render_with_compositor_and_external_textures(
+            scene,
+            wgpu::TextureFormat::Rgba8Unorm,
+            &mut compositor,
+            base_color,
+            external_textures,
+        );
+        let master = compositor
+            .master
+            .expect("NetRender ordered rasterization must present a master texture");
+        let source = master.create_view(&wgpu::TextureViewDescriptor::default());
+        let (texture, view) = self.scene_target(w, h);
+        self.renderer.compose_external_texture(
+            &source,
+            &view,
+            wgpu::TextureFormat::Rgba8Unorm,
+            w,
+            h,
+            netrender::ExternalTexturePlacement::new([0.0, 0.0, w as f32, h as f32]),
+        );
+        self.log_raster_spans(w, h);
+        (texture, view)
+    }
+
     fn scene_target(&self, w: u32, h: u32) -> (wgpu::Texture, wgpu::TextureView) {
         let device = self.device();
         let tex = device.create_texture(&wgpu::TextureDescriptor {
@@ -421,6 +574,7 @@ impl RenderCore {
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb],

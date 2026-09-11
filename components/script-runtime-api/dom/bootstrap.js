@@ -1182,6 +1182,15 @@
   // Element : Node — attributes, reflection, selectors.
   function Element() {}
   Element.prototype = Object.create(Node.prototype);
+  function resizeWebGlCanvas(element, name) {
+    if (!element.__webglContext || (name !== 'width' && name !== 'height')) return;
+    var width = parseInt(element.getAttribute('width'), 10);
+    var height = parseInt(element.getAttribute('height'), 10);
+    if (!(width >= 0)) width = 300;
+    if (!(height >= 0)) height = 150;
+    element.__webglContext._resizeDrawingBuffer(width, height);
+  }
+
   Element.prototype.setAttribute = function(name, value) {
     name = String(name); validateName(name);
     // In an HTML element, the qualified name is lowercased.
@@ -1190,6 +1199,7 @@
     var newValue = String(value);
     moSetAttribute(this.__ref, name, newValue);
     if (name === 'style') inlineStyleStates.delete(this);
+    resizeWebGlCanvas(this, name);
     customElementAttributeChanged(this, name, oldValue, newValue);
     // The third re-preparation trigger: a connected script element gains a
     // `src` it did not have.
@@ -1283,6 +1293,7 @@
     var oldValue = __getAttribute(this.__ref, name);
     moRemoveAttribute(this.__ref, name);
     if (name === 'style') inlineStyleStates.delete(this);
+    resizeWebGlCanvas(this, name);
     customElementAttributeChanged(this, name, oldValue, null);
   };
   Element.prototype.toggleAttribute = function(name, force) {
@@ -2998,8 +3009,8 @@
       if (this.__webglContext) return this.__webglContext;
       var Ctor = globalThis.WebGLRenderingContext;
       if (typeof Ctor !== 'function') return null;
-      var w = parseInt(this.getAttribute('width'), 10); if (!(w > 0)) w = 300;
-      var h = parseInt(this.getAttribute('height'), 10); if (!(h > 0)) h = 150;
+      var w = parseInt(this.getAttribute('width'), 10); if (!(w >= 0)) w = 300;
+      var h = parseInt(this.getAttribute('height'), 10); if (!(h >= 0)) h = 150;
       this.__webglContext = new Ctor(w, h);
       // WebGL helpers use the standard back-reference for drawing-buffer
       // dimensions and context classification. Keep it on the context rather

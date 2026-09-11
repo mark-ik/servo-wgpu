@@ -33,6 +33,17 @@ impl<E: ScriptEngine> NativeFn<E> for ExternalTextureKey {
     }
 }
 
+pub(crate) struct ResizeContext;
+impl<E: ScriptEngine> NativeFn<E> for ResizeContext {
+    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
+        let ctx = parse_ctx::<E>(cx)?;
+        let width = parse_u32::<E>(cx, 1)?;
+        let height = parse_u32::<E>(cx, 2)?;
+        with_webgl_ctx::<E, _, _>(cx, ctx, (), |handler| handler.resize(width, height));
+        Ok(cx.undefined())
+    }
+}
+
 pub(crate) struct ClearColor;
 impl<E: ScriptEngine> NativeFn<E> for ClearColor {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {

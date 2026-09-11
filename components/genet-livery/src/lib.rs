@@ -98,6 +98,7 @@ pub use livery::{
 pub use paint::{
     LiveryPaintList, emit_paint_list, emit_paint_list_with_text_system,
     emit_paint_list_with_text_system_scrolled_with_images,
+    emit_paint_list_with_text_system_scrolled_with_images_and_external_textures,
 };
 pub use presentational_hints::{
     LegacyDescendantAlignment, PresentationalDeclarations, PresentationalHintDiagnostic,

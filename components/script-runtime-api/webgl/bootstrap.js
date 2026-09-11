@@ -77,14 +77,24 @@
   function WebGLRenderingContext(width, height) {
     // GLenum constants on the instance, per the WebGL IDL.
     for (var k in K) { if (K.hasOwnProperty(k)) this[k] = K[k]; }
-    var w = (width >>> 0) || 300;   // HTML canvas default drawing-buffer size
-    var h = (height >>> 0) || 150;
+    // Direct construction keeps the HTML canvas default dimensions. A canvas
+    // resize can deliberately pass zero, which the host clamps to one pixel.
+    var w = width === undefined ? 300 : Math.max(1, width >>> 0);
+    var h = height === undefined ? 150 : Math.max(1, height >>> 0);
     this._ctx = parseInt(__webgl_create_context(String(w), String(h)), 10) | 0;
     this.drawingBufferWidth = w;
     this.drawingBufferHeight = h;
     this._externalTextureKey = __webgl_external_texture_key(String(this._ctx));
   }
   var P = WebGLRenderingContext.prototype;
+
+  P._resizeDrawingBuffer = function(width, height) {
+    var w = Math.max(1, width >>> 0);
+    var h = Math.max(1, height >>> 0);
+    __webgl_resize_context(String(this._ctx), String(w), String(h));
+    this.drawingBufferWidth = w;
+    this.drawingBufferHeight = h;
+  };
 
   // State / framebuffer.
   P.clearColor = function(r, g, b, a) {

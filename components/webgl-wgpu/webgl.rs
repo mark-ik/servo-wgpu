@@ -456,8 +456,8 @@ impl WebGlContext {
             return Ok(());
         }
         self.canvas.resize(width, height)?;
-        self.viewport = [0, 0, width, height];
-        self.scissor_box = [0, 0, width, height];
+        // Drawing-buffer storage changes, but viewport and scissor are GL
+        // state and keep their caller-established values.
         Ok(())
     }
 

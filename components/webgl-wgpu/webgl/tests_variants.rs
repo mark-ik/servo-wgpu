@@ -255,6 +255,8 @@ fn webgl_context_draws_interleaved_vertex_stride() {
 #[test]
 fn webgl_first_gate_triangle_error_resize_receipt() {
     let mut context = make_context(32, 32);
+    context.viewport(3, 4, 20, 21);
+    context.scissor(5, 6, 10, 11);
     context.draw_arrays(PrimitiveMode::Triangles, 0, 3);
     assert_eq!(context.get_error(), WebGlError::InvalidOperation);
 
@@ -277,11 +279,17 @@ fn webgl_first_gate_triangle_error_resize_receipt() {
     context.clear(wgpu::Color::BLACK);
     context.draw_arrays(PrimitiveMode::Triangles, 0, 3);
     assert_eq!(
-        &context.read_pixels(16, 16, 1, 1).expect("center read")[0..4],
+        &context.read_pixels(8, 8, 1, 1).expect("scissored draw read")[0..4],
         &[0, 255, 0, 255]
     );
     context.resize(16, 16).expect("resize");
     assert_eq!(context.texture().size, (16, 16));
     assert_eq!(context.texture().generation, 1);
+    assert_eq!(context.viewport, [3, 4, 20, 21]);
+    assert_eq!(context.scissor_box, [5, 6, 10, 11]);
+    assert_eq!(
+        &context.read_pixels(0, 0, 1, 1).expect("resized clear")[..4],
+        &[0, 0, 0, 0]
+    );
     assert_eq!(context.get_error(), WebGlError::NoError);
 }

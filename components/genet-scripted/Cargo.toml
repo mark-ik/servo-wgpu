@@ -27,7 +27,7 @@ default = ["livery"]
 # "scripted-nova")]` test gate never actually covered).
 scripted-nova = ["dep:script-engine-nova"]
 # Owned CSSOM, layout, and paint bridge for scripted/fullweb hosts.
-livery = ["dep:genet-livery", "dep:livery", "dep:paint_list_api", "dep:paint_list_render", "dep:netrender"]
+livery = ["dep:genet-livery", "dep:genet-render", "dep:livery", "dep:paint_list_api", "dep:paint_list_render", "dep:netrender"]
 
 [dependencies]
 genet-scripted-dom = { path = "../genet-scripted-dom" }
@@ -35,6 +35,7 @@ genet-document-resources = { workspace = true }
 genet-host-api = { workspace = true }
 layout-dom-api = { path = "../shared/layout-dom", features = ["capture"] }
 genet-livery = { path = "../genet-livery", optional = true }
+genet-render = { path = "../genet-render", optional = true }
 # The style engine itself, for `livery::media::MediaQueryList`: genet-livery
 # re-exports `Device` but not the query parser `matchMedia` needs.
 livery = { path = "../livery", optional = true }

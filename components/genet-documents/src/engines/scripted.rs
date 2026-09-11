@@ -20,6 +20,10 @@ use netrender::Scene;
 
 use super::*;
 
+#[cfg(feature = "scripted")]
+type ScriptedOptionsFactory =
+    dyn Fn(&str) -> Result<genet_scripted::ScriptedDocumentOptions, String> + Send + Sync;
+
 /// Map the host-neutral scroll-key vocabulary onto the owned scripted lane.
 #[cfg(feature = "scripted")]
 pub(crate) fn scripted_scroll_key(key: SessionScrollKey) -> genet_scripted::ScrollKey {
@@ -45,6 +49,7 @@ pub struct ScriptedSessionEngine<E, Fetch> {
     fetcher: Fetch,
     wake: genet_scripted::ScriptWake,
     generation: AtomicU64,
+    options_factory: Option<Box<ScriptedOptionsFactory>>,
     _engine: std::marker::PhantomData<fn() -> E>,
 }
 
@@ -64,8 +69,23 @@ impl<E, Fetch> ScriptedSessionEngine<E, Fetch> {
             fetcher,
             wake,
             generation: AtomicU64::new(0),
+            options_factory: None,
             _engine: std::marker::PhantomData,
         }
+    }
+
+    /// Build fresh document-local capabilities before every navigation's first
+    /// authored script. Transport and child-realm routing stay with the
+    /// document's retained resource bridge.
+    pub fn with_options_factory(
+        mut self,
+        factory: impl Fn(&str) -> Result<genet_scripted::ScriptedDocumentOptions, String>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.options_factory = Some(Box::new(factory));
+        self
     }
 }
 
@@ -85,21 +105,29 @@ where
     ) -> Result<Box<dyn DocumentSession<Scene>>, SessionError> {
         let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
         let navigation = genet_livery::NavigationFragment::parse(&request.address);
+        let options = match &self.options_factory {
+            Some(factory) => {
+                factory(&navigation.script_visible_url).map_err(SessionError::SpawnFailed)?
+            },
+            None => genet_scripted::ScriptedDocumentOptions::default(),
+        };
         let doc = match &request.body {
             Some(body) => {
-                genet_scripted::LiveryScriptedDocument::<E>::from_body_with_wake_generation(
+                genet_scripted::LiveryScriptedDocument::<E>::from_body_with_options_and_wake_generation(
                     body,
                     self.fetcher.clone(),
                     &request.address,
                     self.wake.clone(),
                     generation,
+                    options,
                 )
             },
-            None => genet_scripted::LiveryScriptedDocument::<E>::load_with_wake_generation(
+            None => genet_scripted::LiveryScriptedDocument::<E>::load_with_options_and_wake_generation(
                 self.fetcher.clone(),
                 &request.address,
                 self.wake.clone(),
                 generation,
+                options,
             ),
         }
         .map_err(SessionError::SpawnFailed)?;
@@ -108,6 +136,7 @@ where
             address: navigation.script_visible_url,
             pressed_target: None,
             pointer_active: false,
+            external_textures: Vec::new(),
             collection_stats: (0, 0),
         };
         if request.hidden {
@@ -129,6 +158,7 @@ pub struct ScriptedDocumentSession<E: script_engine_api::ScriptEngine> {
     /// Cumulative `(reflectors_unpinned, nodes_collected)` from normal frame
     /// pumps. Reading this never triggers another collection.
     collection_stats: (usize, usize),
+    external_textures: Vec<document_session_api::SessionExternalTextureDraw>,
 }
 
 #[cfg(feature = "scripted")]
@@ -147,6 +177,7 @@ impl<E: script_engine_api::ScriptEngine + 'static> ScriptedDocumentSession<E> {
             pressed_target: None,
             pointer_active: false,
             collection_stats: (0, 0),
+            external_textures: Vec::new(),
         }
     }
 }
@@ -160,7 +191,21 @@ impl<E: script_engine_api::ScriptEngine + 'static> DocumentSession<Scene>
     }
 
     fn frame(&mut self, width: u32, height: u32) -> Scene {
-        self.doc.frame(width, height)
+        let frame = self.doc.frame_with_external_textures(width, height);
+        self.external_textures = frame
+            .external_textures
+            .into_iter()
+            .map(|draw| document_session_api::SessionExternalTextureDraw {
+                texture_key: draw.texture_key,
+                dest_rect: draw.dest_rect,
+                opacity: draw.opacity,
+                scene_op_boundary: draw.scene_op_boundary,
+            })
+            .collect();
+        frame.scene
+    }
+    fn external_texture_draws(&self) -> &[document_session_api::SessionExternalTextureDraw] {
+        &self.external_textures
     }
     fn scroll_by(&mut self, dx: f32, dy: f32) -> bool {
         self.doc.scroll_by(dx, dy)

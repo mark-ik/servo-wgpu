@@ -45,6 +45,11 @@ pub trait WebGlHandler {
         None
     }
 
+    /// Resize the default drawing buffer without replacing this context.
+    /// Compositor-backed hosts keep the same external texture key while
+    /// replacing its underlying storage.
+    fn resize(&mut self, _width: u32, _height: u32) {}
+
     fn clear_color(&mut self, r: f32, g: f32, b: f32, a: f32);
     fn clear(&mut self, mask: u32);
     fn viewport(&mut self, x: i32, y: i32, width: u32, height: u32);
@@ -242,6 +247,7 @@ pub(crate) fn install_webgl_surface<E: ScriptEngine>(
 ) -> Result<(), crate::SurfaceError<E::Error>> {
     engine.set_function::<CreateContext>("__webgl_create_context", 2)?;
     engine.set_function::<ExternalTextureKey>("__webgl_external_texture_key", 1)?;
+    engine.set_function::<ResizeContext>("__webgl_resize_context", 3)?;
     engine.set_function::<ClearColor>("__webgl_clear_color", 5)?;
     engine.set_function::<Clear>("__webgl_clear", 2)?;
     engine.set_function::<Enable>("__webgl_enable", 2)?;

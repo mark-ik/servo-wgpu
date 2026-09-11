@@ -59,7 +59,7 @@ use script_runtime_api::{CookieProvider, Runtime, WebGlFactory};
 use crate::ResourceFetcher;
 use crate::capture::DomCaptureRecorder;
 #[cfg(feature = "livery")]
-use crate::{LiveryCssom, ScriptedClick};
+use crate::{LiveryCssom, ScriptedClick, ScriptedDocumentOptions};
 #[cfg(feature = "livery")]
 use crate::{ScriptResourceBridge, ScriptWake};
 
@@ -613,6 +613,41 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
     where
         Fetch: ResourceFetcher + Send + Sync + 'static,
     {
+        Self::load_with_options_and_wake_generation(
+            fetcher,
+            url,
+            wake,
+            generation,
+            ScriptedDocumentOptions::default(),
+        )
+    }
+
+    /// Fetch a live document with host capabilities installed before its first
+    /// parser-blocking script runs.
+    pub fn load_with_options<Fetch>(
+        fetcher: Fetch,
+        url: &str,
+        options: ScriptedDocumentOptions,
+    ) -> Result<Self, String>
+    where
+        Fetch: ResourceFetcher + Send + Sync + 'static,
+    {
+        Self::load_with_options_and_wake_generation(fetcher, url, ScriptWake::new(), 0, options)
+    }
+
+    /// Construct with explicit bridge wake/generation ownership and fresh host
+    /// capabilities. Session hosts use this to keep replacement navigation
+    /// cancellation/generation routing intact.
+    pub fn load_with_options_and_wake_generation<Fetch>(
+        fetcher: Fetch,
+        url: &str,
+        wake: ScriptWake,
+        generation: u64,
+        options: ScriptedDocumentOptions,
+    ) -> Result<Self, String>
+    where
+        Fetch: ResourceFetcher + Send + Sync + 'static,
+    {
         let navigation = NavigationFragment::parse(url);
         let fetcher = ScriptResourceBridge::new_with_generation(fetcher, wake, generation);
         let bytes = fetcher
@@ -622,6 +657,7 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
             &String::from_utf8_lossy(&bytes),
             fetcher,
             &navigation.script_visible_url,
+            options,
         )?;
         document.pending_fragment = (!navigation.text_directives.is_empty()
             || navigation.element_fragment.is_some())
@@ -661,11 +697,56 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
     where
         Fetch: ResourceFetcher + Send + Sync + 'static,
     {
+        Self::from_body_with_options_and_wake_generation(
+            html,
+            fetcher,
+            base_url,
+            wake,
+            generation,
+            ScriptedDocumentOptions::default(),
+        )
+    }
+
+    /// Build a live document from fetched HTML with host capabilities installed
+    /// before parser-blocking scripts run.
+    pub fn from_body_with_options<Fetch>(
+        html: &str,
+        fetcher: Fetch,
+        base_url: &str,
+        options: ScriptedDocumentOptions,
+    ) -> Result<Self, String>
+    where
+        Fetch: ResourceFetcher + Send + Sync + 'static,
+    {
+        Self::from_body_with_options_and_wake_generation(
+            html,
+            fetcher,
+            base_url,
+            ScriptWake::new(),
+            0,
+            options,
+        )
+    }
+
+    /// Construct fetched HTML with explicit bridge wake/generation ownership
+    /// and fresh host capabilities.
+    pub fn from_body_with_options_and_wake_generation<Fetch>(
+        html: &str,
+        fetcher: Fetch,
+        base_url: &str,
+        wake: ScriptWake,
+        generation: u64,
+        options: ScriptedDocumentOptions,
+    ) -> Result<Self, String>
+    where
+        Fetch: ResourceFetcher + Send + Sync + 'static,
+    {
         let navigation = NavigationFragment::parse(base_url);
         let mut document = Self::build(
             html,
             ScriptResourceBridge::new_with_generation(fetcher, wake, generation),
             &navigation.script_visible_url,
+            options,
         )?;
         document.pending_fragment = (!navigation.text_directives.is_empty()
             || navigation.element_fragment.is_some())
@@ -680,10 +761,16 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
             html,
             ScriptResourceBridge::new(EmptyResourceFetcher, ScriptWake::new()),
             "about:blank",
+            ScriptedDocumentOptions::default(),
         )
     }
 
-    fn build(html: &str, fetcher: ScriptResourceBridge, base_url: &str) -> Result<Self, String> {
+    fn build(
+        html: &str,
+        fetcher: ScriptResourceBridge,
+        base_url: &str,
+        options: ScriptedDocumentOptions,
+    ) -> Result<Self, String> {
         let mut rt =
             Runtime::<E>::new().map_err(|error| format!("script runtime init: {error:?}"))?;
         rt.set_fetch_handler(Box::new(fetcher.clone()));
@@ -698,6 +785,9 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
             worker_resource_wake.notify_worker_resource(generation, resource)
         }));
         let _ = rt.set_base_url(base_url);
+        if let Some(webgl) = options.webgl {
+            rt.set_webgl_factory(webgl);
+        }
         // The CSSOM is installed over the *empty* arena, before the parse, and
         // re-resolves its author sheets from the live DOM at every read. That
         // is what lets this constructor use the interleaved parse: a sheet
@@ -782,6 +872,16 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
     /// Render the exact live runtime DOM through Livery and lower the resulting
     /// paint list into the existing host-neutral scene.
     pub fn frame(&mut self, width: u32, height: u32) -> netrender::Scene {
+        self.frame_with_external_textures(width, height).scene
+    }
+
+    /// Render with ordered same-device producer-texture draws for the host
+    /// compositor, preserving each WebGL context's texture key.
+    pub fn frame_with_external_textures(
+        &mut self,
+        width: u32,
+        height: u32,
+    ) -> genet_render::RenderedFrame {
         let (requested_scroll, into_view) = {
             let mut host = self.rt.host().borrow_mut();
             (host.viewport_scroll, host.scroll_into_view.take())
@@ -795,7 +895,10 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
             Ok(list) => list,
             Err(error) => {
                 eprintln!("[pelt-livery-scripted] layout error: {error}");
-                return netrender::Scene::new(width, height);
+                return genet_render::RenderedFrame {
+                    scene: netrender::Scene::new(width, height),
+                    external_textures: Vec::new(),
+                };
             },
         };
         if let Some(navigation) = self.pending_fragment.take() {
@@ -811,7 +914,10 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
                 Ok(list) => list,
                 Err(error) => {
                     eprintln!("[pelt-livery-scripted] layout error: {error}");
-                    return netrender::Scene::new(width, height);
+                    return genet_render::RenderedFrame {
+                        scene: netrender::Scene::new(width, height),
+                        external_textures: Vec::new(),
+                    };
                 },
             };
         }
@@ -836,7 +942,7 @@ impl<E: ScriptEngine> LiveryScriptedDocument<E> {
             .borrow_mut()
             .retain(|realm, _| reachable.contains(realm));
         self.composite_child_realms(script_engine_api::MAIN_REALM, &mut list);
-        paint_list_render::translate_paint_list(&list)
+        genet_render::translate_frame(&list)
     }
 
     /// Child paint is inserted at the parent's replaced-content slot, inheriting
@@ -1438,7 +1544,15 @@ mod tests {
     use script_engine_boa::BoaEngine;
     use script_runtime_api::WebGlHandler;
 
-    struct NullWebGl;
+    struct NullWebGl(Option<std::rc::Rc<std::cell::Cell<usize>>>);
+
+    impl Drop for NullWebGl {
+        fn drop(&mut self) {
+            if let Some(drops) = &self.0 {
+                drops.set(drops.get() + 1);
+            }
+        }
+    }
 
     impl WebGlHandler for NullWebGl {
         fn external_texture_key(&self) -> Option<u64> {
@@ -1528,13 +1642,52 @@ mod tests {
             html,
             Box::new(move |_width, _height| {
                 marker.set(true);
-                Box::new(NullWebGl)
+                Box::new(NullWebGl(None))
             }),
         )
         .expect("runtime inits");
         assert!(
             created.get(),
             "the factory ran during parser-blocking script execution"
+        );
+    }
+
+    /// The rendered route installs the same per-document capability before
+    /// parsing. An authored texture-key attribute alone cannot mint a draw.
+    #[cfg(feature = "livery")]
+    fn livery_webgl_factory_is_installed_before_inline_script<E: ScriptEngine>() {
+        let created = std::rc::Rc::new(std::cell::Cell::new(false));
+        let marker = created.clone();
+        let drops = std::rc::Rc::new(std::cell::Cell::new(0));
+        let recorded_drops = drops.clone();
+        let html = r#"
+            <style>canvas { display: block; width: 20px; height: 10px }</style>
+            <canvas data-genet-external-texture-key="999"></canvas>
+            <canvas id="real" width="4" height="4"></canvas>
+            <script>document.getElementById('real').getContext('webgl')</script>
+        "#;
+        let frame = {
+            let mut document = LiveryScriptedDocument::<E>::from_body_with_options(
+                html,
+                EmptyResourceFetcher,
+                "https://example.test/",
+                ScriptedDocumentOptions {
+                    webgl: Some(Box::new(move |_width, _height| {
+                        marker.set(true);
+                        Box::new(NullWebGl(Some(recorded_drops.clone())))
+                    })),
+                },
+            )
+            .expect("rendered document builds");
+            document.frame_with_external_textures(200, 100)
+        };
+        assert!(created.get(), "factory ran during parser-blocking script");
+        assert_eq!(frame.external_textures.len(), 1);
+        assert_eq!(frame.external_textures[0].texture_key, 17);
+        assert_eq!(
+            drops.get(),
+            1,
+            "dropping the document releases its WebGL context"
         );
     }
 
@@ -2211,6 +2364,12 @@ mod tests {
     #[test]
     fn webgl_factory_is_installed_before_inline_script_on_boa() {
         webgl_factory_is_installed_before_inline_script::<BoaEngine>();
+    }
+
+    #[cfg(feature = "livery")]
+    #[test]
+    fn livery_webgl_factory_is_installed_before_inline_script_on_boa() {
+        livery_webgl_factory_is_installed_before_inline_script::<BoaEngine>();
     }
     #[test]
     fn node_identity_is_stable_on_boa() {

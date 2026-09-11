@@ -152,6 +152,27 @@ impl SurfaceHost {
         self.core.rasterize_scaled(scene, w, h, clear, scale)
     }
 
+    /// Rasterize with caller-owned same-device textures at their emitted scene
+    /// operation boundaries.
+    pub fn rasterize_scaled_with_external_textures(
+        &self,
+        scene: &Scene,
+        w: u32,
+        h: u32,
+        clear: ColorLoad,
+        scale: f32,
+        external_textures: &[netrender::ExternalTextureComposite<'_>],
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        self.core.rasterize_scaled_with_external_textures(
+            scene,
+            w,
+            h,
+            clear,
+            scale,
+            external_textures,
+        )
+    }
+
     /// Acquire the surface backbuffer for this frame (`None` to skip on outdated).
     pub fn acquire(&self) -> Option<wgpu::SurfaceTexture> {
         self.surface.acquire(&self.core)

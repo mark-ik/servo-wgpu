@@ -148,6 +148,13 @@ impl WebGlHandler for WgpuWebGl {
         Some(TEST_EXTERNAL_TEXTURE_KEY)
     }
 
+    fn resize(&mut self, width: u32, height: u32) {
+        self.context
+            .borrow_mut()
+            .resize(width.max(1), height.max(1))
+            .expect("test drawing buffer resizes");
+    }
+
     fn clear_color(&mut self, r: f32, g: f32, b: f32, a: f32) {
         // webgl-wgpu's clear takes the color directly each call (no
         // bound-color state), so hold it and pass it through on `clear`.
@@ -593,6 +600,48 @@ fn html_canvas_get_context_webgl_returns_a_rendering_context() {
     assert_eq!(read(&mut rt, "String(bag.g)"), "128");
     assert_eq!(read(&mut rt, "String(bag.b)"), "0");
     assert_eq!(read(&mut rt, "String(bag.a)"), "255");
+}
+
+#[test]
+fn canvas_dimensions_resize_the_same_webgl_context_and_clear_its_buffer() {
+    let mut rt = Runtime::<BoaEngine>::new().expect("runtime");
+    rt.set_webgl_factory(Box::new(|w, h| Box::new(WgpuWebGl::new(w, h))));
+    rt.eval(
+        r#"
+        var c = document.createElement('canvas');
+        c.style.width = '40px'; c.style.height = '20px';
+        c.width = 4; c.height = 4;
+        var gl = c.getContext('webgl');
+        var identity = gl;
+        gl.clearColor(1, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+        c.width = 4;
+        var redundant = gl.readPixels(0, 0, 1, 1, 0, 0);
+        c.setAttribute('height', '6');
+        var resized = [gl.drawingBufferWidth, gl.drawingBufferHeight];
+        c.removeAttribute('width');
+        var restored = [gl.drawingBufferWidth, gl.drawingBufferHeight];
+        c.setAttribute('width', '-1');
+        var invalid = gl.drawingBufferWidth;
+        c.width = -7;
+        var negative = [c.width, gl.drawingBufferWidth];
+        var bag = {
+          same: gl === identity && gl === c.getContext('webgl'),
+          cleared: redundant[0] === 0 && redundant[1] === 0 &&
+                   redundant[2] === 0 && redundant[3] === 0,
+          resized: resized.join('x'), restored: restored.join('x'),
+          invalid: invalid, negative: negative.join('x'),
+          css: c.style.width + 'x' + c.style.height
+        };
+        "#,
+    )
+    .expect("canvas resize script");
+    assert_eq!(read(&mut rt, "String(bag.same)"), "true");
+    assert_eq!(read(&mut rt, "String(bag.cleared)"), "true");
+    assert_eq!(read(&mut rt, "bag.resized"), "4x6");
+    assert_eq!(read(&mut rt, "bag.restored"), "300x6");
+    assert_eq!(read(&mut rt, "String(bag.invalid)"), "300");
+    assert_eq!(read(&mut rt, "bag.negative"), "0x1");
+    assert_eq!(read(&mut rt, "bag.css"), "40pxx20px");
 }
 
 #[test]

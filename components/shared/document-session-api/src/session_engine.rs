@@ -537,6 +537,17 @@ pub enum SessionScrollKey {
     End,
 }
 
+/// A same-device producer texture placed within the latest session frame.
+/// Keys identify host-registered textures, never arbitrary document resources.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SessionExternalTextureDraw {
+    pub texture_key: u64,
+    pub dest_rect: [f32; 4],
+    pub opacity: f32,
+    /// Insert immediately before this operation index in the returned frame.
+    pub scene_op_boundary: usize,
+}
+
 // ── Traits ─────────────────────────────────────────────────────────────────
 
 /// Work a hosted document still owns after the current turn.
@@ -633,6 +644,11 @@ pub trait DocumentSession<F>: Any {
     /// Lay out (if needed) and paint at the given viewport. Resize is
     /// implicit: a size change re-lays-out, same as the lanes today.
     fn frame(&mut self, width: u32, height: u32) -> F;
+
+    /// Producer draws associated with the most recent [`Self::frame`].
+    fn external_texture_draws(&self) -> &[SessionExternalTextureDraw] {
+        &[]
+    }
 
     /// Scroll the viewport; `true` if the offset changed.
     fn scroll_by(&mut self, dx: f32, dy: f32) -> bool;
