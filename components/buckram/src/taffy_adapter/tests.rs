@@ -3108,6 +3108,61 @@ fn adapter_nests_horizontal_and_vertical_normal_flow_in_both_directions() {
 }
 
 #[test]
+fn rtl_block_auto_inline_size_accounts_for_physical_margins() {
+    use crate::{Direction, WritingMode};
+
+    let rtl = FlowAxes::new(WritingMode::HorizontalTb, Direction::Rtl);
+    let mut tree = AlgorithmTree::<Style, (), &str>::new();
+    let body = tree.new_with_children_and_block_style(
+        AlgorithmKind::Block,
+        BlockStyle {
+            flow: rtl,
+            containing_flow: rtl,
+            margin: PhysicalSides {
+                top: crate::FlowLengthAuto::Value(crate::FlowLength::px(8.0)),
+                right: crate::FlowLengthAuto::Value(crate::FlowLength::px(8.0)),
+                bottom: crate::FlowLengthAuto::Value(crate::FlowLength::px(8.0)),
+                left: crate::FlowLengthAuto::Value(crate::FlowLength::px(8.0)),
+            },
+            ..BlockStyle::default()
+        },
+        Style {
+            display: Display::Block,
+            ..Style::default()
+        },
+        &[],
+        "body",
+    );
+    let html = tree.new_with_children_and_block_style(
+        AlgorithmKind::Block,
+        BlockStyle {
+            flow: rtl,
+            containing_flow: rtl,
+            size: crate::BlockDimensions::new(
+                BlockSizeValue::Length(FlowLength::px(800.0)),
+                BlockSizeValue::Auto,
+            ),
+            establishes_bfc: true,
+            ..BlockStyle::default()
+        },
+        Style {
+            display: Display::Block,
+            ..Style::default()
+        },
+        &[body],
+        "html",
+    );
+
+    tree.compute_layout_with_measure(html, available(800.0, 600.0), zero_measure);
+
+    assert_eq!(tree.block_algorithm(html), Some(BlockAlgorithm::Buckram));
+    assert_eq!(tree.block_algorithm(body), Some(BlockAlgorithm::Buckram));
+    let body_layout = tree.layout(body);
+    assert_eq!(body_layout.x, 8.0);
+    assert_eq!(body_layout.width, 784.0);
+}
+
+#[test]
 fn orthogonal_percentage_width_uses_available_physical_fallback() {
     use crate::{Direction, WritingMode};
 
