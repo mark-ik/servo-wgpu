@@ -20,13 +20,13 @@ isolated checkout. Boa stores the kept-alive list on the shared `Context`; this
 is not a separate native Ortet or cross-realm acceptance receipt.
 
 **Date**: 2026-06-11
-**Current continuation, updated 2026-09-09:** G5 below scopes the arena's
+**Current continuation, updated 2026-09-11:** G5 below scopes the arena's
 identity, mutation and lifetime contract and its scripted Ortet proof. S1
 replacement retention and S2 store-level root closure are committed, with
-focused automated receipts. S3 remains research, and the complete headed
-retain -> detach -> collect -> adopt -> mutate -> render -> release acceptance
-sequence remains open. The historical G0-G4 receipts do not establish G5
-acceptance.
+focused automated receipts. S3 remains research. The single-arena native
+retain -> detach -> collect -> adopt -> mutate -> render -> release sequence
+passed on Boa and Nova at `ba7a4df56c6`; broader G5 gates below remain separate.
+The historical G0-G4 receipts do not establish G5 acceptance.
 
 **Status**: G0–G2 + G4 done (see Progress). G3 design locked 2026-06-12 to a
 **custom mark-sweep**, not gc-arena (the title is now historical — kept for
@@ -631,9 +631,10 @@ where supported, named DOM/Range/MutationObserver regressions, and the headed
 Ortet sequence pass against pinned sources. Retain runner/lock digests,
 semantic snapshots, collection statistics and frame artifacts. Record
 unsupported targets and future shadow/iframe extensions independently.
-Ortet O5's native host prerequisite is accepted at `f3dc1bcf909`; G5 headed
-acceptance remains open until that host runs this arena sequence. Mere/Pelt
-evidence is additional.
+Ortet O5's native host prerequisite is accepted at `f3dc1bcf909`; the
+single-arena G5 native sequence is accepted at `ba7a4df56c6` by the September 11
+clean-source replay. Browser-hosted and broader release/identity gates retain
+their own acceptance requirements. Mere/Pelt evidence is additional.
 
 ### Ordering and the sooner-than-later cut
 
@@ -660,6 +661,11 @@ front-loads visible wins.
   (rule 3).
 
 ## Progress
+
+- 2026-09-11: Recovered and replayed the single-arena G5 native sequence on
+  clean source `ba7a4df56c6`, on both Boa and Nova, with collection counters,
+  matching frames, completion pixels and deliberate failing controls. See
+  the source and artifact identity record above.
 
 - 2026-09-09: G5 is partially implemented. S1 replacement retention landed in
   `ec5421b7591`, and S2 store-level root closure landed in `c52ee06f53a`; their

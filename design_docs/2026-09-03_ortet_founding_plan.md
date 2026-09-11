@@ -341,9 +341,10 @@ acceptance exercises both Boa and Nova where supported:
 retain a node, detach it, collect, adopt it, mutate it, render it, then release
 it. G5 owns the identity/mutation/lifetime assertions and collection metrics;
 Ortet owns production session execution, semantic readback and correlated
-frame capture. G5 can use runtime tests while O5 is being built, but its
-headed acceptance stays open. O5 does not inherit all future shadow/iframe
-arena work as prerequisites.
+frame capture. The single-arena native G5 sequence is accepted by the clean
+September 11 replay at `ba7a4df56c6`, described above. Browser-hosted and broader
+G5 gates remain separate. O5 does not inherit all future shadow/iframe arena
+work as prerequisites.
 
 The first scripted acceptance is native. Preserve the existing script-free
 wasm route and measure its cone/build; browser-hosted Boa/Nova scripting and
