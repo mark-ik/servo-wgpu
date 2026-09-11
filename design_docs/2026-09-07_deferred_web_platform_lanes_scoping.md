@@ -150,12 +150,18 @@ Window as well as Worker and need not wait for dedicated Worker.
 **What exists.** `HTMLCanvasElement.getContext` in the bootstrap returns a
 WebGL context (via `webgl-wgpu`) for `webgl` and `experimental-webgl` and
 `null` for everything else. The canvas element is a replaced box in Livery
-with width and height presentational hints and an external-texture key that
-the paint list carries to netrender, so a raster produced anywhere on the
-same wgpu device can be composited into the page today. The workspace still
-declares `vello_cpu` and the WPT tree has a `vello_canvas` subsuite config
-naming a `dom_canvas_backend=vello` pref; nothing in the current tree reads
-either.
+with width and height presentational hints. A rendered scripted host may
+explicitly install a WebGL factory and texture registry; trusted registry keys
+then travel through paint/session metadata to the host. `RenderCore` and
+`SurfaceHost` accept caller-supplied same-device textures at emitted scene
+boundaries. The focused GPU receipt covers a plain opaque scene, an inserted
+producer texture, and a later opaque scene operation. This is limited to
+ungrouped, untransformed, unclipped stacking: ancestor transforms, clips and
+opacity groups need a wider renderer contract. Ortet's default engine still
+installs neither factory nor registry, so it does not visibly compose scripted
+WebGL yet. The workspace still declares `vello_cpu` and the WPT tree has a
+`vello_canvas` subsuite config naming a `dom_canvas_backend=vello` pref;
+nothing in the current tree reads either.
 
 **What the lane is.**
 
