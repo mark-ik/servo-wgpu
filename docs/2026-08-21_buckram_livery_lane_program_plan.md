@@ -96,6 +96,21 @@ table/flow-root cases.
 
 ## Stop rules
 
+### Row 17 progress — 2026-09-11
+
+The current-main marker recovery restored a bounded inside-marker floor:
+quoted CSS string parsing and serialization, `list-style-position`, direct HTML
+ordered-list ordinals, and marker-only anonymous-inline admission. It also
+projects explicit HTML `dir=ltr` / `dir=rtl` through presentational hints and
+sets Parley's paragraph base level from computed direction. The focused
+fixture passes quoted-string, nested decimal, and nested RTL marker-only cases
+at 320px and 247px, including retained-frame reuse. The marker-only drain is
+kept in Livery paint order so each nested marker paints before its child list.
+
+This is a bounded regression receipt, not a complete counters or WPT claim.
+Broader counter styles, reversed-list semantics, outside-marker layout, and the
+Row 17 WPT map remain open.
+
 - Stop on an unexplained WPT loss.
 - Stop before using an archived lane as an integration base.
 - Stop if an implementation crosses another lane's owned boundary without a

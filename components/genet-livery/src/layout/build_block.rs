@@ -859,6 +859,48 @@ where
                 );
                 Ok(Some(node))
             },
+            BoxOrigin::Pseudo {
+                owner,
+                pseudo: buckram::PseudoElement::Marker,
+            } => {
+                let marker_only_inline_run = self.boxes[box_id].parent().is_some_and(|parent| {
+                    matches!(self.boxes[parent].origin, BoxOrigin::Anonymous { .. })
+                        && self.boxes[parent].formatting_context
+                            == Some(FormattingContextKind::Inline)
+                        && self.boxes[parent].children() == [box_id]
+                });
+                if !marker_only_inline_run {
+                    return Ok(None);
+                }
+                let Some(style) = self.styles.get(owner) else {
+                    return Ok(None);
+                };
+                let Some(marker) =
+                    crate::text::inside_marker_text(self.dom, self.styles, owner, style)
+                else {
+                    return Ok(None);
+                };
+                let font_size = font_size_px(&style.font_size, parent_font_size);
+                let line_height = line_height_px(&style.line_height, font_size);
+                // Marker strings preserve repeated authored spaces.
+                let marker_width = marker.chars().count() as f32 * font_size * 0.6;
+                let min_width = marker_width;
+                let max_width = marker_width;
+                let node = self.tree.new_leaf_with_context_and_block_style(
+                    anonymous_block_style(self.boxes, box_id),
+                    Style {
+                        display: Display::Block,
+                        ..Style::default()
+                    },
+                    TextMeasure {
+                        min_width,
+                        max_width: max_width.max(min_width),
+                        height: line_height,
+                    },
+                    Some(box_id),
+                );
+                Ok(Some(node))
+            },
             BoxOrigin::Pseudo { .. } | BoxOrigin::Anonymous { .. } => {
                 if let Some(grid) = (self.boxes[box_id].display.internal_table
                     == Some(InternalTableRole::Wrapper))

@@ -21,11 +21,17 @@ use crate::resolve::{ResolvedStyle, StyleRun, tree::ItemKind};
 pub struct RangedBuilder<'a, B: Brush> {
     pub(crate) scale: f32,
     pub(crate) quantize: bool,
+    pub(crate) base_level: Option<u8>,
     pub(crate) lcx: &'a mut LayoutContext<B>,
     pub(crate) fcx: &'a mut FontContext,
 }
 
 impl<B: Brush> RangedBuilder<'_, B> {
+    /// Select the Unicode bidirectional paragraph base level.
+    pub fn set_base_level(&mut self, base_level: Option<u8>) {
+        self.base_level = base_level.map(|level| level & 1);
+    }
+
     pub fn push_default<'a>(&mut self, property: impl Into<StyleProperty<'a, B>>) {
         let resolved = self
             .lcx
@@ -61,6 +67,7 @@ impl<B: Brush> RangedBuilder<'_, B> {
             layout,
             self.scale,
             self.quantize,
+            self.base_level,
             text.as_ref(),
             self.lcx,
             self.fcx,
@@ -151,6 +158,7 @@ impl<B: Brush> StyleRunBuilder<'_, B> {
             layout,
             self.scale,
             self.quantize,
+            None,
             text.as_ref(),
             self.lcx,
             self.fcx,
@@ -233,7 +241,7 @@ impl<B: Brush> TreeBuilder<'_, B> {
             .finish(&mut self.lcx.style_table, &mut self.lcx.style_runs);
 
         // Call generic layout builder method
-        build_into_layout(layout, self.scale, self.quantize, &text, self.lcx, self.fcx);
+        build_into_layout(layout, self.scale, self.quantize, None, &text, self.lcx, self.fcx);
 
         text
     }
@@ -250,6 +258,7 @@ fn build_into_layout<B: Brush>(
     layout: &mut Layout<B>,
     scale: f32,
     quantize: bool,
+    base_level: Option<u8>,
     text: &str,
     lcx: &mut LayoutContext<B>,
     fcx: &mut FontContext,
@@ -266,7 +275,7 @@ fn build_into_layout<B: Brush>(
         "at least one style run is required"
     );
 
-    crate::analysis::analyze_text(lcx, text);
+    crate::analysis::analyze_text(lcx, text, base_level);
 
     layout.data.clear();
     layout.data.scale = scale;

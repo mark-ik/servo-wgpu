@@ -1297,6 +1297,16 @@ animation = "discrete"
 source = "css_lists_3"
 
 [[property]]
+name = "list-style-position"
+value_type = "list-style-position"
+inherited = true
+initial = "outside"
+grammar = "inside | outside"
+seed_values = ["inside", "outside"]
+animation = "discrete"
+source = "css_lists_3"
+
+[[property]]
 name = "max-height"
 value_type = "size"
 inherited = false
@@ -2458,13 +2468,6 @@ group = "list"
 inherited = true
 animation = "discrete"
 spec = "https://drafts.csswg.org/css-lists/#propdef-list-style-image"
-
-[[unimplemented]]
-name = "list-style-position"
-group = "list"
-inherited = true
-animation = "discrete"
-spec = "https://drafts.csswg.org/css-lists/#propdef-list-style-position"
 
 [[unimplemented]]
 name = "quotes"

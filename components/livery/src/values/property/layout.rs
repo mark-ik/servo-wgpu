@@ -51,11 +51,61 @@ keyword_value! {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ListStyleType {
+    None,
+    Disc,
+    Decimal,
+    String(std::string::String),
+}
+
+impl FromStr for ListStyleType {
+    type Err = ParseError;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let input = input.trim();
+        if input.eq_ignore_ascii_case("none") {
+            return Ok(Self::None);
+        }
+        if input.eq_ignore_ascii_case("disc") {
+            return Ok(Self::Disc);
+        }
+        if input.eq_ignore_ascii_case("decimal") {
+            return Ok(Self::Decimal);
+        }
+
+        let mut buffer = cssparser::ParserInput::new(input);
+        let mut parser = cssparser::Parser::new(&mut buffer);
+        let value = parser
+            .expect_string_cloned()
+            .map_err(|_| ParseError::expected("list-style-type keyword or string"))?;
+        parser
+            .expect_exhausted()
+            .map_err(|_| ParseError::expected("one list-style-type value"))?;
+        Ok(Self::String(value.as_ref().to_owned()))
+    }
+}
+
+impl fmt::Display for ListStyleType {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => formatter.write_str("none"),
+            Self::Disc => formatter.write_str("disc"),
+            Self::Decimal => formatter.write_str("decimal"),
+            Self::String(value) => {
+                use fmt::Write;
+                formatter.write_char('"')?;
+                write!(cssparser::CssStringWriter::new(formatter), "{value}")?;
+                formatter.write_char('"')
+            },
+        }
+    }
+}
+
 keyword_value! {
-    pub enum ListStyleType {
-        None => "none",
-        Disc => "disc",
-        Decimal => "decimal",
+    pub enum ListStylePosition {
+        Inside => "inside",
+        Outside => "outside",
     }
 }
 

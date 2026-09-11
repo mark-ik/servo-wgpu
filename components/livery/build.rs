@@ -242,6 +242,7 @@ fn value_type_path(value_type: &str) -> &'static str {
         "inset" => "crate::values::Inset",
         "line-height" => "crate::values::LineHeight",
         "list-style-type" => "crate::values::ListStyleType",
+        "list-style-position" => "crate::values::ListStylePosition",
         "margin" => "crate::values::Margin",
         "opacity" => "crate::values::Opacity",
         "order" => "crate::values::Order",
@@ -294,6 +295,7 @@ fn value_type_is_copy(value_type: &str) -> bool {
             | "font-family"
             | "font-feature-settings"
             | "grid-template"
+            | "list-style-type"
             | "transform"
     )
 }
@@ -363,6 +365,7 @@ fn initial_expression(property: &Property) -> &'static str {
         ("inset", "auto") => "crate::values::Inset::Auto",
         ("line-height", "normal") => "crate::values::LineHeight::Normal",
         ("list-style-type", "disc") => "crate::values::ListStyleType::Disc",
+        ("list-style-position", "outside") => "crate::values::ListStylePosition::Outside",
         ("margin", "0") => "crate::values::Margin::Value(crate::values::LengthPercentage::ZERO)",
         ("opacity", "1") => "crate::values::Opacity::ONE",
         ("order", "0") => "crate::values::Order::ZERO",

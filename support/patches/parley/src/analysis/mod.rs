@@ -227,7 +227,11 @@ pub(crate) enum Boundary {
     Mandatory = 3,
 }
 
-pub(crate) fn analyze_text<B: Brush>(lcx: &mut LayoutContext<B>, mut text: &str) {
+pub(crate) fn analyze_text<B: Brush>(
+    lcx: &mut LayoutContext<B>,
+    mut text: &str,
+    base_level: Option<u8>,
+) {
     struct WordBreakSegmentIter<'a, I: Iterator, B: Brush> {
         text: &'a str,
         style_runs: I,
@@ -443,7 +447,8 @@ pub(crate) fn analyze_text<B: Brush>(lcx: &mut LayoutContext<B>, mut text: &str)
 
     let properties = |c| lcx.analysis_data_sources.properties(c);
 
-    let mut needs_bidi_resolution = false;
+    // An explicit paragraph level changes even an otherwise all-Latin run.
+    let mut needs_bidi_resolution = base_level == Some(1);
 
     lcx.info.reserve(text.len());
     boundary_iter
@@ -512,7 +517,7 @@ pub(crate) fn analyze_text<B: Brush>(lcx: &mut LayoutContext<B>, mut text: &str)
                     .iter()
                     .map(|info| (info.0.bidi_class, info.0.bracket)),
             ),
-            None,
+            base_level,
         );
     }
 }

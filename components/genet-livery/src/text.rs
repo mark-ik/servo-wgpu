@@ -18,16 +18,16 @@ use buckram::{
     BoxId, BoxOrigin, CssBoxTree, DisplayInside, DisplayOutside, FloatLineConstraints,
     FormattingContextKind, InternalTableRole, IntrinsicSizeKind, IntrinsicSizes,
 };
-use layout_dom_api::{LayoutDom, NodeKind};
+use layout_dom_api::{LayoutDom, LocalName, Namespace, NodeKind};
 use livery::{
     ComputedValues,
     values::{
         Direction, Display, FontFamily as CssFontFamily, FontFeatureSetting,
         FontFeatureSettings as CssFontFeatureSettings, FontStyle as CssFontStyle,
         FontWeight as CssFontWeight, Hyphens, LineBreak as CssLineBreak,
-        LineHeight as CssLineHeight, Margin, OverflowWrap as CssOverflowWrap, Position, Spacing,
-        TabSize, TextAlign, TextAlignLast, TextJustify, TextTransformCase, TextWrapMode,
-        VerticalAlign, WordBreak as CssWordBreak,
+        LineHeight as CssLineHeight, ListStylePosition, ListStyleType, Margin,
+        OverflowWrap as CssOverflowWrap, Position, Spacing, TabSize, TextAlign, TextAlignLast,
+        TextJustify, TextTransformCase, TextWrapMode, VerticalAlign, WordBreak as CssWordBreak,
     },
 };
 use paint_list_api::{
@@ -598,6 +598,89 @@ impl TextSystem {
         let Some(parent_box) = fragments.boxes().principal_box(parent) else {
             return;
         };
+        let mut inline_parent_style = parent_style.clone();
+        if parent_style.display == Display::ListItem
+            && parent_style.list_style_position == ListStylePosition::Inside
+        {
+            let inline_box = if fragments.boxes()[parent_box].formatting_context
+                == Some(FormattingContextKind::Inline)
+            {
+                Some(parent_box)
+            } else {
+                Self::marker_inline_child(fragments.boxes(), parent_box, parent)
+            };
+            let Some(inline_box) = inline_box else {
+                return;
+            };
+            let marker_box = Self::marker_box(fragments.boxes(), inline_box, parent);
+            let content_box = Self::inline_content_box(fragments.boxes(), inline_box);
+            let anchor_fragment = content_box
+                .and_then(|content_box| {
+                    fragments.fragments().fragment_ids_for_box(content_box).last().and_then(|id| {
+                        fragments.fragments().get(*id).map(|fragment| fragment.physical_rect())
+                    })
+                })
+                .or_else(|| {
+                    marker_box.and_then(|marker_box| {
+                        fragments.fragments().fragment_ids_for_box(marker_box).last().and_then(|id| {
+                            fragments.fragments().get(*id).map(|fragment| fragment.physical_rect())
+                        })
+                    })
+                })
+                .or_else(|| {
+                    (inline_box == parent_box)
+                        .then(|| frame.inline_fragments(parent).and_then(|items| items.first()).or_else(|| fragments.get(parent).map(|fragment| &**fragment)).copied())
+                        .flatten()
+                })
+                .or_else(|| fragments.fragments().fragment_ids_for_box(inline_box).last().and_then(|id| fragments.fragments().get(*id).map(|fragment| fragment.physical_rect())));
+            let Some(anchor_fragment) = anchor_fragment else {
+                return;
+            };
+            let width = fragments.fragments().fragment_ids_for_box(parent_box).last()
+                .and_then(|id| fragments.fragments().get(*id))
+                .map(|fragment| crate::content_box_size(parent_style, fragment).0)
+                .unwrap_or(anchor_fragment.width);
+            let marker_only_anchor = content_box.is_none()
+                && marker_box.is_some_and(|marker_box| {
+                    fragments
+                        .fragments()
+                        .fragment_ids_for_box(marker_box)
+                        .last()
+                        .and_then(|id| fragments.fragments().get(*id))
+                        .is_some()
+                });
+            let origin_x = if marker_only_anchor
+                && parent_style.direction == Direction::Rtl
+                && !parent_style.writing_mode.is_vertical()
+            {
+                anchor_fragment.x + anchor_fragment.width - width
+            } else {
+                anchor_fragment.x
+            };
+            let roots = fragments.boxes()[inline_box].children();
+            if let Some(layout) = self.format_inline_group(
+                dom,
+                styles,
+                fragments.boxes(),
+                fragments,
+                InlineRequest {
+                    roots,
+                    parent_style,
+                    width,
+                    intrinsic_kind: None,
+                    line_constraints: None,
+                },
+            ) {
+                layout.place(
+                    frame,
+                    styles,
+                    |box_id| fragments.boxes().origin_node(box_id),
+                    (origin_x, anchor_fragment.y),
+                    width,
+                );
+            }
+            return;
+        }
         if fragments.boxes()[parent_box].formatting_context != Some(FormattingContextKind::Inline) {
             return;
         }
@@ -609,7 +692,6 @@ impl TextSystem {
         else {
             return;
         };
-        let mut inline_parent_style = parent_style.clone();
         if matches!(parent_style.position, Position::Absolute | Position::Fixed) {
             inline_parent_style.vertical_align = VerticalAlign::Baseline;
         }
@@ -639,6 +721,44 @@ impl TextSystem {
             (&parent_fragment, &inline_parent_style),
             parent,
         );
+    }
+
+    fn marker_inline_child<Id>(boxes: &CssBoxTree<Id>, parent: BoxId, owner: Id) -> Option<BoxId>
+    where
+        Id: Copy + Eq + Hash,
+    {
+        boxes[parent].children().iter().copied().find(|child| {
+            boxes[*child].formatting_context == Some(FormattingContextKind::Inline)
+                && boxes[*child].children().iter().any(|grandchild| {
+                    matches!(
+                        boxes[*grandchild].origin,
+                        BoxOrigin::Pseudo {
+                            owner: marker_owner,
+                            pseudo: buckram::PseudoElement::Marker,
+                        } if marker_owner == owner
+                    )
+                })
+        })
+    }
+
+    fn marker_box<Id>(boxes: &CssBoxTree<Id>, inline_box: BoxId, owner: Id) -> Option<BoxId>
+    where
+        Id: Copy + Eq + Hash,
+    {
+        boxes[inline_box].children().iter().copied().find(|child| matches!(
+            boxes[*child].origin,
+            BoxOrigin::Pseudo { owner: marker_owner, pseudo: buckram::PseudoElement::Marker } if marker_owner == owner
+        ))
+    }
+
+    fn inline_content_box<Id>(boxes: &CssBoxTree<Id>, inline_box: BoxId) -> Option<BoxId>
+    where
+        Id: Copy + Eq + Hash,
+    {
+        boxes[inline_box].children().iter().copied().find(|child| {
+            boxes[*child].display.outside == Some(DisplayOutside::Inline)
+                && !matches!(boxes[*child].origin, BoxOrigin::Pseudo { pseudo: buckram::PseudoElement::Marker, .. })
+        })
     }
 
     pub(crate) fn emit_single<Id>(
@@ -707,6 +827,20 @@ impl TextSystem {
             return;
         }
         let (parent_fragment, parent_style) = parent;
+        let rtl_content_geometry = (parent_style.direction == Direction::Rtl
+            && !parent_style.writing_mode.is_vertical())
+        .then(|| fragments.get(owner))
+        .flatten()
+        .map(|fragment| {
+            let edges = inline_decoration_edges(parent_style, fragment.width);
+            (
+                crate::content_box_size(parent_style, fragment).0,
+                fragment.x + edges.left,
+            )
+        });
+        let available_width = rtl_content_geometry
+            .map(|(width, _)| width)
+            .unwrap_or(parent_fragment.width);
         let mut text = String::new();
         let mut spans = Vec::new();
         let mut inline_boxes = Vec::new();
@@ -721,7 +855,7 @@ impl TextSystem {
                 text: &mut text,
                 spans: &mut spans,
                 inline_boxes: &mut inline_boxes,
-                percentage_basis: parent_fragment.width,
+                percentage_basis: available_width,
             };
             for root in roots {
                 collector.collect(*root, parent_style);
@@ -731,7 +865,7 @@ impl TextSystem {
             return;
         }
 
-        let origin = spans
+        let mut origin = spans
             .iter()
             .filter_map(|span| span.source.and_then(|id| fragments.get(id)))
             .next()
@@ -739,6 +873,9 @@ impl TextSystem {
             .map_or((parent_fragment.x, parent_fragment.y), |fragment| {
                 (fragment.x, fragment.y)
             });
+        if let Some((_, content_x)) = rtl_content_geometry {
+            origin.0 = content_x;
+        }
         let mut visual_commands = Vec::new();
         let mut prepared_sources = Vec::new();
         let text_sources = spans
@@ -750,7 +887,7 @@ impl TextSystem {
             &text,
             &mut spans,
             &inline_boxes,
-            parent_fragment.width,
+            available_width,
             parent_style,
             None,
             None,
@@ -784,7 +921,7 @@ impl TextSystem {
                                 styles,
                                 *owner,
                                 run.fragment,
-                                parent_fragment.width,
+                                available_width,
                             ),
                             line_y,
                         );
@@ -827,7 +964,7 @@ impl TextSystem {
                                     styles,
                                     source,
                                     fragment,
-                                    parent_fragment.width,
+                                    available_width,
                                 )
                             } else {
                                 fragment
@@ -842,7 +979,7 @@ impl TextSystem {
                                 styles,
                                 owner,
                                 fragment,
-                                parent_fragment.width,
+                                available_width,
                             ),
                             line_y,
                         );
@@ -904,6 +1041,10 @@ impl TextSystem {
         let mut builder =
             self.layout_context
                 .ranged_builder(&mut self.font_context, text, 1.0, true);
+        builder.set_base_level(Some(match root_style.direction {
+            Direction::Ltr => 0,
+            Direction::Rtl => 1,
+        }));
         push_defaults(
             &mut builder,
             default_style,
@@ -2308,6 +2449,59 @@ struct SourceSpan<Id> {
     range: Range<usize>,
 }
 
+fn append_generated_marker<Id>(
+    text: &mut String,
+    spans: &mut Vec<SourceSpan<Id>>,
+    source: Id,
+    owners: &[Id],
+    style: &ComputedValues,
+    marker: &str,
+) where
+    Id: Copy,
+{
+    let isolate = style.list_style_position == ListStylePosition::Inside
+        && style.list_style_type == ListStyleType::Decimal
+        && style.direction == Direction::Rtl
+        && !style.writing_mode.is_vertical();
+    if isolate {
+        append_generated_marker_control(text, spans, owners, style, '\u{2067}');
+    }
+
+    let start = text.len();
+    text.push_str(marker);
+    if text.len() != start {
+        spans.push(SourceSpan {
+            source: Some(source),
+            owners: owners.to_vec(),
+            style: style.clone(),
+            range: start..text.len(),
+        });
+    }
+
+    if isolate {
+        append_generated_marker_control(text, spans, owners, style, '\u{2069}');
+    }
+}
+
+fn append_generated_marker_control<Id>(
+    text: &mut String,
+    spans: &mut Vec<SourceSpan<Id>>,
+    owners: &[Id],
+    style: &ComputedValues,
+    control: char,
+) where
+    Id: Copy,
+{
+    let start = text.len();
+    text.push(control);
+    spans.push(SourceSpan {
+        source: None,
+        owners: owners.to_vec(),
+        style: style.clone(),
+        range: start..text.len(),
+    });
+}
+
 #[derive(Clone)]
 struct TextSource<Id> {
     source: Id,
@@ -2646,6 +2840,26 @@ where
                     self.collect(*child, inherited);
                 }
             },
+            BoxOrigin::Pseudo {
+                owner,
+                pseudo: buckram::PseudoElement::Marker,
+            } => {
+                let Some(style) = self.styles.get(owner) else {
+                    return;
+                };
+                let Some(marker) = inside_marker_text(self.dom, self.styles, owner, style) else {
+                    return;
+                };
+                // Marker pseudo-elements preserve an authored string verbatim.
+                append_generated_marker(
+                    self.text,
+                    self.spans,
+                    box_id,
+                    self.owners,
+                    style,
+                    &marker,
+                );
+            },
             BoxOrigin::Pseudo { .. } => {},
         }
     }
@@ -2811,6 +3025,91 @@ where
     fn push_forced_line_break(&mut self, _source: BoxId, _style: &ComputedValues) {
         append_forced_line_break(self.text);
     }
+}
+
+/// The admitted inside-marker slice follows HTML ordered-list ordinals. Outside
+/// markers retain their separate formatting path.
+pub(crate) fn inside_marker_text<D>(
+    dom: &D,
+    styles: &StylePlane<D::NodeId>,
+    owner: D::NodeId,
+    style: &ComputedValues,
+) -> Option<String>
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    if style.list_style_position != ListStylePosition::Inside {
+        return None;
+    }
+    match &style.list_style_type {
+        ListStyleType::None => None,
+        ListStyleType::Disc => Some("• ".to_owned()),
+        ListStyleType::Decimal => decimal_inside_marker_text(dom, styles, owner),
+        ListStyleType::String(value) => Some(value.clone()),
+    }
+}
+
+fn decimal_inside_marker_text<D>(
+    dom: &D,
+    styles: &StylePlane<D::NodeId>,
+    item: D::NodeId,
+) -> Option<String>
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    if !is_html_element(dom, item, "li") {
+        return None;
+    }
+    let list = dom.parent(item)?;
+    if !is_html_element(dom, list, "ol") || html_attribute(dom, list, "reversed").is_some() {
+        return None;
+    }
+
+    let mut ordinal = html_integer_attribute(dom, list, "start").unwrap_or(1);
+    for sibling in dom.dom_children(list) {
+        if !is_html_element(dom, sibling, "li")
+            || styles
+                .get(sibling)
+                .is_none_or(|style| style.display != Display::ListItem)
+        {
+            continue;
+        }
+        if let Some(value) = html_integer_attribute(dom, sibling, "value") {
+            ordinal = value;
+        }
+        if sibling == item {
+            return Some(format!("{ordinal}. "));
+        }
+        ordinal = ordinal.checked_add(1)?;
+    }
+    None
+}
+
+fn is_html_element<D>(dom: &D, id: D::NodeId, local: &str) -> bool
+where
+    D: LayoutDom,
+{
+    dom.kind(id) == NodeKind::Element
+        && dom.element_name(id).is_some_and(|name| {
+            name.ns.as_ref() == "http://www.w3.org/1999/xhtml"
+                && name.local.as_ref().eq_ignore_ascii_case(local)
+        })
+}
+
+fn html_attribute<'a, D>(dom: &'a D, id: D::NodeId, local: &str) -> Option<&'a str>
+where
+    D: LayoutDom,
+{
+    dom.attribute(id, &Namespace::from(""), &LocalName::from(local))
+}
+
+fn html_integer_attribute<D>(dom: &D, id: D::NodeId, local: &str) -> Option<i64>
+where
+    D: LayoutDom,
+{
+    html_attribute(dom, id, local).and_then(crate::presentational_hints::parse_integer)
 }
 
 struct InlineCollector<'a, D, F>

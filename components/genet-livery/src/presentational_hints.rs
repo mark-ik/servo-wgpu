@@ -18,8 +18,8 @@ use livery::{
     cascade::{Declaration, DeclaredValue},
     values::{
         AspectRatio, BorderCollapse, BorderStyle, BorderWidth, CaptionSide, Clear, ComputedColor,
-        Float, FontSize, Length, LengthPercentage, Margin, Padding, Size, TableBorderSpacing,
-        TextAlign, TextWrapMode, VerticalAlign, WhiteSpaceCollapse,
+        Direction, Float, FontSize, Length, LengthPercentage, Margin, Padding, Size,
+        TableBorderSpacing, TextAlign, TextWrapMode, VerticalAlign, WhiteSpaceCollapse,
     },
 };
 
@@ -218,6 +218,8 @@ where
         return;
     }
 
+    collect_direction_hint(dom, id, hints);
+
     match name.local.as_ref().to_ascii_lowercase().as_str() {
         "body" => collect_body_hints(dom, id, hints),
         "pre" if html_attribute(dom, id, "wrap").is_some() => {
@@ -241,6 +243,29 @@ where
         "hr" => collect_horizontal_rule_hints(dom, id, hints),
         _ => {},
     }
+}
+
+/// Project explicit HTML base-direction keywords through the hint cascade.
+fn collect_direction_hint<D>(dom: &D, id: D::NodeId, hints: &mut PresentationalHints<D::NodeId>)
+where
+    D: LayoutDom,
+    D::NodeId: Copy + Eq + Hash,
+{
+    let Some(raw) = html_attribute(dom, id, "dir") else {
+        return;
+    };
+    let direction = if raw.eq_ignore_ascii_case("ltr") {
+        Direction::Ltr
+    } else if raw.eq_ignore_ascii_case("rtl") {
+        Direction::Rtl
+    } else {
+        return;
+    };
+    push_value(
+        hints.declarations_for_mut(id),
+        PropertyId::Direction,
+        PropertyValue::Direction(direction),
+    );
 }
 
 fn collect_body_hints<D>(dom: &D, body: D::NodeId, hints: &mut PresentationalHints<D::NodeId>)
@@ -1396,7 +1421,7 @@ where
 
 /// HTML's integer parser consumes a signed decimal prefix after leading ASCII
 /// whitespace. Trailing legacy text does not invalidate that prefix.
-fn parse_integer(input: &str) -> Option<i64> {
+pub(crate) fn parse_integer(input: &str) -> Option<i64> {
     let bytes = input.as_bytes();
     let mut position = 0;
     while bytes
@@ -2329,6 +2354,45 @@ mod tests {
         assert_eq!(
             style.border_right_width,
             BorderWidth::Length(Length::px(3.0))
+        );
+    }
+
+    #[test]
+    fn html_dir_hint_inherits_and_author_css_can_override_it() {
+        let dom = StaticDocument::parse(
+            r#"<html dir="RTL"><body><div id="inherited"><span id="auto" dir="auto">auto</span><span id="invalid" dir=" rtl ">invalid</span><span id="author" dir="rtl">author</span></div></body></html>"#,
+        );
+        let styles = resolve_styles(
+            &dom,
+            &StyleSet::cambium(&["#author { direction: ltr; }"]),
+            &Device::screen(800.0, 600.0),
+            &InteractionStates::default(),
+        );
+        let style = |id| {
+            styles
+                .get(node_by_id(&dom, dom.document(), id).unwrap())
+                .unwrap()
+                .direction
+        };
+
+        assert_eq!(style("inherited"), Direction::Rtl);
+        assert_eq!(style("auto"), Direction::Rtl);
+        assert_eq!(style("invalid"), Direction::Rtl);
+        assert_eq!(style("author"), Direction::Ltr);
+
+        let default_dom = StaticDocument::parse(r#"<div id="auto" dir="auto">text</div>"#);
+        let default_styles = resolve_styles(
+            &default_dom,
+            &StyleSet::cambium(&[]),
+            &Device::screen(800.0, 600.0),
+            &InteractionStates::default(),
+        );
+        assert_eq!(
+            default_styles
+                .get(node_by_id(&default_dom, default_dom.document(), "auto").unwrap())
+                .unwrap()
+                .direction,
+            Direction::Ltr
         );
     }
 

@@ -102,6 +102,7 @@ impl<B: Brush> LayoutContext<B> {
         RangedBuilder {
             scale,
             quantize,
+            base_level: None,
             lcx: self,
             fcx,
         }
