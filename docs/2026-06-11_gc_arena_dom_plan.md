@@ -5,6 +5,12 @@ fixture/runner are recovered. Fresh Boa/Nova acceptance is pending; the runner
 now checks clean source/dependency revisions before and after the receipt.
 The historical September 9 branch run is not an exact-source acceptance receipt.
 
+`ba7a4df56c6` restores Boa's `ClearKeptObjects` frame-boundary hook. The
+plain-object WeakRef polling regression failed with the hook removed, passed
+with it restored, and all 26 Boa package tests passed on Rust 1.97.1 in a clean
+isolated checkout. Boa stores the kept-alive list on the shared `Context`; this
+is not a separate native Ortet or cross-realm acceptance receipt.
+
 **Date**: 2026-06-11
 **Current continuation, updated 2026-09-09:** G5 below scopes the arena's
 identity, mutation and lifetime contract and its scripted Ortet proof. S1
