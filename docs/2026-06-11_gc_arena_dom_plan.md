@@ -1,5 +1,12 @@
 # gc-arena DOM Plan (the piccolo fork's dividends)
 
+**Final combined replay, 2026-09-11:** native Boa/Nova acceptance also passed
+after the marker and WebGL host integrations at clean source `6b8b3cc2fca`.
+Artifacts at `Code/testing/genet/reconcile-g5-final-20260911/` record identical
+before/after source identities, six frames per engine, `unpinned=5 collected=6`,
+semantic/pixel completion, and the expected failures of both timeout controls.
+The broader lifetime and browser-hosted gates remain outside this receipt.
+
 **G5 reconciliation, 2026-09-11:** collection counters and the native Ortet
 fixture/runner are recovered. Fresh native Windows Boa/Nova acceptance passed
 at clean source `ba7a4df56c6`; the runner

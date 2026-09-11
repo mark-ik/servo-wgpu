@@ -1,5 +1,12 @@
 # Ortet founding plan
 
+**Final combined replay, 2026-09-11:** after marker and WebGL host integration,
+the same native Boa/Nova gate passed at clean source `6b8b3cc2fca`.
+`Code/testing/genet/reconcile-g5-final-20260911/` preserves both positive
+receipts, timeout controls, dependency graph, and identical before/after source
+identities. Both engines again presented six frames with `unpinned=5 collected=6`
+and the completion pixel. The capture/semantic and wider-scope limits below apply.
+
 **G5 reconciliation, 2026-09-11:** the collection counter seam and native
 arena fixture/runner have been recovered from the September 9 branch. Native
 acceptance passed at clean source `ba7a4df56c6`. The recovered runner requires clean
