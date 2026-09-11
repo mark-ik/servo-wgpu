@@ -663,6 +663,17 @@ impl ScriptEngine for BoaEngine {
         // script no longer references become dead before `drain_dead_reflectors`
         // sweeps them — the engine half of the frame-cadence GC tick.
         boa_gc::force_collect();
+        // ClearKeptObjects (ECMA-262 9.10): every `WeakRef.prototype.deref()`
+        // call adds its target to the realm's kept-alive list for "the
+        // current synchronous execution", cleared only when the host runs
+        // this operation between jobs/ticks. Boa exposes the hook but does
+        // not call it on its own. Without this, a page that polls a
+        // `WeakRef` (the natural way script observes collection at all)
+        // keeps re-arming its own keep-alive on every poll and the target
+        // can never be reported collected, independent of whether the
+        // underlying object is actually reachable. This is the frame-cadence
+        // tick, so it is also the natural per-turn boundary for this host.
+        self.ctx.clear_kept_objects();
     }
 
     fn minted_reflectors(&mut self) -> Vec<ReflectorData> {
@@ -1369,6 +1380,43 @@ mod tests {
 
         // The dead entry was swept, so a second drain is empty.
         assert!(engine.drain_dead_reflectors().is_empty());
+    }
+
+    /// `force_gc` must clear ECMAScript's kept-alive list (ClearKeptObjects,
+    /// ECMA-262 9.10), or a page that repeatedly polls a script-visible
+    /// `WeakRef` — the only way script can ever observe collection — keeps
+    /// re-arming its own keep-alive on every poll's `deref()` and the target
+    /// is never reported collected, forever, regardless of real reachability.
+    /// Reproduces the G5 arena-receipt failure (`design_docs/receipts/`
+    /// `2026-09-09_g5_ortet/`): a page-level `new WeakRef(obj)` polled once
+    /// per simulated frame tick never saw `deref() === undefined` before this
+    /// fix, on a plain object with no DOM/genet-scripted-dom involvement.
+    #[test]
+    fn weak_ref_deref_polling_does_not_defeat_clear_kept_objects() {
+        let mut engine = BoaEngine::new().unwrap();
+        engine
+            .eval(
+                "globalThis.target = {}; \
+                 globalThis.weak = new WeakRef(globalThis.target);",
+            )
+            .unwrap();
+
+        // Simulate a poller: deref the WeakRef once per tick (this is exactly
+        // what re-arms the keep-alive list if it is never cleared), then take
+        // the frame-cadence GC tick, several times over.
+        for _ in 0..5 {
+            let alive = engine.eval("weak.deref() !== undefined").unwrap();
+            assert_eq!(engine.value_to_string(&alive).unwrap(), "true");
+            engine.force_gc();
+        }
+
+        // Drop the only strong reference and collect again: without
+        // `clear_kept_objects`, the preceding derefs would still be holding
+        // it alive here even though nothing reachable points to it any more.
+        engine.eval("globalThis.target = null;").unwrap();
+        engine.force_gc();
+        let alive = engine.eval("weak.deref() !== undefined").unwrap();
+        assert_eq!(engine.value_to_string(&alive).unwrap(), "false");
     }
 
     #[test]
