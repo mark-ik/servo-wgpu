@@ -2,10 +2,17 @@
 
 **G5 reconciliation, 2026-09-11:** the collection counter seam and native
 arena fixture/runner have been recovered from the September 9 branch. Native
-acceptance remains pending a fresh run. The recovered runner requires clean
+acceptance passed at clean source `ba7a4df56c6`. The recovered runner requires clean
 source repositories, records resolved local dependency revisions and lock/config
 hashes, and rejects source changes during the run. The historical branch receipt
 used an uncommitted Genet tree and dirty Boa fork and is not current acceptance.
+
+Fresh native Windows receipts at `Code/testing/genet/reconcile-g5-20260911/`
+show both Boa and Nova completing the semantic sequence in six presented frames,
+with `unpinned=5 collected=6`, the green completion pixel, and the expected
+25 ms impossible-heading failure. Source identities match before and after the
+run. The 640x400 physical capture at 2x scale clips part of the heading; semantic
+completion is recorded in the log, and the completion color is visible.
 
 **Status:** O0 through O5 are landed for the native host. O5's exact-source
 Boa/Nova receipts at `f3dc1bcf909` accept native input, timer/microtask

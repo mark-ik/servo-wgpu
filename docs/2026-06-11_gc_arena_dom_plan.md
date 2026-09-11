@@ -1,9 +1,17 @@
 # gc-arena DOM Plan (the piccolo fork's dividends)
 
 **G5 reconciliation, 2026-09-11:** collection counters and the native Ortet
-fixture/runner are recovered. Fresh Boa/Nova acceptance is pending; the runner
+fixture/runner are recovered. Fresh native Windows Boa/Nova acceptance passed
+at clean source `ba7a4df56c6`; the runner
 now checks clean source/dependency revisions before and after the receipt.
 The historical September 9 branch run is not an exact-source acceptance receipt.
+
+The fresh receipt at `Code/testing/genet/reconcile-g5-20260911/` records six
+presented frames per engine, `unpinned=5 collected=6`, matching final frames,
+semantic completion and green-pixel checks, and both deliberate timeout
+controls. Its resolved dependency graph and unchanged before/after source
+identities are preserved with the artifacts. This is the single-arena native
+G5 sequence; it does not establish browser-hosted or broader lifetime behavior.
 
 `ba7a4df56c6` restores Boa's `ClearKeptObjects` frame-boundary hook. The
 plain-object WeakRef polling regression failed with the hook removed, passed
