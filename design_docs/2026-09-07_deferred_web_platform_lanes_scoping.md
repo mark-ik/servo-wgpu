@@ -163,6 +163,13 @@ WebGL yet. The workspace still declares `vello_cpu` and the WPT tree has a
 `vello_canvas` subsuite config naming a `dom_canvas_backend=vello` pref;
 nothing in the current tree reads either.
 
+**Recovery validation, 2026-09-11:** all four focused gates passed from clean
+source `6b8b3cc2fca`: rendered factory-before-script/handler drop, runtime canvas
+resize, actual GPU ordered composition, and `servo-webgl-wgpu` resize preserving
+viewport/scissor. The key check rejects arbitrary unmatched key `999`; copying
+a live registered key is not covered. This acceptance retains the host and
+stacking limits above.
+
 **What the lane is.**
 
 1. A `CanvasRenderingContext2D` state machine: the path and transform
