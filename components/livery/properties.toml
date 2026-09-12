@@ -1771,6 +1771,16 @@ animation = "by-computed-value"
 source = "css_transforms_1"
 
 [[property]]
+name = "transform-origin"
+value_type = "transform-origin"
+inherited = false
+initial = "50% 50%"
+grammar = "[ left | center | right | top | bottom | <length-percentage> ]{1,2} [ <length> ]?"
+seed_values = ["center", "left top", "25% 10px", "top right 3px"]
+animation = "by-computed-value"
+source = "css_transforms_1"
+
+[[property]]
 name = "transition-duration"
 value_type = "duration"
 inherited = false
@@ -2128,13 +2138,6 @@ group = "box"
 inherited = false
 animation = "by-computed-value"
 spec = "https://drafts.csswg.org/css-transforms-2/#perspective-origin-property"
-
-[[unimplemented]]
-name = "transform-origin"
-group = "box"
-inherited = false
-animation = "by-computed-value"
-spec = "https://drafts.csswg.org/css-transforms/#transform-origin-property"
 
 [[unimplemented]]
 name = "transform-style"

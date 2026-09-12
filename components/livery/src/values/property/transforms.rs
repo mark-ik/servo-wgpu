@@ -172,6 +172,131 @@ impl fmt::Display for Scale {
     }
 }
 
+/// The CSS `transform-origin` point. The Z length is retained so valid 2D
+/// declarations keep their CSS meaning; the current renderer has only a 2D
+/// transform matrix, where that coordinate has no effect.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TransformOrigin {
+    pub x: LengthPercentage,
+    pub y: LengthPercentage,
+    pub z: Length,
+}
+
+impl TransformOrigin {
+    pub const CENTER: Self = Self {
+        x: LengthPercentage::Percentage(0.5),
+        y: LengthPercentage::Percentage(0.5),
+        z: Length::ZERO,
+    };
+
+    /// Resolve the two in-plane coordinates against the transformed element's
+    /// border box, as CSS Transforms defines for the default view box.
+    pub fn used_2d(self, em: f32, width: f32, height: f32) -> (f32, f32) {
+        (self.x.to_px(em, em, width), self.y.to_px(em, em, height))
+    }
+
+    pub fn interpolate(self, other: Self, progress: f32) -> Self {
+        let z = if self.z.unit == other.z.unit {
+            Length {
+                value: self.z.value + (other.z.value - self.z.value) * progress.clamp(0.0, 1.0),
+                unit: self.z.unit,
+            }
+        } else if progress.clamp(0.0, 1.0) < 0.5 {
+            self.z
+        } else {
+            other.z
+        };
+        Self {
+            x: self.x.interpolate(other.x, progress),
+            y: self.y.interpolate(other.y, progress),
+            z,
+        }
+    }
+}
+
+impl FromStr for TransformOrigin {
+    type Err = ParseError;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let values = shadow_components(input.trim());
+        let (xy, z) = match values.as_slice() {
+            [first] => (parse_transform_origin_xy(first, None)?, Length::ZERO),
+            [first, second] => (
+                parse_transform_origin_xy(first, Some(*second))?,
+                Length::ZERO,
+            ),
+            [first, second, z] => (
+                parse_transform_origin_xy(first, Some(*second))?,
+                z.parse::<Length>()?,
+            ),
+            _ => {
+                return Err(ParseError::expected(
+                    "one or two transform-origin positions and an optional Z length",
+                ));
+            },
+        };
+        Ok(Self {
+            x: xy.0,
+            y: xy.1,
+            z,
+        })
+    }
+}
+
+fn parse_transform_origin_xy(
+    first: &str,
+    second: Option<&str>,
+) -> Result<(LengthPercentage, LengthPercentage), ParseError> {
+    let center = LengthPercentage::Percentage(0.5);
+    let horizontal = |value: &str| match value.trim().to_ascii_lowercase().as_str() {
+        "left" => Ok(LengthPercentage::ZERO),
+        "right" => Ok(LengthPercentage::Percentage(1.0)),
+        "center" => Ok(center),
+        "top" | "bottom" => Err(ParseError::expected("a horizontal transform-origin value")),
+        _ => value.parse(),
+    };
+    let vertical = |value: &str| match value.trim().to_ascii_lowercase().as_str() {
+        "top" => Ok(LengthPercentage::ZERO),
+        "bottom" => Ok(LengthPercentage::Percentage(1.0)),
+        "center" => Ok(center),
+        "left" | "right" => Err(ParseError::expected("a vertical transform-origin value")),
+        _ => value.parse(),
+    };
+    let keyword = |value: &str| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "left" | "right" | "top" | "bottom" | "center"
+        )
+    };
+    let first_is_vertical = matches!(first.trim().to_ascii_lowercase().as_str(), "top" | "bottom");
+    let second_is_horizontal = second.is_some_and(|value| {
+        matches!(value.trim().to_ascii_lowercase().as_str(), "left" | "right")
+    });
+    match second {
+        None if first_is_vertical => Ok((center, vertical(first)?)),
+        None => Ok((horizontal(first)?, center)),
+        // CSS permits a reversed pair only when both components are
+        // keywords. `top 10px` and `10px left` are therefore invalid rather
+        // than a swapped two-axis position.
+        Some(second)
+            if keyword(first) && keyword(second) && (first_is_vertical || second_is_horizontal) =>
+        {
+            Ok((horizontal(second)?, vertical(first)?))
+        },
+        Some(second) => Ok((horizontal(first)?, vertical(second)?)),
+    }
+}
+
+impl fmt::Display for TransformOrigin {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{} {}", self.x, self.y)?;
+        if self.z != Length::ZERO {
+            write!(formatter, " {}", self.z)?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Transform {
     None,

@@ -30,18 +30,18 @@ pub use property::{
     Alignment, AnimationDelay, AnimationName, AspectRatio, BackgroundAttachment, BackgroundBox,
     BackgroundImage, BackgroundPosition, BackgroundRepeat, BackgroundSize, BackgroundSizeComponent,
     BorderCollapse, BorderStyle, BorderWidth, BoxShadow, BoxShadowValue, BoxSizing, BreakAfter,
-    BreakBefore, BreakInside, CaptionSide, Clear, ClipPath, ColumnCount, ColumnFill, ColumnWidth, Contain,
-    ContainIntrinsicSize, ContainerName, ContainerType, Direction, Display, Duration, EmptyCells,
-    FlexBasis, FlexDirection, FlexFactor, FlexWrap, Float, FontFamily, FontFeatureSetting,
-    FontFeatureSettings, FontSize, FontStyle, FontVariantLigatures, FontWeight, Gap, GridAutoFlow,
-    GridPlacement, GridTemplate, GridTrack, HangingPunctuation, Hyphens, Inset, LineBreak,
-    LineHeight, ListStylePosition, ListStyleType, Margin, Opacity, Order, Orphans, Overflow,
-    OverflowWrap, Padding,
-    PointerEvents, Position, Radius, RepeatStyle, Rotate, Scale, ShapeOutside, Size, Spacing,
-    TabSize, TableBorderSpacing, TableLayout, TextAlign, TextAlignLast, TextDecorationColor,
-    TextDecorationLine, TextIndent, TextJustify, TextTransform, TextTransformCase, TextWrapMode,
-    TimingFunction, Transform, TransformFunction, TransitionProperty, VerticalAlign, Visibility,
-    WhiteSpaceCollapse, Widows, WordBreak, WritingMode, ZIndex,
+    BreakBefore, BreakInside, CaptionSide, Clear, ClipPath, ColumnCount, ColumnFill, ColumnWidth,
+    Contain, ContainIntrinsicSize, ContainerName, ContainerType, Direction, Display, Duration,
+    EmptyCells, FlexBasis, FlexDirection, FlexFactor, FlexWrap, Float, FontFamily,
+    FontFeatureSetting, FontFeatureSettings, FontSize, FontStyle, FontVariantLigatures, FontWeight,
+    Gap, GridAutoFlow, GridPlacement, GridTemplate, GridTrack, HangingPunctuation, Hyphens, Inset,
+    LineBreak, LineHeight, ListStylePosition, ListStyleType, Margin, Opacity, Order, Orphans,
+    Overflow, OverflowWrap, Padding, PointerEvents, Position, Radius, RepeatStyle, Rotate, Scale,
+    ShapeOutside, Size, Spacing, TabSize, TableBorderSpacing, TableLayout, TextAlign,
+    TextAlignLast, TextDecorationColor, TextDecorationLine, TextIndent, TextJustify, TextTransform,
+    TextTransformCase, TextWrapMode, TimingFunction, Transform, TransformFunction, TransformOrigin,
+    TransitionProperty, VerticalAlign, Visibility, WhiteSpaceCollapse, Widows, WordBreak,
+    WritingMode, ZIndex,
 };
 pub use transform_matrix::Matrix2D;
 
@@ -417,6 +417,16 @@ impl ResolveViewport for Transform {
     }
 }
 
+impl ResolveViewport for TransformOrigin {
+    fn resolve_relative_lengths(&self, environment: RelativeLengthEnvironment) -> Self {
+        Self {
+            x: self.x.resolve_relative(environment),
+            y: self.y.resolve_relative(environment),
+            z: self.z.resolve_relative(environment),
+        }
+    }
+}
+
 impl ResolveViewport for VerticalAlign {
     fn resolve_relative_lengths(&self, environment: RelativeLengthEnvironment) -> Self {
         match *self {
@@ -627,6 +637,12 @@ impl Interpolate for ComputedColor {
 impl Interpolate for Transform {
     fn interpolate_value(&self, other: &Self, progress: f32) -> Self {
         self.interpolate(other, progress)
+    }
+}
+
+impl Interpolate for TransformOrigin {
+    fn interpolate_value(&self, other: &Self, progress: f32) -> Self {
+        self.interpolate(*other, progress)
     }
 }
 

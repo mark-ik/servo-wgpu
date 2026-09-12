@@ -12,14 +12,15 @@ use livery::values::{
     Alignment, AnimationDelay, AnimationName, AspectRatio, BackgroundAttachment, BackgroundBox,
     BackgroundImage, BackgroundPosition, BackgroundRepeat, BackgroundSize, BorderCollapse,
     BorderStyle, BorderWidth, BoxShadow, BoxSizing, BreakAfter, BreakBefore, BreakInside,
-    CaptionSide, Clear, ClipPath, Color, ColumnCount, ColumnFill, ColumnWidth, Contain, ContainIntrinsicSize,
-    CssValue, Direction, Display, Duration, EmptyCells, FlexBasis, FlexDirection, FlexFactor,
-    FlexWrap, Float, FontFamily, FontFeatureSettings, FontSize, FontStyle, FontVariantLigatures,
-    FontWeight, Gap, Inset, Interpolate, LengthPercentage, LengthUnit, LineHeight, ListStyleType,
-    Margin, Opacity, Order, Orphans, Overflow, Padding, PointerEvents, Position, Radius,
-    RelativeLengthEnvironment, ResolveViewport, Rotate, Scale, Size, Spacing, TableBorderSpacing,
-    TextAlign, TextDecorationLine, TextWrapMode, TimingFunction, Transform, TransitionProperty,
-    TreeCounts, VerticalAlign, Visibility, WhiteSpaceCollapse, Widows, ZIndex,
+    CaptionSide, Clear, ClipPath, Color, ColumnCount, ColumnFill, ColumnWidth, Contain,
+    ContainIntrinsicSize, CssValue, Direction, Display, Duration, EmptyCells, FlexBasis,
+    FlexDirection, FlexFactor, FlexWrap, Float, FontFamily, FontFeatureSettings, FontSize,
+    FontStyle, FontVariantLigatures, FontWeight, Gap, Inset, Interpolate, LengthPercentage,
+    LengthUnit, LineHeight, ListStyleType, Margin, Opacity, Order, Orphans, Overflow, Padding,
+    PointerEvents, Position, Radius, RelativeLengthEnvironment, ResolveViewport, Rotate, Scale,
+    Size, Spacing, TableBorderSpacing, TextAlign, TextDecorationLine, TextWrapMode, TimingFunction,
+    Transform, TransformOrigin, TransitionProperty, TreeCounts, VerticalAlign, Visibility,
+    WhiteSpaceCollapse, Widows, ZIndex,
 };
 use livery::{
     AnimationClass, ComputedValues, InlineShorthandExpansion, PropertyId, PropertyValue,
@@ -751,6 +752,36 @@ fn background_position_interpolation_preserves_each_component() {
         .parse::<BackgroundPosition>()
         .expect("to position");
     assert_eq!(from.interpolate(to, 0.5).to_string(), "50% 50%");
+}
+
+#[test]
+fn transform_origin_accepts_2d_positions_and_retains_a_z_length() {
+    for value in [
+        "center",
+        "top",
+        "top left",
+        "left top",
+        "right 10px",
+        "20% 3em",
+        "-10px 125%",
+        "left top 4px",
+    ] {
+        assert_round_trip::<TransformOrigin>(value);
+    }
+    for value in [
+        "left right",
+        "top bottom",
+        "top 10px",
+        "10px left",
+        "left 25% top 10%",
+        "left top 10%",
+    ] {
+        assert!(
+            value.parse::<TransformOrigin>().is_err(),
+            "{value} must be rejected"
+        );
+    }
+    assert!("center left".parse::<TransformOrigin>().is_ok());
 }
 
 #[test]

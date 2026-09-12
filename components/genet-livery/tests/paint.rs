@@ -1529,6 +1529,39 @@ fn transform_creates_an_atomic_level_zero_coordinate_space() {
 }
 
 #[test]
+fn transform_origin_uses_border_box_keywords_lengths_and_percentages() {
+    let list = render(
+        r#"<html><body><div class="corner"></div><div class="percent"></div><div class="reversed"></div><div class="default"></div></body></html>"#,
+        r#"
+        html, body { margin: 0; }
+        div { position: absolute; width: 100px; height: 40px; transform: scale(1.25); }
+        .corner { left: 10px; top: 20px; transform-origin: left top; }
+        .percent { left: 120px; top: 20px; transform-origin: 25% 10px; }
+        .reversed { left: 10px; top: 80px; transform-origin: top right 4px; }
+        .default { left: 120px; top: 80px; }
+        "#,
+        1,
+    );
+    let origins = list
+        .commands()
+        .iter()
+        .filter_map(|command| match command {
+            PaintCmd::PushTransform(spec) => Some(spec.origin),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        origins.len(),
+        4,
+        "one transform per positioned box: {origins:?}"
+    );
+    assert_eq!(origins[0], paint_list_api::LayoutPoint::new(10.0, 20.0));
+    assert_eq!(origins[1], paint_list_api::LayoutPoint::new(145.0, 30.0));
+    assert_eq!(origins[2], paint_list_api::LayoutPoint::new(110.0, 80.0));
+    assert_eq!(origins[3], paint_list_api::LayoutPoint::new(170.0, 100.0));
+}
+
+#[test]
 fn individual_rotate_and_scale_reach_the_paint_transform() {
     let list = render(
         r#"<html><body><div class="box"></div></body></html>"#,

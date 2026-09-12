@@ -28,6 +28,17 @@ Vello's GPU image import requires straight-alpha RGBA8 with copy-source usage;
 the default premultiplied WebGL surface therefore needs a GPU conversion stage.
 This work does not claim complete WebGL, CSS filters, or blend-mode conformance.
 
+**Origin finding, 2026-09-11:** the first native interior probes passed despite
+an incorrect canvas offset. Visual review and independent coordinate arithmetic
+showed that Livery ignored authored `transform-origin` and always used the box
+center. The nested fixture now tests both sides of the expected leading edge,
+its top edge, and trailing clips. The required fix carries authored origins
+through Livery and resolves them against the reference border box, following
+[CSS Transforms 1 section 5](https://www.w3.org/TR/css-transforms-1/#transform-origin-property).
+The earlier 15-probe capture at `ecaa79296bf` is preliminary evidence and does
+not close the transform gate. CSSOM shorthand/geometry getters are outside this
+pixel gate; authored dimensions and drawing-buffer identity remain JS checks.
+
 **Native WebGL wiring, 2026-09-11:** Boa/Nova now create document-local WebGL
 contexts on Ortet's render device before authored scripts run. The native
 capture/presentation path resolves live textures in scene order; resize keeps

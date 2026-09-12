@@ -2765,10 +2765,10 @@ fn transform_spec(style: &ComputedValues, fragment: &Fragment) -> Option<Transfo
         matrix.f, 0.0, 1.0,
     );
 
-    let origin = LayoutPoint::new(
-        fragment.x + fragment.width / 2.0,
-        fragment.y + fragment.height / 2.0,
-    );
+    let (origin_x, origin_y) = style
+        .transform_origin
+        .used_2d(em, fragment.width, fragment.height);
+    let origin = LayoutPoint::new(fragment.x + origin_x, fragment.y + origin_y);
     let transform = LayoutTransform::translation(-origin.x, -origin.y, 0.0).then(&authored);
     Some(TransformSpec {
         origin,

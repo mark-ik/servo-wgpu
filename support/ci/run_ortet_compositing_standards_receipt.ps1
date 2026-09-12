@@ -72,9 +72,22 @@ function Assert-Pixels([string]$png, [string]$log, [string]$record) {
             @{ name='group-overlap'; logical=@(100,25); color=@(128,128,255) },
             @{ name='clip-inside'; logical=@(220,30); color=@(255,255,0) },
             @{ name='clip-outside'; logical=@(240,30); color=@(255,255,255) },
+            # Outer map: (x,y) -> (165 + 1.25*x, 110 + 1.25*y).
+            # Inner clip: [177.5,122.5,252.5,185]. Transformed canvas starts
+            # at (221.25,147.5); visible content ends at (252.5,185).
             @{ name='nested-inside'; logical=@(230,155); color=@(255,0,255) },
+            @{ name='nested-leading-outside'; logical=@(219,160); color=@(255,255,255) },
+            @{ name='nested-leading-inside'; logical=@(224,160); color=@(255,0,255) },
+            @{ name='nested-right-inside'; logical=@(245,155); color=@(255,0,255) },
+            @{ name='nested-bottom-inside'; logical=@(230,180); color=@(255,0,255) },
             @{ name='nested-inner-clip'; logical=@(260,155); color=@(255,255,255) },
             @{ name='nested-outer-clip'; logical=@(295,155); color=@(255,255,255) },
+            @{ name='nested-inner-right'; logical=@(255,160); color=@(255,255,255) },
+            @{ name='nested-outer-right'; logical=@(292,160); color=@(255,255,255) },
+            @{ name='nested-top-outside'; logical=@(230,144); color=@(255,255,255) },
+            @{ name='nested-top-inside'; logical=@(230,151); color=@(255,0,255) },
+            @{ name='nested-inner-bottom'; logical=@(230,187); color=@(255,255,255) },
+            @{ name='nested-outer-bottom'; logical=@(230,199); color=@(255,255,255) },
             @{ name='canvas-border'; logical=@(10,115); color=@(20,20,20) },
             @{ name='canvas-padding'; logical=@(14,120); color=@(255,255,255) },
             @{ name='canvas-content'; logical=@(25,130); color=@(255,0,255) },
