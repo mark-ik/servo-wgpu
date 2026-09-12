@@ -126,22 +126,6 @@ impl<E: ScriptEngine> NativeFn<E> for LocationField {
     }
 }
 
-/// `__locationAssign(url)` -> resolve `url` against the current document URL and
-/// adopt it as the new document URL. Real navigation is host-driven; in the
-/// scripted runtime this updates the document's own notion of its URL, which is
-/// what `location.href` / `assign` / `replace` and `__resolve_url` read.
-struct LocationAssign;
-impl<E: ScriptEngine> NativeFn<E> for LocationAssign {
-    fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
-        let a0 = cx.arg(0);
-        let input = cx.value_to_string(&a0)?;
-        with_host::<E, _>(cx, |h| {
-            h.base_url = Some(resolve_against(h.base_url.as_deref(), &input));
-        });
-        Ok(cx.undefined())
-    }
-}
-
 // ── localStorage ─────────────────────────────────────────────────────────────
 
 /// The host's backing for `localStorage` (e.g. a durable, persona + origin-partitioned
@@ -278,33 +262,30 @@ impl<E: ScriptEngine> NativeFn<E> for StorageLength {
 
 // ── history ──────────────────────────────────────────────────────────────────
 
+/// Whether this agent has a browsing-context tree the history surface can use.
+/// A bare runtime - one that never made a frame and never posted a message -
+/// has none, and falls back to the per-document list in [`HostState`], which is
+/// what every `history` test predating browsing contexts exercises.
+fn context_history<E: ScriptEngine, R>(
+    cx: &mut E::CallCx<'_>,
+    f: impl FnOnce(&mut browsing_context_api::BrowsingContext) -> R,
+) -> Option<R> {
+    let realm = cx.current_realm();
+    crate::frames::with_context::<E, R>(cx, realm, f)
+}
+
+/// Adopt `url` as the document URL of the realm `cx` is in.
+fn adopt_document_url<E: ScriptEngine>(cx: &mut E::CallCx<'_>, url: &str) {
+    with_host::<E, _>(cx, |h| h.base_url = Some(url.to_owned()));
+}
+
 /// `__historyPush(stateJson, url, hasUrl)` -> push a new entry (dropping any
 /// forward entries) and make it current. `hasUrl == "true"` resolves `url`
 /// against the current document URL and adopts it; otherwise the URL is unchanged.
 struct HistoryPush;
 impl<E: ScriptEngine> NativeFn<E> for HistoryPush {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
-        let a0 = cx.arg(0);
-        let state = cx.value_to_string(&a0)?;
-        let a1 = cx.arg(1);
-        let url = cx.value_to_string(&a1)?;
-        let a2 = cx.arg(2);
-        let has_url = cx.value_to_string(&a2)? == "true";
-        with_host::<E, _>(cx, |h| {
-            ensure_history(h);
-            let entry_url = if has_url {
-                resolve_against(h.base_url.as_deref(), &url)
-            } else {
-                h.history[h.history_index].1.clone()
-            };
-            h.history.truncate(h.history_index + 1);
-            h.history.push((state, entry_url.clone()));
-            h.history_index = h.history.len() - 1;
-            if has_url {
-                h.base_url = Some(entry_url);
-            }
-        });
-        Ok(cx.undefined())
+        history_write::<E>(cx, false)
     }
 }
 
@@ -313,36 +294,85 @@ impl<E: ScriptEngine> NativeFn<E> for HistoryPush {
 struct HistoryReplace;
 impl<E: ScriptEngine> NativeFn<E> for HistoryReplace {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
-        let a0 = cx.arg(0);
-        let state = cx.value_to_string(&a0)?;
-        let a1 = cx.arg(1);
-        let url = cx.value_to_string(&a1)?;
-        let a2 = cx.arg(2);
-        let has_url = cx.value_to_string(&a2)? == "true";
-        with_host::<E, _>(cx, |h| {
-            ensure_history(h);
-            let entry_url = if has_url {
-                resolve_against(h.base_url.as_deref(), &url)
-            } else {
-                h.history[h.history_index].1.clone()
-            };
-            let idx = h.history_index;
-            h.history[idx] = (state, entry_url.clone());
-            if has_url {
-                h.base_url = Some(entry_url);
-            }
-        });
-        Ok(cx.undefined())
+        history_write::<E>(cx, true)
     }
+}
+
+/// The shared body of `pushState` and `replaceState`. Neither navigates: the
+/// document stays, and only the session history and the document URL move.
+fn history_write<E: ScriptEngine>(
+    cx: &mut E::CallCx<'_>,
+    replace: bool,
+) -> Result<E::Value, E::Error> {
+    let a0 = cx.arg(0);
+    let state = cx.value_to_string(&a0)?;
+    let a1 = cx.arg(1);
+    let url = cx.value_to_string(&a1)?;
+    let a2 = cx.arg(2);
+    let has_url = cx.value_to_string(&a2)? == "true";
+    let base = with_host::<E, _>(cx, |h| h.base_url.clone()).flatten();
+    let entry_url = if has_url {
+        resolve_against(base.as_deref(), &url)
+    } else {
+        base.clone().unwrap_or_else(|| "about:blank".to_string())
+    };
+    let joined = context_history::<E, _>(cx, |context| {
+        // Stamped with the document showing now: a `pushState` entry is an
+        // entry *of this document*, and traversing back to it must not reload.
+        let entry = browsing_context_api::HistoryEntry {
+            url: entry_url.clone(),
+            state: Some(state.clone()),
+            title: None,
+            document: context.document_serial(),
+        };
+        if replace {
+            context.history_mut().replace(entry);
+        } else {
+            context.history_mut().push(entry);
+        }
+        context.set_document_url(entry_url.clone());
+    })
+    .is_some();
+    if joined {
+        if has_url {
+            adopt_document_url::<E>(cx, &entry_url);
+        }
+        return Ok(cx.undefined());
+    }
+    with_host::<E, _>(cx, |h| {
+        ensure_history(h);
+        if replace {
+            let index = h.history_index;
+            h.history[index] = (state, entry_url.clone());
+        } else {
+            h.history.truncate(h.history_index + 1);
+            h.history.push((state, entry_url.clone()));
+            h.history_index = h.history.len() - 1;
+        }
+        if has_url {
+            h.base_url = Some(entry_url);
+        }
+    });
+    Ok(cx.undefined())
 }
 
 /// `__historyState()` -> the current entry's serialized state JSON.
 struct HistoryState;
 impl<E: ScriptEngine> NativeFn<E> for HistoryState {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
-        let state = with_host::<E, _>(cx, |h| {
-            ensure_history(h);
-            h.history[h.history_index].0.clone()
+        let state = context_history::<E, _>(cx, |context| {
+            context
+                .history()
+                .current()
+                .state
+                .clone()
+                .unwrap_or_else(|| "null".to_string())
+        })
+        .or_else(|| {
+            with_host::<E, _>(cx, |h| {
+                ensure_history(h);
+                h.history[h.history_index].0.clone()
+            })
         })
         .unwrap_or_else(|| "null".to_string());
         cx.make_string(&state)
@@ -353,30 +383,87 @@ impl<E: ScriptEngine> NativeFn<E> for HistoryState {
 struct HistoryLength;
 impl<E: ScriptEngine> NativeFn<E> for HistoryLength {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
-        let n = with_host::<E, _>(cx, |h| {
-            ensure_history(h);
-            h.history.len()
-        })
-        .unwrap_or(1);
+        let n = context_history::<E, _>(cx, |context| context.history().len())
+            .or_else(|| {
+                with_host::<E, _>(cx, |h| {
+                    ensure_history(h);
+                    h.history.len()
+                })
+            })
+            .unwrap_or(1);
         cx.make_string(&n.to_string())
     }
 }
 
-/// `__historyGo(delta)` -> move the current entry by `delta` (clamped to range)
-/// and adopt that entry's URL. No `popstate` is fired (the scripted tier has no
-/// navigation/event-loop integration); `state` / the document URL update.
+/// `__historyGo(delta)` -> traverse the session history by `delta`.
+///
+/// A traversal to an entry for the *same* document keeps it: the URL moves, and
+/// `popstate` is fired from a task, plus `hashchange` when only the fragment
+/// changed. A traversal to a different document is a navigation like any other,
+/// and replaces the realm. An out-of-range traversal is a no-op, which is what
+/// HTML specifies rather than a clamp.
 struct HistoryGo;
 impl<E: ScriptEngine> NativeFn<E> for HistoryGo {
     fn call(cx: &mut E::CallCx<'_>) -> Result<E::Value, E::Error> {
         let a0 = cx.arg(0);
         let delta = cx.value_to_string(&a0)?.parse::<i64>().unwrap_or(0);
-        with_host::<E, _>(cx, |h| {
-            ensure_history(h);
-            let last = h.history.len() as i64 - 1;
-            let target = (h.history_index as i64 + delta).clamp(0, last);
-            h.history_index = target as usize;
-            h.base_url = Some(h.history[h.history_index].1.clone());
+        let current = with_host::<E, _>(cx, |h| h.base_url.clone())
+            .flatten()
+            .unwrap_or_else(|| "about:blank".to_string());
+        let moved = context_history::<E, _>(cx, |context| {
+            if !context.history().can_go(delta) {
+                return None;
+            }
+            let showing = context.document_serial();
+            let entry = context.history_mut().go(delta)?.clone();
+            let same_document = entry.document == showing;
+            if same_document {
+                context.set_document_url(entry.url.clone());
+            }
+            Some((entry, same_document))
         });
+        let Some(moved) = moved else {
+            // No browsing context: the pre-context behaviour, which clamps and
+            // fires nothing.
+            with_host::<E, _>(cx, |h| {
+                ensure_history(h);
+                let last = h.history.len() as i64 - 1;
+                let target = (h.history_index as i64 + delta).clamp(0, last);
+                h.history_index = target as usize;
+                h.base_url = Some(h.history[h.history_index].1.clone());
+            });
+            return Ok(cx.undefined());
+        };
+        let Some((entry, same_document)) = moved else {
+            return Ok(cx.undefined());
+        };
+        if !same_document {
+            let realm = cx.current_realm();
+            // A document-changing traversal *is* a navigation, and replaces the
+            // history entry it lands on rather than pushing a new one.
+            return crate::frames::navigate_from_call::<E>(cx, realm, &entry.url, true);
+        }
+        adopt_document_url::<E>(cx, &entry.url);
+        let state = entry.state.clone().unwrap_or_else(|| "null".to_string());
+        let hashed = entry.url != current;
+        let script = format!(
+            "setTimeout(function(){{\
+               var e = new Event('popstate');\
+               Object.defineProperty(e, 'state', {{value: JSON.parse({state}), enumerable: true, configurable: true}});\
+               window.dispatchEvent(e);\
+               if ({hashed}) {{\
+                 var h = new Event('hashchange');\
+                 Object.defineProperty(h, 'oldURL', {{value: {old}, enumerable: true, configurable: true}});\
+                 Object.defineProperty(h, 'newURL', {{value: {new}, enumerable: true, configurable: true}});\
+                 window.dispatchEvent(h);\
+               }}\
+             }}, 0)",
+            state = crate::js_str(&state),
+            hashed = hashed,
+            old = crate::js_str(&current),
+            new = crate::js_str(&entry.url),
+        );
+        E::eval_from_call(cx, &script).map_err(|error| cx.error(&error.to_string()))?;
         Ok(cx.undefined())
     }
 }
@@ -385,7 +472,6 @@ pub(crate) fn install_platform_surface<E: ScriptEngine>(
     engine: &mut crate::Surface<'_, '_, E>,
 ) -> Result<(), crate::SurfaceError<E::Error>> {
     engine.set_function::<LocationField>("__locationField", 1)?;
-    engine.set_function::<LocationAssign>("__locationAssign", 1)?;
     engine.set_function::<HistoryPush>("__historyPush", 3)?;
     engine.set_function::<HistoryReplace>("__historyReplace", 3)?;
     engine.set_function::<HistoryState>("__historyState", 0)?;
@@ -419,15 +505,21 @@ const PLATFORM_BOOTSTRAP: &str = r#"
       });
     })(getOnly[i]);
   }
+  // Assignment, `assign`, `replace` and `reload` all go through HTML's
+  // "navigate": a fragment-only change keeps the document and fires
+  // `hashchange`, and anything else replaces the document, the realm and the
+  // session-history entry. The browsing context, its container element and its
+  // WindowProxy are the same objects on the other side.
   Object.defineProperty(location, 'href', {
     enumerable: true,
     configurable: true,
     get: function() { return __locationField('href'); },
-    set: function(v) { __locationAssign(String(v)); },
+    set: function(v) { __navigate(String(v), 'assign'); },
   });
-  location.assign = function(url) { __locationAssign(String(url)); };
-  location.replace = function(url) { __locationAssign(String(url)); };
-  location.reload = function() {}; // real reload is host-driven
+  location.assign = function(url) { __navigate(String(url), 'assign'); };
+  location.replace = function(url) { __navigate(String(url), 'replace'); };
+  // A reload is a replace-flavoured navigation to the document's own URL.
+  location.reload = function() { __navigate(__locationField('href'), 'reload'); };
   location.toString = function() { return __locationField('href'); };
   globalThis.location = location;
   Object.defineProperty(globalThis.document, 'URL', {

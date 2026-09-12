@@ -1201,6 +1201,7 @@
     if (name === 'style') inlineStyleStates.delete(this);
     resizeWebGlCanvas(this, name);
     customElementAttributeChanged(this, name, oldValue, newValue);
+    frameSourceChanged(this, name, oldValue, newValue);
     // The third re-preparation trigger: a connected script element gains a
     // `src` it did not have.
     if (name === 'src' && oldValue === null && this.localName === 'script') {
@@ -3592,6 +3593,17 @@
     if (framesWereDiscarded) { framesWereDiscarded = false; __refreshNamedProperties(); }
   }
 
+  // HTML's iframe `src` attribute-change steps: a connected `<iframe>` that
+  // already holds a nested browsing context *navigates* it rather than getting
+  // a fresh one, which is what keeps `contentWindow` the same object across a
+  // `src` assignment. A frame that has no context yet is handled by insertion.
+  function frameSourceChanged(el, name, oldValue, newValue) {
+    if (name !== 'src' || oldValue === newValue) return;
+    if (el.localName !== 'iframe' || !el.isConnected) return;
+    if (typeof __navigateFrame !== 'function') return;
+    __navigateFrame(el.__ref, newValue === null ? 'about:blank' : String(newValue));
+  }
+
   function syncFrameSubtree(node) {
     if (!node || typeof __frameWindow !== 'function' || !node.isConnected) return;
     if (node.localName === 'iframe') { __frameWindow(node.__ref); __refreshNamedProperties(); return; }
@@ -5150,7 +5162,11 @@
     // removed frame's window keeps answering with the same document, then
     // asserts it again a hundred milliseconds later. A Window's `document` is
     // its document; it is the WindowProxy's [[Window]] that a discard replaces.
-    Object.defineProperty(globalThis, 'document', {
+    // [LegacyUnforgeable], so defined on the Window rather than through the
+    // browsing context's WindowProxy. See the note in SELF_WINDOW_BOOTSTRAP.
+    var unforgeable = typeof __windowProxyGlobal === 'object' && __windowProxyGlobal
+      ? __windowProxyGlobal : globalThis;
+    Object.defineProperty(unforgeable, 'document', {
       enumerable: true,
       configurable: false,
       get: function() { return document; }
@@ -5540,7 +5556,18 @@
   // an `<iframe>` **in the document tree**, and a `<template>`'s contents have
   // no parent by construction (the Shadow DOM lane's shape), so no walk of the
   // document reaches them and a templated frame is correctly absent.
-  globalThis.frames = globalThis.window || globalThis;
+  // `frames` is `window`, read live: it has to answer with the browsing
+  // context's WindowProxy, which is installed after this bootstrap runs.
+  // WebIDL [Replaceable], like `self`.
+  Object.defineProperty(globalThis, 'frames', {
+    enumerable: true, configurable: true,
+    get: function () { return globalThis.window || globalThis; },
+    set: function (value) {
+      Object.defineProperty(globalThis, 'frames', {
+        value: value, writable: true, enumerable: true, configurable: true
+      });
+    }
+  });
   function childFrameElements() {
     try {
       return document.querySelectorAll('iframe');

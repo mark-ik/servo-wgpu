@@ -382,6 +382,13 @@ pub(crate) struct AgentState {
     pub(crate) dom_adoption: dom::adoption::AgentDomState,
     pub(crate) frames: crate::frames::FrameState,
     pub(crate) child_host_initializer: Option<Rc<dyn Fn(RealmId, &SharedHost)>>,
+    /// Whether a host lets a *top-level* navigation proceed. HTML gives the
+    /// user agent the last word on where the top-level browsing context may go,
+    /// and a scripted document is the one caller that has to be able to be told
+    /// no. Absent means allow, which is what a plain scripted runtime wants; a
+    /// host that shows chrome installs its own with
+    /// [`Runtime::set_top_level_navigation_policy`].
+    pub(crate) top_level_navigation_policy: Option<TopLevelNavigationPolicy>,
     /// Engine value retained outside script reach; queued cross-origin callbacks
     /// must not expose their realm's Function constructor through a global.
     pub(crate) timer_state: Option<Rc<dyn std::any::Any>>,
@@ -472,6 +479,46 @@ pub(crate) enum GlobalScopeKind {
     Worker,
 }
 
+/// A host's answer to "may the top-level browsing context go here?", as
+/// [`Runtime::set_top_level_navigation_policy`] installs it.
+pub(crate) type TopLevelNavigationPolicy = Rc<dyn Fn(&str) -> bool>;
+
+/// HTML's `WindowProxy`, in the language its semantics are written in. Runs in
+/// every `Window` realm before the host surface, because the proxy has to be
+/// the realm's global `this` from the realm's first instruction.
+pub(crate) const WINDOW_PROXY_BOOTSTRAP: &str = include_str!("window_proxy.js");
+
+/// Where the runtime hands a realm's own global object to
+/// [`WINDOW_PROXY_BOOTSTRAP`], which is running as the only code that can see
+/// the `WindowProxy` before it has a handler and so cannot reach the global any
+/// other way. The bootstrap deletes it.
+pub(crate) const WINDOW_PROXY_GLOBAL_SLOT: &str = "__windowProxyGlobal";
+
+/// Build the browsing context keyed `key` a `WindowProxy` over a fresh shadow
+/// object, make it `realm`'s global `this`, and give it the handler that
+/// carries WindowProxy's semantics - all before a line of the host surface
+/// runs. From outside any callback: the engine-level twin of
+/// `frames::install_window_proxy_from_call`, used by the two realms nobody
+/// creates from a callback, the top-level one and a bare
+/// [`Runtime::open_realm`] realm.
+///
+/// Returns the proxy's control function, or `None` on a backend that has no
+/// global-`this` entry, which runs with the global object as its own `this`.
+fn install_window_proxy_in_realm<E: ScriptEngine>(
+    engine: &mut E,
+    realm: RealmId,
+) -> Result<Option<E::Value>, RealmError> {
+    let proxy = match engine.new_window_proxy_in_realm(realm) {
+        Ok(proxy) => proxy,
+        Err(RealmError::Unsupported) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let global = engine.realm_global(realm)?;
+    engine.set_global_in_realm(realm, WINDOW_PROXY_GLOBAL_SLOT, &global)?;
+    engine.finish_global_this_in_realm(realm, &proxy)?;
+    Ok(Some(engine.eval_in_realm(realm, WINDOW_PROXY_BOOTSTRAP)?))
+}
+
 impl<E: ScriptEngine> Runtime<E> {
     /// Construct an engine and install the `Window` host surface on it.
     pub fn new() -> Result<Self, E::Error> {
@@ -495,6 +542,36 @@ impl<E: ScriptEngine> Runtime<E> {
         host.borrow_mut().agent = Rc::downgrade(&agent);
         agent.borrow_mut().register(MAIN_REALM, host.clone());
         engine.set_host_data(host.clone());
+        // The top-level browsing context's WindowProxy, before a line of script
+        // has run in the realm: from the realm's first instruction `globalThis`,
+        // `window`, `self` and the `this` of global code are all this one
+        // object, which is the identity HTML gives a browsing context and the
+        // one that has to survive the navigations that replace the realm under
+        // it. It is transparent until the bootstrap below installs its handler,
+        // so the surface the bootstrap defines lands on the global object as it
+        // always did.
+        if scope == GlobalScopeKind::Window {
+            // The top context is keyed by the top realm.
+            agent
+                .borrow_mut()
+                .frames
+                .bind_context(MAIN_REALM, MAIN_REALM);
+            match install_window_proxy_in_realm(&mut engine, MAIN_REALM) {
+                Ok(Some(control)) => {
+                    agent
+                        .borrow_mut()
+                        .frames
+                        .set_window_proxy(MAIN_REALM, Rc::new(control));
+                    frames::bind_window_proxy_realm(&mut engine, &agent, MAIN_REALM, MAIN_REALM)
+                        .expect("the top realm names itself to its window proxy");
+                },
+                // A backend without realms or without the global-`this` entry
+                // runs with the global object as its own `this`; one browsing
+                // context, no navigation, and every identity test still holds.
+                Ok(None) => {},
+                Err(error) => panic!("the top realm's window proxy: {error:?}"),
+            }
+        }
         install_host_surface(
             &mut Surface::Engine {
                 engine: &mut engine,
@@ -503,6 +580,10 @@ impl<E: ScriptEngine> Runtime<E> {
             scope,
         )
         .map_err(SurfaceError::main)?;
+        if scope == GlobalScopeKind::Window {
+            frames::bind_window_proxy_hooks_in_realm(&mut engine, &agent, MAIN_REALM, MAIN_REALM)
+                .expect("the top realm accepts its window-proxy host hook");
+        }
         let timer_state = engine.eval("globalThis.__agentTimers")?;
         let cancel_realm_tasks = engine.eval("globalThis.__agentTimers.cancelRealm")?;
         engine.eval("delete globalThis.__agentTimers")?;
@@ -565,6 +646,18 @@ impl<E: ScriptEngine> Runtime<E> {
                 .map_err(|e| RealmError::Engine(self.engine.describe_error(&e)))?;
             self.engine
                 .set_global_in_realm(realm, "__realmId", &realm_value)?;
+            // As for the top realm: this realm is its own browsing context, so
+            // its key is its own id, and its WindowProxy is the realm's global
+            // `this` before a line of the host surface runs.
+            self.agent.borrow_mut().frames.bind_context(realm, realm);
+            if let Some(control) = install_window_proxy_in_realm(&mut self.engine, realm)? {
+                self.agent
+                    .borrow_mut()
+                    .frames
+                    .set_window_proxy(realm, Rc::new(control));
+                let agent = self.agent.clone();
+                frames::bind_window_proxy_realm(&mut self.engine, &agent, realm, realm)?;
+            }
             install_host_surface(
                 &mut Surface::Engine {
                     engine: &mut self.engine,
@@ -580,6 +673,8 @@ impl<E: ScriptEngine> Runtime<E> {
                 realm,
                 "delete globalThis.__agentTimers; delete globalThis.__realmId",
             )?;
+            let agent = self.agent.clone();
+            frames::bind_window_proxy_hooks_in_realm(&mut self.engine, &agent, realm, realm)?;
             Ok(())
         })();
         if let Err(error) = result {
@@ -1893,16 +1988,24 @@ impl<E: ScriptEngineSnapshot> Runtime<E> {
         let snapshot = self.engine.snapshot_clone();
         let _ = self.engine.eval("delete globalThis.__agentTimers");
         let mut engine = snapshot?;
-        let timer_state = engine.eval("globalThis.__agentTimers")?;
-        let cancel_realm_tasks = engine.eval("globalThis.__agentTimers.cancelRealm")?;
-        engine.eval("delete globalThis.__agentTimers")?;
         let host: SharedHost = Rc::new(RefCell::new(HostState::default()));
         let agent = Rc::new(RefCell::new(AgentState::default()));
         host.borrow_mut().agent = Rc::downgrade(&agent);
         agent.borrow_mut().register(MAIN_REALM, host.clone());
+        // The cloned heap's global `this` is the donor's WindowProxy, which
+        // resolves its `[[Window]]` through *this* agent. Bind the top context
+        // before anything reads through `globalThis`, or every such read is
+        // undefined.
+        agent
+            .borrow_mut()
+            .frames
+            .bind_context(MAIN_REALM, MAIN_REALM);
+        engine.set_host_data(host.clone());
+        let timer_state = engine.eval("globalThis.__agentTimers")?;
+        let cancel_realm_tasks = engine.eval("globalThis.__agentTimers.cancelRealm")?;
+        engine.eval("delete globalThis.__agentTimers")?;
         agent.borrow_mut().timer_state = Some(Rc::new(timer_state));
         agent.borrow_mut().cancel_realm_tasks = Some(Rc::new(cancel_realm_tasks));
-        engine.set_host_data(host.clone());
         // The cloned heap's `document` wrapper still holds the donor host's
         // root reflector; point it at this fresh host before any script runs.
         engine.eval("globalThis.__rebindDocument()")?;
@@ -1926,7 +2029,21 @@ impl<E: ScriptEngineSnapshot> Runtime<E> {
 /// is a plain assignment (which would be writable, configurable and deletable).
 const SELF_WINDOW_BOOTSTRAP: &str = r#"
 (function() {
+  // `globalThis` here is already the browsing context's WindowProxy: the host
+  // installs it as the realm's global `this` before this bootstrap runs, so
+  // every reference an author can reach - `window`, `self`, `frames`, `parent`,
+  // `top`, `contentWindow`, `globalThis` and the global `this` - is that one
+  // object, and the identity survives a navigation that replaces the realm. The
+  // proxy is transparent while this runs, so what it defines lands on the
+  // global object behind it.
   var g = globalThis;
+  // HTML's [LegacyUnforgeable] attributes are defined on the *Window*, not
+  // through the browsing context's WindowProxy: a non-configurable property
+  // defined through a Proxy pins its descriptor on the proxy's target for good,
+  // and these have to outlive the navigations that replace the Window. The
+  // value they answer with is still the proxy.
+  var w = typeof __windowProxyGlobal === 'object' && __windowProxyGlobal
+    ? __windowProxyGlobal : g;
   Object.defineProperty(g, 'self', {
     enumerable: true,
     configurable: true,
@@ -1937,7 +2054,7 @@ const SELF_WINDOW_BOOTSTRAP: &str = r#"
       });
     }
   });
-  Object.defineProperty(g, 'window', {
+  Object.defineProperty(w, 'window', {
     enumerable: true,
     configurable: false,
     get: function() { return g; }
@@ -2066,6 +2183,8 @@ const EVENT_LOOP_BOOTSTRAP: &str = r#"
   var apply = Reflect.apply;
   var push = Array.prototype.push;
   var splice = Array.prototype.splice;
+  // The `this` a timer callback is invoked with is HTML's "relevant global
+  // object": the browsing context's WindowProxy, which `globalThis` already is.
   var ownerGlobal = globalThis;
   // HTML timers task source: pending timer tasks wait here until the Rust host
   // asks `__runTimers` to perform one task boundary.
@@ -2849,6 +2968,8 @@ const SHELL_GLOBALS_BOOTSTRAP: &str = r#"
   rafContext.callbacks = rafCreate(null);
   rafContext.id = 0;
   rafContext.realm = globalThis.__realmId || 0;
+  // As for timers, the `this` an animation-frame callback sees is the browsing
+  // context's WindowProxy, which `globalThis` already is.
   rafContext.global = globalThis;
   rafState.animationContexts[rafState.animationContexts.length++] = rafContext;
   if (rafState.animationPass === undefined) rafState.animationPass = null;

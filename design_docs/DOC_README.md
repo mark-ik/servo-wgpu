@@ -845,6 +845,34 @@ Remaining code is uncommitted and requires the archived local Boa/Vano patches.
 The plan and continuation ledger hold exact source hashes, maps and named losses.
 
 
+### WindowProxy and navigation (2026-09-11)
+
+The [WindowProxy and navigation phase](2026-09-08_realms_plan.md#phase-windowproxy-and-navigation-2026-09-11)
+builds the object the lifecycle phase declined to guess at. A browsing context
+holds **one** `WindowProxy` for its life, made natively before its realm's first
+instruction over a shadow target that retains no global object, and the
+cross-origin decision is made inside that one object per accessing realm — there
+is no second façade, because `frame.contentWindow === frame.contentWindow` has
+to survive a navigation that changes the frame's origin. The accessing realm is
+the *native caller's*, not the current one: calling a builtin enters its own
+realm even though a `Proxy`'s internal methods do not. A child navigates for
+real through unload, a new realm, a new `Document`, a proxy rebind and an
+interleaved parse; fragment navigation keeps the document and fires
+`hashchange`; session history moves onto the browsing-context crate with
+`popstate`, and whether a traversal keeps the document is decided by document
+identity rather than by URL. The outgoing realm is discarded every time,
+including the realm the proxy itself was built in — both engines keep the
+handler, the shadow and the control function alive afterwards, so no realm is
+retained. Release runtime 542 passed / 0 failed / **0 ignored**. The census gains
+19 subtests and twelve files across nine directories against two pass-to-nonpass
+movements, both former vacuous passes, with **no repins**; twelve of fifteen
+testharness slices and both reftest guards at `unexpected=0`, each red one at
+the count it inherited, both Ortet receipts unchanged. **The top-level realm is
+not replaced**: `MAIN_REALM` is the agent's root host and the resolution target
+of every `Runtime` entry point, so making it movable is a `Runtime` API lane and
+not a navigation one; the host policy hook that gates a top-level navigation
+exists, and the document URL and session history move without it.
+
 ### Browsing-context lifecycle (2026-09-10)
 
 The [browsing-context lifecycle phase](2026-09-08_realms_plan.md#phase-browsing-context-lifecycle-2026-09-10)

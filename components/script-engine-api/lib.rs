@@ -128,6 +128,46 @@ pub type HostData = Rc<dyn Any>;
 
 /// A JavaScript VM instance. Engine-native value/context/callback types deliberately
 /// do **not** appear on this trait — they live inside each backend crate.
+/// The traps a [`WindowProxy`][ScriptEngine::new_window_proxy_in_realm] handler
+/// resolves lazily. Every essential internal method an HTML `WindowProxy`
+/// overrides, which is all of them except `[[Call]]` and `[[Construct]]` - a
+/// `Window` is not callable.
+pub const WINDOW_PROXY_TRAPS: [&str; 11] = [
+    "get",
+    "set",
+    "has",
+    "deleteProperty",
+    "ownKeys",
+    "getOwnPropertyDescriptor",
+    "defineProperty",
+    "getPrototypeOf",
+    "setPrototypeOf",
+    "isExtensible",
+    "preventExtensions",
+];
+
+/// Where a `WindowProxy`'s shadow object carries the realm of the script that
+/// is touching the proxy right now. Each of the eleven native trap getters
+/// stamps it on the way in: a `Proxy`'s internal methods do not switch realms,
+/// so the getter runs in the accessing script's realm, and that is the only
+/// moment the identity of the asker is available. The JavaScript handler reads
+/// it first thing, and nothing runs between the getter and the trap call.
+pub const WINDOW_PROXY_ACCESS_SLOT: &str = "__windowProxyAccess";
+
+/// Where a `WindowProxy`'s shadow object carries the JavaScript handler object
+/// the native traps forward to. The runtime defines it during the realm's
+/// window-proxy bootstrap; before that the property is absent and the proxy is
+/// transparent to the shadow, which is why nothing but that bootstrap may run
+/// in the window between installing the proxy and installing the handler.
+pub const WINDOW_PROXY_HANDLER_SLOT: &str = "__windowProxyHandler";
+
+/// Where a `WindowProxy`'s native handler carries the shadow object it reads
+/// [`WINDOW_PROXY_HANDLER_SLOT`] from, and where the realm's global object
+/// carries that same shadow until the runtime's bootstrap takes it. The native
+/// handler is never exposed to script; this is how a captureless native
+/// accessor finds its way back.
+pub const WINDOW_PROXY_TARGET_SLOT: &str = "__windowProxyTarget";
+
 pub trait ScriptEngine: Sized {
     /// A handle to a JS value. For engines whose values are GC-scoped (Nova), this is
     /// a *rooted* handle so it can be held across calls; for others it is the native
@@ -509,6 +549,37 @@ pub trait ScriptEngine: Sized {
         Err(RealmError::Unsupported)
     }
 
+    /// Finish the global-`this` initialization of the realm `cx` is currently
+    /// in, installing `value` as that realm's global `this`.
+    ///
+    /// Realm creation is in two halves on both engines. The first is a hook
+    /// that runs *during* creation, which is too early for a global `this`
+    /// that has to be built with a live engine - HTML's `WindowProxy` is
+    /// exactly that, because its traps forward to whichever `Window` the
+    /// browsing context currently holds. This is the second half, and the host
+    /// calls it as soon as the realm exists.
+    ///
+    /// It is an initialization, not a setter. A backend refuses it once the
+    /// realm's global `this` is fixed, which happens on the first successful
+    /// call and on the first time any code runs in the realm, whichever comes
+    /// first: after that, a call frame may already have cached the `this` it
+    /// was entered with and running script may hold the original object, so a
+    /// swap would leave the realm incoherent rather than re-pointed. Callers
+    /// must therefore run it before any authored script.
+    ///
+    /// Within that window the realm's `globalThis` binding, the `this` of
+    /// global code and the substituted `this` of a sloppy-mode call all
+    /// resolve to `value`. The global *object* is unchanged: `var` bindings,
+    /// and everything the host installed with
+    /// [`set_global_from_call`](Self::set_global_from_call), still land on it,
+    /// and the proxy forwards to it.
+    fn finish_global_this_from_call(
+        _cx: &mut Self::CallCx<'_>,
+        _value: &Self::Value,
+    ) -> Result<(), RealmError> {
+        Err(RealmError::Unsupported)
+    }
+
     /// Whether this backend can create realms at all. Cheap to ask, so a host
     /// can choose a degraded path before it starts building one.
     fn supports_realms(&self) -> bool {
@@ -538,6 +609,60 @@ pub trait ScriptEngine: Sized {
     /// another realm. This is the primitive `contentWindow` is built from: a
     /// same-origin parent receives the child's actual global, not a copy.
     fn realm_global(&mut self, _realm: RealmId) -> Result<Self::Value, RealmError> {
+        Err(RealmError::Unsupported)
+    }
+
+    /// [`new_window_proxy_in_realm`](Self::new_window_proxy_in_realm), over the
+    /// global object of the realm `cx` is currently in. This is the entry a
+    /// child browsing context uses, because its realm is created inside a
+    /// callback and never exists outside one until it is finished.
+    fn new_window_proxy_from_call(_cx: &mut Self::CallCx<'_>) -> Result<Self::Value, RealmError> {
+        Err(RealmError::Unsupported)
+    }
+
+    /// Build the `WindowProxy` for the browsing context whose current realm is
+    /// `realm`, over that realm's global object.
+    ///
+    /// The object comes back before any script has run in the realm, which is
+    /// the whole point: HTML's `WindowProxy` is the identity a parent takes
+    /// when it reads `contentWindow`, and it has to exist and be the realm's
+    /// global `this` from the realm's first instruction. Its behaviour does
+    /// not have to exist that early, and cannot: the semantics are written in
+    /// the runtime's own JavaScript, which has not been evaluated yet.
+    ///
+    /// So the traps are resolved on each use rather than captured. The handler
+    /// this builds is an ordinary object whose trap properties are native
+    /// accessors; each one reads the global object's
+    /// [`WINDOW_PROXY_HANDLER_SLOT`] and answers with the same-named property
+    /// of whatever it finds. Until the runtime installs a handler there every
+    /// trap reads back `undefined`, which is an absent trap - so the proxy is
+    /// exactly its target, and the bootstrap that runs through it lands on the
+    /// global object as if the proxy were not there. From the moment the slot
+    /// is filled, every operation goes to the installed handler.
+    ///
+    /// The `[[ProxyTarget]]` is a small shadow object built here alongside the
+    /// proxy, and stays that object for the proxy's life. It is deliberately
+    /// *not* the realm's global object: a navigation replaces the realm, the
+    /// installed handler forwards to whichever `Window` the context holds now,
+    /// and the shadow carries only the mirrors a `Proxy`'s invariants demand.
+    /// Nothing then retains the outgoing realm, so it can be discarded.
+    ///
+    /// The shadow is published on `realm`'s global object under
+    /// [`WINDOW_PROXY_TARGET_SLOT`], which is how the runtime's own bootstrap -
+    /// the only code that runs before the proxy has a handler - reaches it. The
+    /// bootstrap deletes the slot once it has.
+    fn new_window_proxy_in_realm(&mut self, _realm: RealmId) -> Result<Self::Value, RealmError> {
+        Err(RealmError::Unsupported)
+    }
+
+    /// [`finish_global_this_from_call`](Self::finish_global_this_from_call), as
+    /// an outer entry. This is how the top-level realm - which no callback
+    /// creates - receives its `WindowProxy`.
+    fn finish_global_this_in_realm(
+        &mut self,
+        _realm: RealmId,
+        _value: &Self::Value,
+    ) -> Result<(), RealmError> {
         Err(RealmError::Unsupported)
     }
 

@@ -273,6 +273,12 @@ pub struct HistoryEntry {
     /// cross-agent wire. `None` is the null state a plain navigation leaves.
     pub state: Option<String>,
     pub title: Option<String>,
+    /// Which of the context's documents this entry belongs to. HTML decides
+    /// whether a traversal keeps the document by comparing *document*
+    /// identity, not URLs: `pushState` can move the URL anywhere within the
+    /// same document, and two entries can share a URL across a reload. The
+    /// context stamps this, and only a real navigation advances it.
+    pub document: u64,
 }
 
 impl HistoryEntry {
@@ -281,7 +287,15 @@ impl HistoryEntry {
             url: url.into(),
             state: None,
             title: None,
+            document: 0,
         }
+    }
+
+    /// The same entry, stamped as belonging to document `serial`.
+    #[must_use]
+    pub fn in_document(mut self, serial: u64) -> Self {
+        self.document = serial;
+        self
     }
 }
 
@@ -408,6 +422,11 @@ pub struct BrowsingContext {
     /// Permissions Policy container-policy algorithm is a named residual.
     allow: String,
     loading: FrameLoading,
+    /// Which document this context is showing, counted rather than named.
+    /// Every real navigation advances it; a fragment navigation, a
+    /// `pushState` and a `replaceState` do not, which is exactly the
+    /// distinction a traversal needs.
+    document_serial: u64,
 }
 
 impl BrowsingContext {
@@ -463,13 +482,38 @@ impl BrowsingContext {
     /// does: the first navigation *out of* an initial `about:blank` replaces
     /// its entry, and every later one pushes.
     pub fn navigate(&mut self, document: ActiveDocument) {
-        let entry = HistoryEntry::for_url(document.url.clone());
-        if self.document.initial_about_blank {
+        self.navigate_with(document, false);
+    }
+
+    /// [`navigate`](Self::navigate) with an explicit replacement flag, which is
+    /// what `location.replace()` and a `replace`-flavoured traversal need. An
+    /// initial `about:blank` replaces regardless: HTML's history-handling
+    /// behaviour for the first navigation out of one is "replace" whatever the
+    /// caller asked for.
+    /// Which document this context is showing. Stamp a `pushState` entry with
+    /// it, and a traversal to an entry carrying it keeps the document.
+    pub fn document_serial(&self) -> u64 {
+        self.document_serial
+    }
+
+    pub fn navigate_with(&mut self, document: ActiveDocument, replace: bool) {
+        self.document_serial += 1;
+        let entry = HistoryEntry::for_url(document.url.clone()).in_document(self.document_serial);
+        if replace || self.document.initial_about_blank {
             self.history.replace(entry);
         } else {
             self.history.push(entry);
         }
         self.document = document;
+    }
+
+    /// Adopt `url` without touching the session history: a fragment navigation
+    /// and a `replaceState` both move the document's URL under a history entry
+    /// the caller has already positioned.
+    pub fn set_document_url(&mut self, url: impl Into<String>) {
+        let url = url.into();
+        self.document.initial_about_blank = false;
+        self.document.url = url;
     }
 }
 
@@ -521,6 +565,7 @@ impl BrowsingContextTree {
             sandbox: SandboxFlags::NONE,
             allow: String::new(),
             loading: FrameLoading::Eager,
+            document_serial: 0,
         });
         tree.top = top;
         tree
@@ -618,6 +663,7 @@ impl BrowsingContextTree {
             sandbox,
             allow: attributes.allow.clone().unwrap_or_default(),
             loading: FrameLoading::parse(attributes.loading.as_deref()),
+            document_serial: 0,
         });
         self.get_mut(parent)?.children.push(id);
         Some(id)
@@ -921,6 +967,7 @@ mod tests {
             url: "https://example.com/a".into(),
             state: Some("{\"n\":1}".into()),
             title: None,
+            document: 0,
         });
         // The forward entries b and c are gone.
         assert_eq!(history.len(), 2);
@@ -930,6 +977,7 @@ mod tests {
             url: "https://example.com/a".into(),
             state: Some("{\"n\":2}".into()),
             title: None,
+            document: 0,
         });
         assert_eq!(history.len(), 2);
         assert_eq!(history.current().state.as_deref(), Some("{\"n\":2}"));

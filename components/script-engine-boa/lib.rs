@@ -19,16 +19,112 @@ use boa_engine::{
     class::{Class, ClassBuilder},
     module::{Module, ModuleLoader, ModuleRequest, Referrer},
     object::{
-        WeakJsObject,
-        builtins::{JsFunction, JsPromise},
+        FunctionObjectBuilder, WeakJsObject,
+        builtins::{JsFunction, JsPromise, JsProxy},
     },
+    property::PropertyDescriptor,
     realm::Realm,
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 use script_engine_api::{
     Budget, CallCx, HostData, MAIN_REALM, NativeFn, PromiseToken, PumpOutcome, RealmError, RealmId,
-    ReflectorData, ScriptEngine, ScriptEngineLive,
+    ReflectorData, ScriptEngine, ScriptEngineLive, WINDOW_PROXY_ACCESS_SLOT,
+    WINDOW_PROXY_HANDLER_SLOT, WINDOW_PROXY_TARGET_SLOT, WINDOW_PROXY_TRAPS,
 };
+
+/// One `WindowProxy` handler trap, as a native accessor.
+///
+/// Monomorphized per trap index so each trap gets its own fn pointer, which is
+/// what lets a captureless native function know which trap it is. `this` is the
+/// handler object the proxy machinery just did a `[[Get]]` on; from there the
+/// target global object, and from that the runtime's installed handler.
+fn window_proxy_trap<const INDEX: usize>(
+    this: &JsValue,
+    _args: &[JsValue],
+    ctx: &mut Context,
+) -> JsResult<JsValue> {
+    let Some(handler) = this.as_object() else {
+        return Ok(JsValue::undefined());
+    };
+    let target = handler.get(JsString::from(WINDOW_PROXY_TARGET_SLOT), ctx)?;
+    let Some(target) = target.as_object() else {
+        return Ok(JsValue::undefined());
+    };
+    // Who is asking. A Proxy's internal methods do not switch realms, but
+    // *calling a native function does*: this getter is a builtin of the realm
+    // the proxy was built in, so the accessing script's realm is the native
+    // caller's, not the current one. That is what the handler's cross-origin
+    // branch decides against.
+    let accessing = ctx
+        .native_caller_realm()
+        .and_then(|realm| realm.host_defined().get::<RealmSlot>().map(|slot| slot.id))
+        .unwrap_or_else(|| realm_id_of(ctx));
+    let accessing = JsString::from(accessing.to_string());
+    target.create_data_property(
+        JsString::from(WINDOW_PROXY_ACCESS_SLOT),
+        JsValue::from(accessing),
+        ctx,
+    )?;
+    let installed = target.get(JsString::from(WINDOW_PROXY_HANDLER_SLOT), ctx)?;
+    let Some(installed) = installed.as_object() else {
+        return Ok(JsValue::undefined());
+    };
+    installed.get(JsString::from(WINDOW_PROXY_TRAPS[INDEX]), ctx)
+}
+
+/// Build a `WindowProxy` over a fresh shadow object, in `ctx`'s current realm.
+/// See [`ScriptEngine::new_window_proxy_in_realm`] for what the shape is for.
+fn build_window_proxy(ctx: &mut Context) -> JsResult<JsValue> {
+    let shadow = JsObject::with_null_proto();
+    // The runtime's window-proxy bootstrap is the only code that can run
+    // before this proxy has a handler, and the proxy is transparent to the
+    // shadow until then, so this is the one way it can reach it.
+    ctx.global_object().create_data_property_or_throw(
+        JsString::from(WINDOW_PROXY_TARGET_SLOT),
+        JsValue::from(shadow.clone()),
+        ctx,
+    )?;
+    let handler = JsObject::with_null_proto();
+    handler.create_data_property_or_throw(
+        JsString::from(WINDOW_PROXY_TARGET_SLOT),
+        JsValue::from(shadow.clone()),
+        ctx,
+    )?;
+    for (index, trap) in WINDOW_PROXY_TRAPS.iter().enumerate() {
+        let getter = FunctionObjectBuilder::new(
+            ctx.realm(),
+            NativeFunction::from_fn_ptr(WINDOW_PROXY_TRAP_FNS[index]),
+        )
+        .length(0)
+        .name(JsString::from(*trap))
+        .build();
+        handler.define_property_or_throw(
+            JsString::from(*trap),
+            PropertyDescriptor::builder()
+                .get(getter)
+                .enumerable(false)
+                .configurable(false),
+            ctx,
+        )?;
+    }
+    let proxy = JsProxy::with_handler(&JsValue::from(shadow), &JsValue::from(handler), ctx)?;
+    Ok(JsValue::from(JsObject::from(proxy)))
+}
+
+/// The eleven `window_proxy_trap` instantiations, in [`WINDOW_PROXY_TRAPS`] order.
+const WINDOW_PROXY_TRAP_FNS: [fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>; 11] = [
+    window_proxy_trap::<0>,
+    window_proxy_trap::<1>,
+    window_proxy_trap::<2>,
+    window_proxy_trap::<3>,
+    window_proxy_trap::<4>,
+    window_proxy_trap::<5>,
+    window_proxy_trap::<6>,
+    window_proxy_trap::<7>,
+    window_proxy_trap::<8>,
+    window_proxy_trap::<9>,
+    window_proxy_trap::<10>,
+];
 
 /// Native-data reflector (Appendix A Finding 2): a JS object carrying only the host
 /// [`ReflectorData`]. The DOM node's data lives in the host arena, never the JS heap.
@@ -984,6 +1080,26 @@ impl ScriptEngine for BoaEngine {
         Ok(global)
     }
 
+    fn new_window_proxy_from_call(cx: &mut Self::CallCx<'_>) -> Result<Self::Value, RealmError> {
+        build_window_proxy(cx.ctx).map_err(|e| RealmError::Engine(format!("{e:?}")))
+    }
+
+    fn finish_global_this_from_call(
+        cx: &mut Self::CallCx<'_>,
+        value: &Self::Value,
+    ) -> Result<(), RealmError> {
+        let object = value
+            .as_object()
+            .ok_or(RealmError::Refused(
+                "the global this value must be an object",
+            ))?
+            .clone();
+        let realm = cx.ctx.realm().clone();
+        realm
+            .finish_global_this_initialization(object, cx.ctx)
+            .map_err(|e| RealmError::Engine(format!("{e:?}")))
+    }
+
     fn set_global_from_call(
         cx: &mut Self::CallCx<'_>,
         name: &str,
@@ -1056,6 +1172,37 @@ impl ScriptEngine for BoaEngine {
         // just entered. Recorded rather than patched: the fork under
         // `Code/crates/boa` is outside this lane.
         self.with_realm(realm, |ctx| JsValue::from(ctx.global_object()))
+    }
+
+    fn new_window_proxy_in_realm(&mut self, realm: RealmId) -> Result<Self::Value, RealmError> {
+        self.with_realm(realm, build_window_proxy)?
+            .map_err(|e| RealmError::Engine(format!("{e:?}")))
+    }
+
+    fn finish_global_this_in_realm(
+        &mut self,
+        realm: RealmId,
+        value: &Self::Value,
+    ) -> Result<(), RealmError> {
+        let object = value
+            .as_object()
+            .ok_or(RealmError::Refused(
+                "the global this value must be an object",
+            ))?
+            .clone();
+        let target = self
+            .registry
+            .realms
+            .borrow()
+            .get(&realm)
+            .cloned()
+            .ok_or(RealmError::NoSuchRealm(realm))?;
+        let previous = self.ctx.enter_realm(target.clone());
+        let result = target
+            .finish_global_this_initialization(object, &mut self.ctx)
+            .map_err(|e| RealmError::Engine(format!("{e:?}")));
+        let _ = self.ctx.enter_realm(previous);
+        result
     }
 
     fn set_global_in_realm(

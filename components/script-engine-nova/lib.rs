@@ -21,10 +21,11 @@ mod native {
         ecmascript::{
             AbstractModule, Agent, AgentOptions, ArgumentsList, Behaviour, BuiltinFunctionArgs,
             EmbedderObject, ExceptionType, Function, GcAgent, GraphLoadingStateRecord, HostDefined,
-            HostHooks, InternalMethods, Job, JsError, ModuleRequest, Object, PromiseCapability,
-            PropertyDescriptor, PropertyKey, Realm, RealmRoot, Referrer, SourceTextModule,
-            String as JsString, Value, clear_weak_ref_kept_objects, create_builtin_function,
-            finish_loading_imported_module, parse_module, parse_script, script_evaluation,
+            HostHooks, InternalMethods, Job, JsError, ModuleRequest, Object, OrdinaryObject,
+            PromiseCapability, PropertyDescriptor, PropertyKey, Realm, RealmRoot, Referrer,
+            RegularFn, SourceTextModule, String as JsString, Value, clear_weak_ref_kept_objects,
+            create_builtin_function, finish_loading_imported_module, parse_module, parse_script,
+            proxy_create, script_evaluation,
         },
         engine::{Bindable, GcScope, Global, NoGcScope},
     };
@@ -175,6 +176,8 @@ mod native {
     use script_engine_api::{
         Budget, CallCx, HostData, MAIN_REALM, NativeFn, PromiseToken, PumpOutcome, RealmError,
         RealmId, ReflectorData, ScriptEngine, ScriptEngineLive, ScriptEngineSnapshot,
+        WINDOW_PROXY_ACCESS_SLOT, WINDOW_PROXY_HANDLER_SLOT, WINDOW_PROXY_TARGET_SLOT,
+        WINDOW_PROXY_TRAPS,
     };
 
     /// A queue of `Global`s awaiting release. Nova's `Global` has no `Drop` (freeing
@@ -654,6 +657,163 @@ mod native {
     /// Bare `fn`-pointer trampoline, monomorphized per `F` (Nova builtins capture
     /// nothing; state arrives via host-defined data + the reflector args). Roots the
     /// arguments, runs `F` against a [`NovaCallCx`], then maps the result back.
+    /// One `WindowProxy` handler trap, as a native accessor.
+    ///
+    /// Monomorphized per trap index so each trap gets its own fn pointer, which
+    /// is what lets a captureless native function know which trap it is. `this`
+    /// is the handler object the proxy machinery just did a `[[Get]]` on; from
+    /// there the target global object, and from that the runtime's installed
+    /// handler.
+    fn window_proxy_trap<'gc, const INDEX: usize>(
+        agent: &mut Agent,
+        this: Value,
+        _args: ArgumentsList,
+        mut gc: GcScope<'gc, '_>,
+    ) -> nova_vm::ecmascript::JsResult<'gc, Value<'gc>> {
+        fn read(agent: &mut Agent, object: Value, name: &str, mut gc: GcScope) -> Value<'static> {
+            let Ok(object) = Object::try_from(object.unbind()) else {
+                return Value::Undefined;
+            };
+            let object = object.unbind();
+            let key = PropertyKey::from_str(agent, name, gc.nogc()).unbind();
+            match object.internal_get(agent, key, object.into(), gc.reborrow()) {
+                Ok(value) => value.unbind(),
+                Err(_) => Value::Undefined,
+            }
+        }
+        fn write(agent: &mut Agent, object: Value, name: &str, value: &str, mut gc: GcScope) {
+            let Ok(object) = Object::try_from(object.unbind()) else {
+                return;
+            };
+            let object = object.unbind();
+            let key = PropertyKey::from_str(agent, name, gc.nogc()).unbind();
+            let text = JsString::from_str(agent, value, gc.nogc()).unbind();
+            let desc = PropertyDescriptor {
+                value: Some(text.into()),
+                writable: Some(true),
+                enumerable: Some(false),
+                configurable: Some(true),
+                ..Default::default()
+            };
+            let _ = object.internal_define_own_property(agent, key, desc, gc.reborrow());
+        }
+        let target = read(agent, this, WINDOW_PROXY_TARGET_SLOT, gc.reborrow());
+        // Who is asking. A Proxy's internal methods do not switch realms, but
+        // *calling a native function does*: this getter is a builtin of the
+        // realm the proxy was built in, so the accessing script's realm is the
+        // native caller's, not the current one. That is what the handler's
+        // cross-origin branch decides against.
+        let accessing = agent
+            .native_caller_realm(gc.nogc())
+            .and_then(|realm| realm.host_defined(agent))
+            .and_then(|hd| hd.downcast_ref::<NovaHostSlot>().map(|slot| slot.id))
+            .or_else(|| {
+                agent
+                    .current_realm(gc.nogc())
+                    .host_defined(agent)
+                    .and_then(|hd| hd.downcast_ref::<NovaHostSlot>().map(|slot| slot.id))
+            })
+            .unwrap_or(MAIN_REALM);
+        write(
+            agent,
+            target,
+            WINDOW_PROXY_ACCESS_SLOT,
+            &accessing.to_string(),
+            gc.reborrow(),
+        );
+        let installed = read(agent, target, WINDOW_PROXY_HANDLER_SLOT, gc.reborrow());
+        let trap = read(agent, installed, WINDOW_PROXY_TRAPS[INDEX], gc.reborrow());
+        Ok(trap.bind(gc.into_nogc()))
+    }
+
+    /// Build a `WindowProxy` over a fresh shadow object, in `realm`. See
+    /// [`ScriptEngine::new_window_proxy_in_realm`] for what the shape is for.
+    fn build_window_proxy(
+        agent: &mut Agent,
+        realm: Realm,
+        mut gc: GcScope,
+    ) -> Result<Value<'static>, RealmError> {
+        let realm = realm.unbind();
+        let global = realm.bind(gc.nogc()).global_object(agent).unbind();
+        let Ok(shadow) = OrdinaryObject::create_object(agent, None, &[]) else {
+            return Err(RealmError::Engine(
+                "could not allocate a window-proxy shadow".to_string(),
+            ));
+        };
+        let shadow = shadow.unbind();
+        // The runtime's window-proxy bootstrap is the only code that can run
+        // before this proxy has a handler, and the proxy is transparent to the
+        // shadow until then, so this is the one way it can reach it.
+        let key = PropertyKey::from_str(agent, WINDOW_PROXY_TARGET_SLOT, gc.nogc()).unbind();
+        let desc = PropertyDescriptor {
+            value: Some(shadow.into()),
+            writable: Some(true),
+            enumerable: Some(false),
+            configurable: Some(true),
+            ..Default::default()
+        };
+        if global
+            .internal_define_own_property(agent, key, desc, gc.reborrow())
+            .is_err()
+        {
+            return Err(RealmError::Engine("define_own_property threw".to_string()));
+        }
+        let handler = OrdinaryObject::create_empty_object(agent, gc.nogc()).unbind();
+        let key = PropertyKey::from_str(agent, WINDOW_PROXY_TARGET_SLOT, gc.nogc()).unbind();
+        let desc = PropertyDescriptor {
+            value: Some(shadow.into()),
+            ..Default::default()
+        };
+        if handler
+            .internal_define_own_property(agent, key, desc, gc.reborrow())
+            .is_err()
+        {
+            return Err(RealmError::Engine("define_own_property threw".to_string()));
+        }
+        for (index, trap) in WINDOW_PROXY_TRAPS.iter().enumerate() {
+            let getter = create_builtin_function(
+                agent,
+                Behaviour::Regular(WINDOW_PROXY_TRAP_FNS[index]),
+                BuiltinFunctionArgs::new_with_realm(0, trap, realm.bind(gc.nogc())),
+                gc.nogc(),
+            )
+            .unbind();
+            let key = PropertyKey::from_str(agent, trap, gc.nogc()).unbind();
+            let desc = PropertyDescriptor {
+                get: Some(Some(Function::from(getter))),
+                enumerable: Some(false),
+                configurable: Some(false),
+                ..Default::default()
+            };
+            if handler
+                .internal_define_own_property(agent, key, desc, gc.reborrow())
+                .is_err()
+            {
+                return Err(RealmError::Engine("define_own_property threw".to_string()));
+            }
+        }
+        match proxy_create(agent, shadow.into(), handler.into(), gc.nogc()) {
+            Ok(proxy) => Ok(Value::from(proxy).unbind()),
+            Err(_) => Err(RealmError::Engine("proxy_create threw".to_string())),
+        }
+    }
+
+    /// The eleven `window_proxy_trap` instantiations, in [`WINDOW_PROXY_TRAPS`]
+    /// order.
+    const WINDOW_PROXY_TRAP_FNS: [RegularFn; 11] = [
+        window_proxy_trap::<0>,
+        window_proxy_trap::<1>,
+        window_proxy_trap::<2>,
+        window_proxy_trap::<3>,
+        window_proxy_trap::<4>,
+        window_proxy_trap::<5>,
+        window_proxy_trap::<6>,
+        window_proxy_trap::<7>,
+        window_proxy_trap::<8>,
+        window_proxy_trap::<9>,
+        window_proxy_trap::<10>,
+    ];
+
     fn nova_trampoline<'gc, F: NativeFn<NovaEngine>>(
         agent: &mut Agent,
         this: Value,
@@ -1703,6 +1863,28 @@ mod native {
             ))
         }
 
+        fn new_window_proxy_from_call(
+            cx: &mut Self::CallCx<'_>,
+        ) -> Result<Self::Value, RealmError> {
+            let realm = cx.agent.current_realm(cx.gc.nogc()).unbind();
+            let value = build_window_proxy(cx.agent, realm, cx.gc.reborrow())?;
+            Ok(NovaValue::new(Global::new(cx.agent, value), &cx.release))
+        }
+
+        fn finish_global_this_from_call(
+            cx: &mut Self::CallCx<'_>,
+            value: &Self::Value,
+        ) -> Result<(), RealmError> {
+            let object = Object::try_from(value.get(cx.agent, cx.gc.nogc()).unbind())
+                .map_err(|_| RealmError::Refused("the global this value must be an object"))?;
+            let realm = cx.agent.current_realm(cx.gc.nogc()).unbind();
+            realm
+                .finish_global_this_initialization(cx.agent, object.unbind(), cx.gc.reborrow())
+                .map_err(|_| {
+                    RealmError::Engine("finish_global_this_initialization threw".to_string())
+                })
+        }
+
         fn set_global_from_call(
             cx: &mut Self::CallCx<'_>,
             name: &str,
@@ -1849,6 +2031,64 @@ mod native {
                 let global = target.bind(gc.nogc()).global_object(agent).unbind();
                 let g = Global::new(agent, Value::from(global).unbind());
                 out = Ok(NovaValue::new(g, &release));
+            });
+            out
+        }
+
+        fn new_window_proxy_in_realm(&mut self, realm: RealmId) -> Result<Self::Value, RealmError> {
+            if !self.registry.realms.borrow().contains_key(&realm) {
+                return Err(RealmError::NoSuchRealm(realm));
+            }
+            let registry = self.registry.clone();
+            let release = self.release.clone();
+            let mut out = Err(RealmError::Engine(
+                "new_window_proxy_in_realm did not run".to_string(),
+            ));
+            self.agent.run_in_realm(&self.realm, |agent, mut gc| {
+                let target = registry
+                    .realms
+                    .borrow()
+                    .get(&realm)
+                    .expect("checked realm")
+                    .get(agent, gc.nogc())
+                    .unbind();
+                out = build_window_proxy(agent, target, gc.reborrow())
+                    .map(|value| NovaValue::new(Global::new(agent, value), &release));
+            });
+            out
+        }
+
+        fn finish_global_this_in_realm(
+            &mut self,
+            realm: RealmId,
+            value: &Self::Value,
+        ) -> Result<(), RealmError> {
+            if !self.registry.realms.borrow().contains_key(&realm) {
+                return Err(RealmError::NoSuchRealm(realm));
+            }
+            let registry = self.registry.clone();
+            let mut out = Err(RealmError::Engine(
+                "finish_global_this_in_realm did not run".to_string(),
+            ));
+            self.agent.run_in_realm(&self.realm, |agent, mut gc| {
+                let target = registry
+                    .realms
+                    .borrow()
+                    .get(&realm)
+                    .expect("checked realm")
+                    .get(agent, gc.nogc())
+                    .unbind();
+                let Ok(object) = Object::try_from(value.get(agent, gc.nogc()).unbind()) else {
+                    out = Err(RealmError::Refused(
+                        "the global this value must be an object",
+                    ));
+                    return;
+                };
+                out = target
+                    .finish_global_this_initialization(agent, object.unbind(), gc.reborrow())
+                    .map_err(|_| {
+                        RealmError::Engine("finish_global_this_initialization threw".to_string())
+                    });
             });
             out
         }

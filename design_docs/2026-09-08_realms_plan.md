@@ -1,26 +1,30 @@
 # Realms: one agent, one realm per browsing context
 
-**Status:** browsing-context lifecycle landed on top of ordinary cross-arena
-adoption and the owner-resolved accessor; broad DOM guard remains red,
-2026-09-10. HTML's iframe removing steps are implemented in their two halves -
-the container loses its content navigable synchronously, the document is
-unloaded and the realm discarded in a queued task - and that one mechanism
-carries live iframe relocation, browsing-context relocation and removed-frame
-teardown together. The release runtime suite passes 526 tests with **zero
-ignored**: the two live-iframe fixtures are un-ignored and passing on both
-engines. The lifecycle census gains 8 named subtests across eight directories
-with zero pass-to-fail movements, including all four `move_iframe_in_dom` files.
-One forward-only repin (`dom_abort_boa`, one entry); twelve of fourteen
-testharness slices and both reftest guards are `unexpected=0`, and both Ortet
-receipts are unchanged. `dom` and `dom/nodes` stay red and unrepinned for the
-one protected loss, `Node-isConnected.html: Test with iframes`, whose cause is
-now isolated to the parsing-time refusal in `preflight_subtree_transfer_to`
-rather than to iframes. **Navigation with a stable `WindowProxy` is open and
-waiting on Mark's ruling**, not partially built: there is no navigation
-algorithm in this stack at all, and the proxy changes object identity stack-wide.
-Full G5 and associated shadow/template transfers also remain open. Earlier
-phases below retain their historical results; final acceptance is recorded at
-the end of this plan.
+**Status:** WindowProxy and navigation landed on the working tree, 2026-09-11;
+broad DOM guard remains red. A browsing context now holds one `WindowProxy` for
+its life, built natively before its realm's first instruction over a shadow
+target that retains no global, with the cross-origin decision made *inside* the
+one object per accessing realm. A child navigates for real - `iframe.src`,
+`location.href` / `assign` / `replace` / `reload`, and `contentWindow.location`
+from the parent - through unload, a new realm, a new `Document`, a proxy rebind
+and an interleaved parse, with fragment navigation keeping the document and
+firing `hashchange`, and session history moved onto the browsing-context crate
+with `popstate`. The outgoing realm is discarded every time, **including the
+realm the proxy was built in**: both engines keep the handler, the shadow and the
+control function alive after it goes, so no realm is retained. The release
+runtime suite passes **542 tests with zero ignored**. The navigation census gains
+19 named subtests and twelve files across nine directories with two
+pass-to-nonpass movements, both former vacuous passes and both explained; **no
+repins**, twelve of fifteen testharness slices and both reftest guards at
+`unexpected=0`, every red one carrying the count it inherited, and both Ortet
+receipts unchanged. **The top-level realm is not replaced**: `MAIN_REALM` is the
+agent's root host, the resolution target of every `Runtime` entry point and the
+one realm the engine refuses to discard, so replacing it is a `Runtime` API lane
+rather than a navigation one - the host policy hook that gates a top-level
+navigation exists and the document URL and session history move, but the realm
+does not. Full G5 and associated shadow/template transfers also remain open.
+Earlier phases below retain their historical results; final acceptance is
+recorded at the end of this plan.
 
 **Parent:** [iframes and nested browsing contexts](2026-09-08_iframes_plan.md),
 whose Â§4 named the realm decision as Mark's and left `contentWindow` a stub
@@ -1490,3 +1494,303 @@ records that as a decision rather than a task. It does not lift the parsing-time
 adoption refusal. It does not widen the adoption boundary for `object`, `embed`
 or `canvas`, or for associated template and shadow trees. It does not touch full
 G5 or headed acceptance.
+
+---
+
+## Phase: WindowProxy and navigation, 2026-09-11
+
+The `WindowProxy` the previous phase declined to build, and the navigation
+algorithm it was waiting on. Genet commit at phase start and end:
+`a0b1b4f20eb` — nothing is committed; the whole phase is the working tree,
+banked as `testing/genet/wpt-ledger/2026-09-10_windowproxy_navigation/genet-working-tree.patch`.
+
+Forks, both unchanged by this phase and both needing a push before any of this
+can be committed:
+
+| Fork | Path | Branch | Commit |
+|---|---|---|---|
+| Boa | `crates/boa` | `genet-windowproxy` | `091d5543` |
+| Vano | `crates/vano` | `genet-windowproxy` | `3101fb63` |
+
+### The design, as Mark ruled it
+
+Three questions were open at the end of §6 of the lifecycle phase. All three
+are answered, and all three are implemented as answered.
+
+#### A. One WindowProxy per context; the cross-origin decision lives inside it
+
+There is no second object for a cross-origin window. HTML's own shape is one
+`WindowProxy` per browsing context that answers *differently depending on who is
+asking*, and it has to be: `frame.contentWindow === frame.contentWindow` must
+hold across a navigation that changes the frame's origin, so the object cannot
+be swapped for a façade when the origin changes. The old per-viewer façade,
+`__makeCrossOriginWindow`, is deleted; `view_from` now returns the context's one
+proxy whoever is looking, and `viewer` stops being a parameter of *which*
+object and becomes only a parameter of what it will say.
+
+Who is asking is captured where it is available and nowhere else. The eleven
+native trap getters live in genet's adapters, not in the forks, and each one
+stamps the accessing realm on the proxy's shadow before handing the trap over
+(`WINDOW_PROXY_ACCESS_SLOT`). One correction to the design as stated: a Proxy's
+internal methods do not switch realms, but **calling a native function does** —
+the getter is a builtin of the realm the proxy was built in, so the accessing
+realm is `native_caller_realm()`, not `current_realm()`. Both adapters read the
+caller and fall back to the current realm. The first cut read the current realm
+and every cross-origin access was admitted; `cross_arena_adoption.rs`'s
+opaque-origin fixture caught it.
+
+Nothing runs between the getter and the trap call, so a single slot is enough
+and the handler reads it first.
+
+The JavaScript handler then decides, through the browsing-context tree, by
+calling the host hook the runtime hands it (`__windowProxyHost`), whose six
+operations are `sameOrigin`, `denied`, `property`, `named`, `post` and
+`navigate`. `denied` builds the `SecurityError` with the **accessing** realm's
+intrinsics, so `instanceof DOMException` holds on the side that catches it. The
+hook is a native of the realm currently behind the proxy and is replaced on
+every navigation, so it never outlives its realm.
+
+`CrossOriginProperties(W)` is the full thirteen — `window`, `self`, `location`,
+`close`, `closed`, `focus`, `blur`, `frames`, `length`, `top`, `opener`,
+`parent`, `postMessage` — plus indexed and named child contexts. Everything
+else is a `SecurityError`, with HTML's four-key fallback (`then` and the three
+well-known symbols) answering `undefined` so a cross-origin window is not
+thenable and does not break `Object.prototype.toString`. `[[OwnPropertyKeys]]`
+reports indexes, then the thirteen, then `then` and the three symbols;
+`[[GetPrototypeOf]]` is null; `[[SetPrototypeOf]]` is SetImmutablePrototype;
+`[[PreventExtensions]]` returns false. The cross-origin `Location` exposes
+`href` as a setter with no getter, and `replace`, and both navigate for real.
+Methods and the `Location` are cached per accessing realm — HTML's
+`CrossOriginPropertyDescriptorMap` — so `w.close === w.close` holds.
+
+#### B. Navigation replaces the realm at every level — with one honest exception
+
+A child navigation is: unload, new realm, new `Document`, proxy rebind,
+interleaved parse, `load` on the parent's iframe. That is implemented and
+measured.
+
+The host policy hook exists and is the only thing that makes a top-level
+navigation different: `Runtime::set_top_level_navigation_policy`, default allow,
+asked before a top-level navigation proceeds and never asked about a child.
+
+**The top-level realm is not replaced, and this phase could not make it so.**
+`MAIN_REALM` is not merely a realm id in this stack: `discard_realm_from_call`
+refuses it by contract, `hosts[&MAIN_REALM]` is the agent's root host,
+`view(MAIN_REALM)` is what `top` resolves to, `pending_main_load` keys the
+document-complete barrier to it, and — decisively — `Runtime::eval`,
+`Runtime::host`, `Runtime::parse_document_interleaved` and every embedder that
+uses them resolve against it. Replacing it means every one of those follows a
+*current top realm* that moves, which is a change to the `Runtime` API surface
+and to Ortet, `genet-scripted`, `genet-documents` and the WPT runner. That is
+not a change this lane can make behind the API, and it is not additive.
+
+So a top-level navigation here moves the document URL and joins the session
+history, and does not unload or replace the realm. The receipt is exactly that:
+`navigate_top_level` in `components/script-runtime-api/frames.rs`, which asks
+the policy hook and then does those two things. Retained size of the deviation:
+one realm, the top one, per agent — the same realm the engine already refuses to
+discard. Making it replaceable is its own lane, and it should be scoped as a
+`Runtime` change, not as a navigation change.
+
+#### C. The first realm is not retained — confirmed, on both engines
+
+The proxy's `[[ProxyTarget]]` is no longer the realm's global object. It is a
+small shadow object the adapter builds alongside the proxy (null prototype,
+same realm) which holds only the mirrors a `Proxy`'s invariants demand; the
+handler holds the current `[[Window]]` and forwards to it. The handler,
+the shadow and the control function the bootstrap returns are the only things
+that survive, and none of them is a global.
+
+The receipt is in `tests/navigation.rs`: a child is navigated three times, and
+after each one `runtime.host_in_realm(outgoing).is_err()` — the outgoing realm
+is discarded — while the proxy the parent took *before the first navigation*
+still answers with the new document. The first of those three outgoing realms is
+the proxy's own home realm, the one holding the handler closure, the shadow and
+the eleven native trap getters. **Both Boa and Nova keep all of it alive after
+that realm is discarded**, so the fallback the ruling allowed for is not needed
+and no realm is retained.
+
+Two mechanisms make that work, and both are worth naming:
+
+- The proxy is not reached through its home realm at all. The bootstrap
+  publishes nothing on any global; its completion value is a control function
+  (`'proxy'`, `'bind'`, `'window'`, `'host'`, `'descriptor'`) which the host
+  roots in `FrameState::window_proxies` as `Rc<dyn Any>`. An
+  `eval_in_realm(home, …)` would have failed the moment the home realm went.
+- Ordering. `finish_global_this_initialization` closes its window on the first
+  code that runs in the realm, so the sequence is: build the proxy over a fresh
+  shadow (no code), publish the global object and the shadow on the global
+  object as `__windowProxyGlobal` / `__windowProxyTarget` (no code), finish the
+  global `this` (no code), *then* evaluate `window_proxy.js` — the only script
+  that can see a proxy with no handler — and only then install the host surface.
+
+One deviation this forces, recorded rather than hidden: HTML's
+[LegacyUnforgeable] attributes — `window`, `document`, `top` — are defined on
+the **Window**, through `__windowProxyGlobal`, rather than through the proxy. A
+non-configurable property defined *through* a `Proxy` pins its descriptor on the
+proxy's target for good, and these three have to outlive the navigations that
+replace the Window behind them. The slot stays on the global object and every
+trap hides it, so nothing reached through the WindowProxy can see it; an
+unqualified reference in the realm's own script can, which is the price.
+
+### What was built
+
+1. **`components/script-runtime-api/window_proxy.js`** (new, 400 lines). The
+   whole of WindowProxy's semantics: the same-origin forwarding handler with its
+   invariant mirrors, and the cross-origin branch with its descriptor helper,
+   key list, `Location` and per-realm caches.
+2. **Adapters.** `new_window_proxy_in_realm` / `…_from_call` build the proxy
+   over their own shadow and publish it; the eleven trap getters stamp the
+   accessing realm. `finish_global_this_in_realm` / `…_from_call` unchanged from
+   the first half.
+3. **`frames.rs`.** `install_window_proxy_from_call` is now the single entry —
+   a first document builds and binds, a navigation rebinds — and
+   `adopt_window_view_from_call` is gone with it. `navigate_context`,
+   `navigate_fragment`, `navigate_top_level`, `unload_for_navigation`,
+   `perform_navigation`, `RunNavigations`, `Navigate`, `NavigateFrame`,
+   `WindowProxyHost`, `window_property`, `named_child`, `with_context` and
+   `navigate_from_call` are new.
+4. **Session history over the browsing-context crate.** `pushState`,
+   `replaceState`, `state`, `length`, `go`, `back`, `forward` and `popstate` all
+   read and write `BrowsingContext::history_mut()`. The per-document list in
+   `HostState` survives only as the fallback for a runtime that has no context
+   tree at all, which is what every pre-context `history` test exercises.
+5. **`browsing-context`.** `navigate_with(document, replace)`,
+   `set_document_url`, `HistoryEntry::document` + `in_document`, and
+   `BrowsingContext::document_serial`.
+
+### Whether a traversal keeps the document
+
+Worth stating on its own, because the first cut got it wrong and the navigation
+fixture caught it. A traversal is same-document when the target entry belongs to
+the document showing now — *not* when the URLs match modulo fragment.
+`pushState` can move the URL anywhere inside one document, and two entries can
+share a URL across a reload. `BrowsingContext` therefore counts its documents:
+every real navigation advances `document_serial`, a fragment navigation and a
+`pushState` do not, and every entry is stamped with the serial current when it
+was made.
+
+### Named regression manifest
+
+Seven defects found by a fixture or by the census during this phase, and fixed
+rather than recorded. Each is named by what found it.
+
+| Defect | Found by |
+|---|---|
+| The trap getters read `current_realm()`, which is the proxy's realm, so every cross-origin access was admitted | `cross_arena_adoption.rs::opaque_frame_access_stays_refused` |
+| `sameOrigin` returned a JS boolean and the handler compared it to the string `'true'`, so every context read as same-origin | the same fixture |
+| A discarded context's origin comparison fell through the tree and answered "cross-origin", so a parent holding a destroyed child's proxy lost `document` | `frame_lifecycle.rs::teardown_releases_everything` |
+| The cross-origin `postMessage` closure did not carry the accessing realm, so a message from a sandboxed child arrived with the parent's origin | `frame_realms.rs::sandbox_script_permission_and_origin_are_independent` |
+| The cross-origin `Location` was cached under the key `location`, colliding with the cached descriptor of the `location` property, so `w.location` handed back a property descriptor | `frame_window_security.rs::descriptors_are_own_cached_and_restricted` |
+| A traversal decided same-document by URL, so `history.back()` after `pushState` reloaded | `navigation.rs::push_state_and_traversal_fire_popstate` |
+| `location.href = 'javascript:…'` performed a document navigation and fired `load` | the interim census, `iframe_navigate_javascript_url.htm` |
+
+The last one is the only one the census found; the interim census carrying it
+is not retained, and the banked `post` maps are all from the runner that has the
+fix.
+
+### Census
+
+Nine subsets, 2153 files, `--engine boa --renderer livery --jobs 8
+--timeout 240`, mapped under
+`testing/genet/wpt-ledger/2026-09-10_windowproxy_navigation/`.
+
+| Subset | Files | File gains | File regressions | Subtests before → after |
+|---|---|---|---|---|
+| `dom` | 698 | 0 | 0 | 46594 → 46594 |
+| `html/browsers/browsing-the-web` | 332 | 5 | 1 | 30 → 38 |
+| `html/browsers/history` | 140 | 2 | 0 | 94 → 96 |
+| `html/browsers/origin` | 116 | 0 | 0 | 12 → 13 |
+| `html/browsers/the-window-object` | 96 | 0 | 0 | 83 → 86 |
+| `html/browsers/windows` | 60 | 0 | 0 | 8 → 8 |
+| `html/dom` | 387 | 0 | 0 | 42377 → 42377 |
+| `html/semantics/embedded-content/the-iframe-element` | 164 | 5 | 0 | 27 → 32 |
+| `webmessaging` | 160 | 0 | 0 | 171 → 171 |
+| **Total** | **2153** | **12** | **1** | **+19** |
+
+Twelve files move `fail → pass`, among them all four
+`iframe-loading-lazy-nav-location-*` files, both `navigation-unload-*` files,
+`joint-session-history-remove-iframe.html`, `location_assign_about_blank.html`,
+both `scroll-to-fragid` files and
+`javascript-url-security-check-failure.sub.html`. Three
+`window-properties.https.html` `frames` subtests and the cross-origin
+`function-name` subtest also flip.
+
+Two pass-to-nonpass subtest movements, both **former vacuous passes** — under
+the old tree neither `iframe.src = url` nor `location.assign(url)` navigated
+anything, so the navigation-dependent half of each test never ran:
+
+1. `history-traversal/pageswap/pageswap-iframe.html` — pass → no-results. The
+   file is `explicit_done` and calls `done()` from the child's `onpagehide`,
+   which now fires; the handler asserts on a `pageswap` event genet does not
+   have, throws, and `done()` is never reached. Recovering it needs the
+   Navigation API.
+2. `initial-empty-document/iframe-src-aboutblank-navigate-immediately.html`,
+   "Navigating to a different document with location.assign" — pass → fail. The
+   helper's `waitForLoad` attaches a `{once: true}` load listener *after*
+   requesting the navigation, and genet fires the **initial** `about:blank` load
+   event from a queued task rather than synchronously during "process the iframe
+   attributes"; the stale event wins the race. The identical sibling subtest
+   "with src" already failed the same way in `pre`, which is the positive
+   control: this is the initial-load ordering, not the navigation. The companion
+   `iframe-src-aboutblank-wait-for-load.html`, which waits for that load first,
+   **gains all three** of its navigation subtests.
+
+**No repins.** Every gain is in `html/browsers/*` or
+`html/semantics/embedded-content/the-iframe-element`, and no checked expectation
+map covers those directories. The protected
+`dom/nodes/Node-isConnected.html` "Test with iframes" loss stays pinned as a
+failure, untouched.
+
+**Lockfile delta: none.** `Cargo.lock` is byte-identical to the banked `pre`,
+`eeb325f180bdcc9cb49c23322b0bac144cbfc84021ef269f142d4977760199b2`.
+
+| Runner | sha256 |
+|---|---|
+| `genet-wpt-pre.exe` (from `a0b1b4f20eb`, banked) | `297732eab38b799632b82ca5c70455377b2856075d79882eecfc8e3e78f868c2` |
+| `genet-wpt-post.exe` | `ca1db3ee541dc61c057cf6c10617b91b7863c275d19c2617507650d391094308` |
+
+### The runtime receipt
+
+`components/script-runtime-api/tests/navigation.rs`, ten cases, both engines.
+The three-navigation case asserts, per pass: `held === frame.contentWindow` and
+`held === frames[0]` for the proxy taken before the first navigation; the new
+document behind it; a new realm id that was never used before; the outgoing
+realm discarded; and afterwards the whole unload-and-load sequence in one
+string, `one:pagehide,one:unload,load,two:pagehide,two:unload,load,three:pagehide,three:unload,load`
+— pagehide before unload, once each, and exactly one `load` on the container
+element per navigation — plus the parent arena back at its live-node baseline
+after a tick. The other cases cover fragment navigation and `hashchange`,
+`location.assign` / `replace` and the history they join, `pushState` /
+`replaceState` / `back` / `forward` / `popstate`, and an origin change flipping
+the parent's view to the cross-origin branch of the same object.
+
+### Gates
+
+| Gate | Result |
+|---|---|
+| Release `script-runtime-api` | **542 passed, 0 failed, 0 ignored** (up from 526; ten new navigation cases and six window-proxy cases); debug matches |
+| `genet-scripted` with `scripted-nova` | 117 passed, 0 failed |
+| `genet-documents` with `scripted` | 49 passed, 0 failed |
+| `genet-scripted-dom` and `browsing-context-api` | 81 passed, 0 failed |
+| Boa and Nova adapters, `script-engine-api` | 67 passed, 0 failed |
+| Boa fork, `boa_engine --lib` | 1100 passed, 0 failed |
+| Vano fork, `nova_vm --lib` | 70 passed, 0 failed |
+| Clippy, five touched crates, `--all-targets` | zero errors, zero new warnings in touched files |
+| Rustfmt, every touched file | clean |
+| `cargo check --workspace --features genet-wpt/netfetch` | passed |
+| Canonical testharness slices | 12 of 15 at `unexpected=0`; `dom` 60, `dom/nodes` 35 and `fetch/api/basic` 55, every one of them the count it inherited |
+| Reftest guards | both `unexpected=0` |
+| Ortet `article` | `0x6377ba8a6bf4dbc9`, three consecutive matching captures, unchanged |
+| Ortet `frames` | `0x97bdd4bd9e03ec02`, three consecutive matching captures, unchanged |
+
+### What this phase does not do
+
+It does not replace the top-level realm; see B, which records the blocker
+precisely rather than approximating around it. It does not implement `pageswap`,
+the Navigation API, `beforeunload` cancellation, `window.open`, form submission
+or link-click navigation. It does not move the initial `about:blank` load event
+from a queued task to the synchronous point HTML puts it at, which is what the
+one honest census regression turns on. It does not lift the parsing-time
+adoption refusal, and `dom` / `dom/nodes` stay red for the same protected loss
+as before.
