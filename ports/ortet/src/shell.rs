@@ -629,30 +629,12 @@ impl Ortet {
         let Some(host) = self.host.as_ref() else {
             return;
         };
+        // Stage/retire sources before ordinary scene rasterization. The canvas
+        // is an in-order SceneImage now, so it inherits Livery's transform,
+        // clip, and opacity stack instead of a flat post-scene overlay.
         #[cfg(feature = "scripted")]
-        let (_scene_texture, view) =
-            self.webgl
-                .with_external_textures(self.session.external_texture_draws(), |textures| {
-                    if textures.is_empty() {
-                        host.rasterize_scaled(
-                            &scene,
-                            self.width.max(1),
-                            self.height.max(1),
-                            ColorLoad::Clear(wgpu::Color::WHITE),
-                            self.scale_factor,
-                        )
-                    } else {
-                        host.rasterize_scaled_with_external_textures(
-                            &scene,
-                            self.width.max(1),
-                            self.height.max(1),
-                            ColorLoad::Clear(wgpu::Color::WHITE),
-                            self.scale_factor,
-                            textures,
-                        )
-                    }
-                });
-        #[cfg(not(feature = "scripted"))]
+        self.webgl
+            .sync_external_images(host.renderer(), self.session.external_texture_draws());
         let (_scene_texture, view) = host.rasterize_scaled(
             &scene,
             self.width.max(1),

@@ -983,11 +983,23 @@ fn emit_canvas_external_texture<D>(
     else {
         return;
     };
+    let (x, y, width, height) = crate::layout::content_box_rect(style, fragment);
+    if width <= 0.0 || height <= 0.0 {
+        return;
+    }
     list.commands
         .push(PaintCmd::DrawExternalTexture(ExternalTextureItem {
-            placement: CommonPlacement::new(bounds(fragment)),
+            // Canvas pixels paint in the replaced element's content box.
+            // Border and padding remain ordinary Livery commands around it.
+            placement: CommonPlacement::new(LayoutRect::new(
+                LayoutPoint::new(x, y),
+                LayoutPoint::new(x + width, y + height),
+            )),
             texture_key,
-            opacity: style.opacity.value(),
+            // `emit_node` already brackets this element in the matching
+            // `PushLayer`; adding the same opacity to the source would apply
+            // element opacity twice.
+            opacity: 1.0,
             content_generation: None,
         }));
 }

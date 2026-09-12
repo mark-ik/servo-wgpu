@@ -13,7 +13,7 @@
 //! backing texture in-place and drop removes the key.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -39,7 +39,14 @@ const GL_VERTEX_SHADER: u32 = 0x8B31;
 const GL_CONTEXT_LOST_WEBGL: u32 = 0x9242;
 
 type Context = Arc<Mutex<WebGlContext>>;
-type Registry = Arc<Mutex<HashMap<u64, Context>>>;
+
+#[derive(Clone)]
+struct RegisteredContext {
+    context: Context,
+    content_generation: Arc<AtomicU64>,
+}
+
+type Registry = Arc<Mutex<HashMap<u64, RegisteredContext>>>;
 
 /// Same-device WebGL factory and live default-framebuffer registry.
 #[derive(Clone)]
@@ -48,6 +55,7 @@ pub struct WebGlHost {
     queue: wgpu::Queue,
     next_key: Arc<AtomicU64>,
     contexts: Registry,
+    staged_images: Arc<Mutex<HashSet<netrender::ImageKey>>>,
 }
 
 impl WebGlHost {
@@ -59,6 +67,7 @@ impl WebGlHost {
             queue,
             next_key: Arc::new(AtomicU64::new(1)),
             contexts: Arc::new(Mutex::new(HashMap::new())),
+            staged_images: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -83,55 +92,56 @@ impl WebGlHost {
             )
             .expect("same-device WebGL canvas"),
         ));
-        self.contexts
-            .lock()
-            .expect("WebGL registry lock")
-            .insert(key, context.clone());
-        OrtetWebGl::new(context, key, self.contexts.clone())
+        let content_generation = Arc::new(AtomicU64::new(1));
+        self.contexts.lock().expect("WebGL registry lock").insert(
+            key,
+            RegisteredContext {
+                context: context.clone(),
+                content_generation: content_generation.clone(),
+            },
+        );
+        OrtetWebGl::new(context, key, self.contexts.clone(), content_generation)
     }
 
-    /// Create borrowed compositor inputs for the supplied session frame.
-    /// Missing keys are deliberately omitted in input order: a stale draw
-    /// cannot sample a newly-created context after navigation or drop.
-    pub fn with_external_textures<R>(
+    /// Stage every trusted texture used by this frame as a normal Vello image.
+    ///
+    /// This runs even for an empty draw list so a dropped, hidden, or navigated
+    /// canvas cannot leave its previous GPU image registered for a later key.
+    pub fn sync_external_images(
         &self,
+        renderer: &netrender::Renderer,
         draws: &[document_session_api::SessionExternalTextureDraw],
-        f: impl FnOnce(&[netrender::ExternalTextureComposite<'_>]) -> R,
-    ) -> R {
-        let live: Vec<(&document_session_api::SessionExternalTextureDraw, Context)> = {
+    ) {
+        let live: Vec<(netrender::ImageKey, RegisteredContext)> = {
             let registry = self.contexts.lock().expect("WebGL registry lock");
             draws
                 .iter()
                 .filter_map(|draw| {
                     registry
                         .get(&draw.texture_key)
-                        .map(|context| (draw, context.clone()))
+                        .cloned()
+                        .map(|context| (netrender::external_image_key(draw.texture_key), context))
                 })
                 .collect()
         };
-        let views: Vec<wgpu::TextureView> = live
-            .iter()
-            .map(|(_, context)| {
-                context
-                    .lock()
-                    .expect("WebGL context lock")
-                    .texture()
-                    .create_view()
-            })
-            .collect();
-        let composites: Vec<netrender::ExternalTextureComposite<'_>> = live
-            .iter()
-            .zip(&views)
-            .map(|((draw, _), view)| {
-                netrender::ExternalTextureComposite::new(
-                    view,
-                    netrender::ExternalTexturePlacement::new(draw.dest_rect)
-                        .with_opacity(draw.opacity),
-                )
-                .with_scene_op_boundary(draw.scene_op_boundary)
-            })
-            .collect();
-        f(&composites)
+        let desired: HashSet<_> = live.iter().map(|(key, _)| *key).collect();
+        for (image_key, registered) in &live {
+            let context = registered.context.lock().expect("WebGL context lock");
+            let drawing_buffer = context.texture();
+            let source_view = drawing_buffer.create_view();
+            renderer.stage_external_image(
+                *image_key,
+                &source_view,
+                [drawing_buffer.size.0, drawing_buffer.size.1],
+                netrender::SourceAlpha::Premultiplied,
+                registered.content_generation.load(Ordering::Relaxed),
+            );
+        }
+        let mut staged = self.staged_images.lock().expect("staged WebGL images lock");
+        for stale in staged.difference(&desired) {
+            renderer.unregister_external_image(*stale);
+        }
+        *staged = desired;
     }
 
     #[cfg(test)]
@@ -144,6 +154,7 @@ struct OrtetWebGl {
     context: Context,
     external_key: u64,
     registry: Registry,
+    content_generation: Arc<AtomicU64>,
     /// Next id to hand out across the JS seam for `create_*`. Distinct from
     /// the WebGl*Id namespaces because webgl-wgpu's ids start at 1 per
     /// resource kind; we keep one shared counter to avoid id-collisions
@@ -173,7 +184,12 @@ struct OrtetWebGl {
 }
 
 impl OrtetWebGl {
-    fn new(context: Context, external_key: u64, registry: Registry) -> Self {
+    fn new(
+        context: Context,
+        external_key: u64,
+        registry: Registry,
+        content_generation: Arc<AtomicU64>,
+    ) -> Self {
         // WebGL's only default-enabled capability is DITHER.
         let mut caps = std::collections::HashSet::new();
         caps.insert(GL_DITHER);
@@ -181,6 +197,7 @@ impl OrtetWebGl {
             context,
             external_key,
             registry,
+            content_generation,
             next_id: RefCell::new(1),
             buffers: RefCell::new(HashMap::new()),
             shaders: RefCell::new(HashMap::new()),
@@ -214,6 +231,10 @@ impl OrtetWebGl {
             *pending = Some(error);
         }
     }
+
+    fn note_content_change(&self) {
+        self.content_generation.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 impl Drop for OrtetWebGl {
@@ -236,6 +257,7 @@ impl WebGlHandler for OrtetWebGl {
             .expect("WebGL context lock")
             .resize(width.max(1), height.max(1))
             .expect("WebGL drawing buffer resizes");
+        self.note_content_change();
     }
 
     fn clear_color(&mut self, r: f32, g: f32, b: f32, a: f32) {
@@ -256,6 +278,7 @@ impl WebGlHandler for OrtetWebGl {
                     b: c[2] as f64,
                     a: c[3] as f64,
                 });
+            self.note_content_change();
         }
     }
 
@@ -579,6 +602,7 @@ impl WebGlHandler for OrtetWebGl {
             .lock()
             .expect("WebGL context lock")
             .draw_arrays(topology, first as u32, count as u32);
+        self.note_content_change();
     }
 
     fn get_error(&mut self) -> u32 {
@@ -616,7 +640,7 @@ mod tests {
     use genet_render_host::RenderCore;
     use netrender::NetrenderOptions;
 
-    fn host() -> Option<WebGlHost> {
+    fn core_and_host() -> Option<(RenderCore, WebGlHost)> {
         let core = match RenderCore::boot(NetrenderOptions {
             tile_cache_size: Some(4),
             enable_vello: true,
@@ -628,7 +652,12 @@ mod tests {
                 return None;
             },
         };
-        Some(WebGlHost::new(core.device().clone(), core.queue().clone()))
+        let host = WebGlHost::new(core.device().clone(), core.queue().clone());
+        Some((core, host))
+    }
+
+    fn host() -> Option<WebGlHost> {
+        core_and_host().map(|(_, host)| host)
     }
 
     #[test]
@@ -654,38 +683,12 @@ mod tests {
         assert_eq!(before.0, (4, 4));
         assert_eq!(after.0, (6, 5));
         assert!(after.1 > before.1);
-        let draws = [
-            document_session_api::SessionExternalTextureDraw {
-                texture_key: first_key,
-                dest_rect: [0.0, 0.0, 6.0, 5.0],
-                opacity: 1.0,
-                scene_op_boundary: 0,
-            },
-            document_session_api::SessionExternalTextureDraw {
-                texture_key: second_key,
-                dest_rect: [6.0, 0.0, 14.0, 8.0],
-                opacity: 0.5,
-                scene_op_boundary: 1,
-            },
-        ];
-        host.with_external_textures(&draws, |textures| {
-            assert_eq!(textures.len(), 2);
-            assert_eq!(textures[0].placement.dest_rect, [0.0, 0.0, 6.0, 5.0]);
-            assert_eq!(textures[1].placement.opacity, 0.5);
-            assert_eq!(textures[1].scene_op_boundary, 1);
-        });
-
         drop(second);
         assert_eq!(host.live_contexts(), 1);
-        host.with_external_textures(&draws, |textures| {
-            assert_eq!(textures.len(), 1);
-            assert_eq!(textures[0].scene_op_boundary, 0);
-        });
         drop(first);
         assert_eq!(host.live_contexts(), 0);
         let third = host.make_handler(2, 2);
         assert_ne!(third.external_texture_key(), Some(first_key));
-        host.with_external_textures(&draws, |textures| assert!(textures.is_empty()));
         drop(third);
     }
 
@@ -697,6 +700,59 @@ mod tests {
         assert_eq!(host.live_contexts(), 1);
         drop(handler);
         assert_eq!(host.live_contexts(), 0);
+    }
+
+    #[test]
+    fn sync_stages_only_trusted_contexts_refreshes_and_retires() {
+        let Some((core, host)) = core_and_host() else {
+            return;
+        };
+        let mut context = host.make_handler(4, 3);
+        let key = context.external_texture_key().expect("context key");
+        let image_key = netrender::external_image_key(key);
+        let draws = [
+            document_session_api::SessionExternalTextureDraw {
+                texture_key: key,
+                dest_rect: [0.0, 0.0, 4.0, 3.0],
+                opacity: 1.0,
+                scene_op_boundary: 0,
+            },
+            document_session_api::SessionExternalTextureDraw {
+                texture_key: 999,
+                dest_rect: [4.0, 0.0, 8.0, 3.0],
+                opacity: 1.0,
+                scene_op_boundary: 1,
+            },
+        ];
+
+        host.sync_external_images(core.renderer(), &draws);
+        assert_eq!(
+            *host.staged_images.lock().expect("staged WebGL images lock"),
+            HashSet::from([image_key]),
+            "an untrusted/unknown source key must not stage an image"
+        );
+
+        context.clear_color(0.0, 1.0, 0.0, 1.0);
+        context.clear(GL_COLOR_BUFFER_BIT);
+        context.resize(6, 5);
+        host.sync_external_images(core.renderer(), &draws);
+        assert_eq!(
+            *host.staged_images.lock().expect("staged WebGL images lock"),
+            HashSet::from([image_key]),
+            "a producer resize refreshes the stable staged image key"
+        );
+
+        host.sync_external_images(core.renderer(), &[]);
+        assert!(
+            host.staged_images
+                .lock()
+                .expect("staged WebGL images lock")
+                .is_empty()
+        );
+        assert!(
+            !core.renderer().unregister_external_image(image_key),
+            "the empty frame already retired the source"
+        );
     }
 
     #[test]

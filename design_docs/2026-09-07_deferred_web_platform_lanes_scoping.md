@@ -181,6 +181,16 @@ Netrender's tail redraw now reconstructs open layers, fixing the observed
 unmatched `PopLayer` panic. Producer clipping/opacity remains outside this
 gate, and the combined logical-resolution image is upscaled at high DPI.
 
+**Composition follow-up, 2026-09-11: in progress.** The
+[Ortet plan](2026-09-03_ortet_founding_plan.md#canvas-composition-follow-up-2026-09-11)
+maps source-over, group opacity, enclosing clips/transforms, replaced content-box
+placement and physical-resolution rendering to their standards and pixel gates.
+Native canvas sources now being integrated use in-order scene images with GPU
+alpha conversion before Vello atlas import. Acceptance will identify the exact
+tested source and actual native display scale; the historical receipt above
+does not cover these changes. The runtime's `devicePixelRatio` getter remains
+hardcoded to 1 and is a separate script-exposure residual.
+
 **What the lane is.**
 
 1. A `CanvasRenderingContext2D` state machine: the path and transform

@@ -4,10 +4,12 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 // SPDX-License-Identifier: MPL-2.0
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use genet_livery::{
-    Device, InteractionStates, LiveryDocument, StyleSet, emit_paint_list, layout, resolve_styles,
+    Device, InteractionStates, LiveryDocument, StyleSet, TextSystem, emit_paint_list,
+    emit_paint_list_with_text_system_scrolled_with_images_and_external_textures, layout,
+    resolve_styles,
 };
 use genet_static_dom::StaticDocument;
 use layout_dom_api::LayoutDom;
@@ -32,6 +34,80 @@ fn render(html: &str, css: &str, generation: u64) -> genet_livery::LiveryPaintLi
         DeviceIntSize::new(320, 240),
         generation,
     )
+}
+
+fn find_canvas(document: &StaticDocument) -> <StaticDocument as LayoutDom>::NodeId {
+    fn visit(
+        document: &StaticDocument,
+        node: <StaticDocument as LayoutDom>::NodeId,
+    ) -> Option<<StaticDocument as LayoutDom>::NodeId> {
+        if document
+            .element_name(node)
+            .is_some_and(|name| name.local.as_ref().eq_ignore_ascii_case("canvas"))
+        {
+            return Some(node);
+        }
+        document
+            .dom_children(node)
+            .find_map(|child| visit(document, child))
+    }
+    visit(document, document.document()).expect("canvas node")
+}
+
+#[test]
+fn external_canvas_uses_content_box_and_inherits_element_opacity_layer() {
+    let document = StaticDocument::parse(
+        r#"<html><body><canvas data-genet-external-texture-key="41"></canvas></body></html>"#,
+    );
+    let styles = resolve_styles(
+        &document,
+        &StyleSet::cambium(&[
+            "html, body { margin: 0; } canvas { display: block; width: 100px; height: 50px; padding: 5px; border: 3px solid black; opacity: .5; }",
+        ]),
+        &Device::screen(320.0, 240.0),
+        &InteractionStates::default(),
+    );
+    let fragments = layout(&document, &styles, 320.0, 240.0).expect("layout");
+    let canvas = find_canvas(&document);
+    let fragment = fragments.get(canvas).expect("canvas fragment");
+    let mut text = TextSystem::new();
+    let trusted = HashMap::from([(canvas, 41)]);
+    let list = emit_paint_list_with_text_system_scrolled_with_images_and_external_textures(
+        &document,
+        &styles,
+        &fragments,
+        DeviceIntSize::new(320, 240),
+        1,
+        &mut text,
+        &HashMap::new(),
+        &HashMap::new(),
+        &trusted,
+    );
+    let external = list
+        .commands()
+        .iter()
+        .find_map(|command| match command {
+            PaintCmd::DrawExternalTexture(item) => Some(item),
+            _ => None,
+        })
+        .expect("trusted canvas texture draw");
+    assert_eq!(
+        external.placement.bounds.min,
+        paint_list_api::LayoutPoint::new(fragment.x + 8.0, fragment.y + 8.0)
+    );
+    assert_eq!(
+        external.placement.bounds.max,
+        paint_list_api::LayoutPoint::new(
+            fragment.x + fragment.width - 8.0,
+            fragment.y + fragment.height - 8.0
+        )
+    );
+    assert_eq!(external.opacity, 1.0);
+    assert!(
+        list.commands()
+            .iter()
+            .any(|command| matches!(command, PaintCmd::PushLayer(layer) if layer.opacity == 0.5))
+    );
 }
 
 #[test]

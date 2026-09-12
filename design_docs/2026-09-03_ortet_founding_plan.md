@@ -1,5 +1,33 @@
 # Ortet founding plan
 
+## Canvas composition follow-up, 2026-09-11
+
+**Status: in progress.** Move native external canvas content into the normal
+Vello image stream, retaining the surrounding scene layers and rendering once
+at physical output resolution. Keep authored canvas bitmap dimensions unchanged.
+
+| Standard | Required behavior and done-condition |
+|---|---|
+| [CSS Color 4 opacity](https://www.w3.org/TR/css-color-4/#transparency) | Apply opacity once to the completed element and descendants. Overlapping canvas/DOM siblings in a half-opacity parent must match an isolated group oracle. |
+| [Compositing and Blending 1 source-over](https://www.w3.org/TR/compositing-1/#simplealphacompositing) | Composite premultiplied colors in painter order. Translucent content over and inside a canvas must match analytic RGBA values without a second suffix redraw. |
+| [CSS Transforms 1](https://www.w3.org/TR/css-transforms-1/#transform-rendering) | Accumulate ancestor and local transforms through the existing scene transform stack; verify transformed canvas interior pixels. |
+| [CSS Overflow 3](https://www.w3.org/TR/css-overflow-3/#managing-overflow) | Preserve enclosing overflow clips, including clips enclosing transformed canvas content. |
+| [HTML canvas](https://html.spec.whatwg.org/multipage/canvas.html#the-canvas-element) and [WebGL drawing buffer](https://registry.khronos.org/webgl/specs/latest/1.0/#5.2) | Place the replaced bitmap in its content box. CSS display scaling and DPR must not rewrite width/height attributes or drawing-buffer dimensions. |
+| [CSS Values 4 reference pixels](https://www.w3.org/TR/css-values-4/#absolute-lengths) | Rasterize the page at physical resolution. Offscreen scale 1, 1.5 and 2 probes must retain device-aligned sharp edges; native receipts record actual display scale. |
+
+Implementation phases: first preserve in-order image placement and GPU-only
+source import; then verify analytic GPU and native Boa/Nova pixels; finally
+record exact source/dependency identities and replay the existing host guards.
+Each phase closes only with its corresponding passing receipt. Native scale
+coverage is limited to scales actually reported by the host.
+
+**Findings, 2026-09-11:** flat external-texture metadata discarded the active
+transform and clip scopes. Livery also used border-box bounds and duplicated
+element opacity, while the native host enlarged a logical-resolution composite.
+Vello's GPU image import requires straight-alpha RGBA8 with copy-source usage;
+the default premultiplied WebGL surface therefore needs a GPU conversion stage.
+This work does not claim complete WebGL, CSS filters, or blend-mode conformance.
+
 **Native WebGL wiring, 2026-09-11:** Boa/Nova now create document-local WebGL
 contexts on Ortet's render device before authored scripts run. The native
 capture/presentation path resolves live textures in scene order; resize keeps
