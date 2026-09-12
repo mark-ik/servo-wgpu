@@ -152,14 +152,12 @@ WebGL context (via `webgl-wgpu`) for `webgl` and `experimental-webgl` and
 `null` for everything else. The canvas element is a replaced box in Livery
 with width and height presentational hints. A rendered scripted host may
 explicitly install a WebGL factory and texture registry; trusted registry keys
-then travel through paint/session metadata to the host. `RenderCore` and
-`SurfaceHost` accept caller-supplied same-device textures at emitted scene
-boundaries. The focused GPU receipt covers a plain opaque scene, an inserted
-producer texture, and a later opaque scene operation. This is limited to
-ungrouped, untransformed, unclipped stacking: ancestor transforms, clips and
-opacity groups need a wider renderer contract. Native Ortet's Boa/Nova engines
-now install the factory before parsing and resolve the live registry through
-the same render device before capture/presentation. The default Livery engine
+then travel through paint/session metadata to the host. Native Ortet's Boa/Nova
+engines install the factory before parsing and stage trusted same-device sources
+as in-order Vello scene images before capture/presentation. The native route
+retains enclosing 2D transforms, overflow clips and opacity groups and renders
+at physical resolution. The older direct-overlay API remains a flat composition
+contract. The default Livery engine
 remains script-free. The workspace still declares `vello_cpu` and the WPT tree has a
 `vello_canvas` subsuite config naming a `dom_canvas_backend=vello` pref;
 nothing in the current tree reads either.
@@ -181,15 +179,19 @@ Netrender's tail redraw now reconstructs open layers, fixing the observed
 unmatched `PopLayer` panic. Producer clipping/opacity remains outside this
 gate, and the combined logical-resolution image is upscaled at high DPI.
 
-**Composition follow-up, 2026-09-11: in progress.** The
+**Composition follow-up, 2026-09-11: native acceptance passed.** The
 [Ortet plan](2026-09-03_ortet_founding_plan.md#canvas-composition-follow-up-2026-09-11)
 maps source-over, group opacity, enclosing clips/transforms, replaced content-box
 placement and physical-resolution rendering to their standards and pixel gates.
-Native canvas sources now being integrated use in-order scene images with GPU
-alpha conversion before Vello atlas import. Acceptance will identify the exact
-tested source and actual native display scale; the historical receipt above
-does not cover these changes. The runtime's `devicePixelRatio` getter remains
-hardcoded to 1 and is a separate script-exposure residual.
+Native canvas sources use in-order scene images with GPU alpha conversion
+before Vello atlas import. Clean Genet `62e1a0fad82` with Netrender `3961aca919`
+passes 25 analytic probes per engine at native scale 2, including authored
+transform origins. The GPU gate covers scales 1, 1.5 and 2 plus source lifecycle.
+Exact source/dependency identities and captures are in
+`Code/testing/genet/ortet-compositing-standards-20260911-final/`. The runtime's
+`devicePixelRatio` getter remains hardcoded to 1 and is a separate script-exposure
+residual. SVG/reference-box variants, 3D, filters and broad WebGL conformance
+are not claimed by this bounded gate.
 
 **What the lane is.**
 

@@ -2,9 +2,10 @@
 
 ## Canvas composition follow-up, 2026-09-11
 
-**Status: in progress.** Move native external canvas content into the normal
-Vello image stream, retaining the surrounding scene layers and rendering once
-at physical output resolution. Keep authored canvas bitmap dimensions unchanged.
+**Status: native acceptance passed.** Native external canvas content now uses
+the normal Vello image stream, retaining the surrounding scene layers and
+rendering once at physical output resolution. Authored canvas bitmap dimensions
+remain unchanged.
 
 | Standard | Required behavior and done-condition |
 |---|---|
@@ -39,6 +40,35 @@ The earlier 15-probe capture at `ecaa79296bf` is preliminary evidence and does
 not close the transform gate. CSSOM shorthand/geometry getters are outside this
 pixel gate; authored dimensions and drawing-buffer identity remain JS checks.
 
+**Acceptance, 2026-09-11:** clean Genet `62e1a0fad82` with Netrender
+`3961aca919` passed all 25 analytic native probes on both Boa and Nova at the
+reported display scale 2. The captures match (`0xa440137ccc503f9c`) and have
+identical before/after source identities. Artifacts, resolved dependencies and
+lock/config copies: `Code/testing/genet/ortet-compositing-standards-20260911-final/`.
+The stricter leading-edge probe rejects the old center-pivot renderer; its
+negative receipt is at `Code/testing/genet/ortet-compositing-origin-negative/`.
+
+Netrender's committed GPU gate separately checks exact source-over colors and
+adjacent clip-edge pixels at scales 1, 1.5 and 2, first source registration,
+same-size refresh, resize and removal. The two image-key and two translator
+tests also pass (`Code/testing/genet/ortet-compositing-netrender/final-tests.log`).
+The existing native WebGL ordering/resize gate and G5 guard both pass on the
+same Genet source, including their impossible-heading controls. G5 retains
+digest `0xc5d147e70d4e4425` and `unpinned=5 collected=6` on both engines; Boa
+presents five frames and Nova six. Guard artifacts are in
+`Code/testing/genet/ortet-compositing-webgl-guard-20260911/` and
+`Code/testing/genet/ortet-compositing-g5-guard-20260911/`.
+
+Final source validation also passed all 23 Ortet library tests (including four
+actual GPU adapter/lifecycle cases), 74 Livery paint tests and 44 value tests.
+Default Ortet passes `cargo check` and retains its script-free dependency graph.
+Log: `Code/testing/genet/ortet-compositing-final-tests.log`.
+
+This accepts the tested 2D affine, rectangular overflow, opacity and source-over
+route. Other reference boxes/SVG, 3D, filters, broad WebGL conformance, and the
+runtime's currently hardcoded `devicePixelRatio` getter remain separate work.
+Native scale 1 and fractional scale were not exercised by a physical window.
+
 **Native WebGL wiring, 2026-09-11:** Boa/Nova now create document-local WebGL
 contexts on Ortet's render device before authored scripts run. The native
 capture/presentation path resolves live textures in scene order; resize keeps
@@ -47,9 +77,9 @@ Clean Genet `8dffe09375d` with Netrender `18f569c21` passed both engines'
 exact red/green/blue ordering pixels at display scale 2 and the timeout controls.
 Artifacts: `Code/testing/genet/ortet-webgl-20260911-final/`, including unchanged
 before/after source identities. The default script-free route is preserved.
-This accepts the existing bounded WebGL surface and plain opaque composition;
-full WebGL conformance, producer ancestor clipping/opacity, and crisp high-DPI
-external composition remain separate work.
+That earlier checkpoint accepted the bounded WebGL surface and plain opaque
+composition. The composition follow-up above closes its tested producer
+clipping/opacity and physical-resolution rendering gaps.
 
 The existing native G5 guard also passed at those revisions, with unchanged
 capture digest `0xc5d147e70d4e4425` and `unpinned=5 collected=6` on both engines
